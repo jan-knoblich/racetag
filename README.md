@@ -15,6 +15,9 @@ Bring a tag near the antenna. If tag reports are coming, you'll see lines like:
 [YYYY-mm-dd HH:MM:SS.mmm] [DATA] [TAG] EPC=E2000017221100...
 ```
 
+To stop the server, simply press `Ctrl-C`.
+
+
 ## Documentation
 
 See [docs/Useful_commands.md](docs/Useful_commands.md) for useful commands to configure the reader.
