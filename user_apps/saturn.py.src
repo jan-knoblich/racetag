@@ -1,0 +1,179 @@
+from socket import *
+import re
+
+__all__ = ['send', 'recv', 'Command', 'Event']
+
+HOST = '' # The remote host
+PORT = 50007 # The same port as used by the server
+DIRNAME = '/usr/local/www/'
+
+def recv(port=50000, addr="239.192.1.100", buf_size=1024,timeout=10000):
+        """recv([port[, addr[,buf_size]]]) - waits for a datagram and returns the data."""
+
+        # Create the socket
+        #setdefaulttimeout(timeout)
+        s = socket(AF_INET, SOCK_DGRAM)
+
+        # Set some options to make it multicast-friendly
+        #s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+                s.setsockopt(SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except AttributeError:
+                pass # Some systems don't support SO_REUSEPORT
+        s.setsockopt(SOL_IP, IP_MULTICAST_TTL, 20)
+        s.setsockopt(SOL_IP, IP_MULTICAST_LOOP, 1)
+
+        # Bind to the port
+        s.bind(('', port))
+
+        # Set some more multicast options
+        try:
+            intf = gethostbyname(gethostname())
+            s.setsockopt(SOL_IP, IP_MULTICAST_IF, inet_aton(intf) + inet_aton('0.0.0.0'))
+            s.setsockopt(SOL_IP, IP_ADD_MEMBERSHIP, inet_aton(addr) + inet_aton('0.0.0.0'))
+        except:
+                pass # Some systems don't support SO_REUSEPORT
+
+        # Receive the data, then unregister multicast receive membership, then close the port
+        #print 'Waiting for connections now'
+        try:
+            data, sender_addr = s.recvfrom(buf_size)
+        except Exception:
+            s.close()
+            raise Exception
+        #print 'Found a connection' + sender_addr[0]
+        try:
+            s.setsockopt(SOL_IP, IP_DROP_MEMBERSHIP, inet_aton(addr) + inet_aton('0.0.0.0'))
+        except:
+                pass # Some systems don't support SO_REUSEPORT
+        s.close()
+        return data.strip(),sender_addr
+    
+def send(data, port=50000, addr='239.192.1.100'):
+        """send(data[, port[, addr]]) - multicasts a UDP datagram."""
+        # Create the socket
+        s = socket(AF_INET, SOCK_DGRAM)
+        # Make the socket multicast-aware, and set TTL.
+        s.setsockopt(IPPROTO_IP, IP_MULTICAST_TTL, 20) # Change TTL (=20) to suit
+        # Send the data
+        s.sendto(data, (addr, port))
+
+class Command:
+    def __init__(self,host='localhost',port=50007,timeout=None):
+        if (host != 'localhost'):
+            self.HOST = host # The remote host
+            self.PORT = port # The same port as used by the server
+            self.clientsocket = socket(AF_INET, SOCK_STREAM)
+            self.clientsocket.connect((self.HOST, self.PORT))
+        else:
+            self.clientsocket = socket(AF_UNIX, SOCK_STREAM)
+            self.clientsocket.connect('/tmp/50007')
+        self.clientsocket.settimeout(timeout)
+
+    #Function to send commands to the C2 Engine.
+    def sendcommand(self,command):
+        try:     
+            self.clientsocket.send(command+"\r\n")
+            data=""
+            while 1:
+                data=data+self.clientsocket.recv(4096)   
+                if (data.find("\r\n\r\n")==-1):
+                    continue
+                else:
+                    break
+            return data.strip().split(' ')
+        except:
+            pass
+        
+    #Function to send commands to the C2 Engine.
+    def rawsendcommand(self,command):
+        try:        
+            self.clientsocket.send(command+"\n")
+            data=""
+            while 1:
+                data=data+self.clientsocket.recv(4096)   
+                if (data.find("\r\n\r\n")==-1):
+                    continue
+                else:
+                    break
+            return data.strip()
+        except:
+            pass
+
+    #Function to send commands to the C2 Engine.
+    def execcommand(self,command):
+        try:        
+            retobj = {}
+            data = self.rawsendcommand(command)
+            if data[:2] == 'ok':
+                retstr = data[2:].strip()
+                retstrtemp = retstr.split(',')
+                for x in retstrtemp:  
+                    namevalue=x.split('=') 
+                    retobj[namevalue[0].strip()]=namevalue[1].strip()
+            return data[:2],retobj
+        except:
+            pass
+       #Function to send commands to the C2 Engine.
+
+    def execcommand2(self,command):
+        try:        
+            retobj = {}
+            data = self.rawsendcommand(command)
+            if data[:2] == 'ok':
+                try:
+                  retstr = data[2:].strip()
+                  retstrtemp = retstr.split(',')
+                  for x in retstrtemp:  
+                      namevalue=x.split('=') 
+                      retobj[namevalue[0].strip()]=namevalue[1].strip()
+                except:
+                  return data[:2],retobj 
+            return data[:2],retobj
+        except:
+            pass
+     
+        
+    #Function to send commands to the C2 Engine.
+    def close(self):
+        self.clientsocket.close()
+
+
+class Event:
+    def __init__(self,host='localhost',port=50008,timeout=None):
+        if (host != 'localhost'):
+            self.HOST = host # The remote host
+            self.PORT = port # The same port as used by the server
+            self.clientsocket = socket(AF_INET, SOCK_STREAM)
+            self.clientsocket.connect((self.HOST, self.PORT))
+        else:
+            self.clientsocket = socket(AF_UNIX, SOCK_STREAM)
+            self.clientsocket.connect('/tmp/50008')
+        self.id = (self.clientsocket.recv(1024).split('=')[1]).strip()
+        self.clientsocket.settimeout(timeout)
+        
+    def getid(self):
+        return self.id
+
+    def settimeout(self,timeout):
+        self.clientsocket.settimeout(timeout)
+        
+    #Function to Receive commands from C2 Engine.
+    def receive(self,function):
+        try:
+            while 1:        
+                try:
+                    # get data
+                    data = self.clientsocket.recv(1024)
+                    # send data to callback function
+                    function(data.strip())
+                except timeout:
+                    function("")
+                    pass
+        except:
+            pass
+        
+    #Function to send commands to the C2 Engine.
+    def close(self):
+        self.clientsocket.close()
+        
