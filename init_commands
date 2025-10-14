@@ -1,0 +1,22 @@
+# Example configuration commands for the Sirit INfinity 510
+# Lines starting with # are ignored.
+# This file is loaded AFTER reader.events.bind(id = <sessionId>) has been sent.
+# You can copy this file to init_commands and edit it.
+
+
+# Register the events
+reader.events.unregister(name = event.tag.report)
+
+reader.events.register(name = event.tag.arrive)
+reader.events.register(name = event.tag.depart)
+
+
+# Reporting fields
+tag.reporting.arrive_fields = tag_id time antenna rssi
+tag.reporting.depart_fields = tag_id time repeat antenna rssi
+tag.reporting.depart_time = 300
+tag.reporting.raw_tag_data = false
+
+
+# Start collecting tags by setting the operating mode to active
+setup.operating_mode=active
