@@ -24,7 +24,6 @@ _COLORIZE = True
 class _C:
     RESET = "\x1b[0m"
     DIM = "\x1b[2m"
-    BOLD = "\x1b[1m"
     # Colors
     GREEN = "\x1b[32m"
     RED = "\x1b[31m"
@@ -159,10 +158,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not control_sock:
         return 1
 
-    # Expose for helper that opens short-lived control connections
-    global CONTROL_ENDPOINT
-    CONTROL_ENDPOINT = (ip, args.control_port)
-
     # Keep a reference to the persistent CONTROL socket and a send lock
     global CONTROL_SOCKET, CONTROL_SEND_LOCK
     CONTROL_SOCKET = control_sock
@@ -191,10 +186,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"\n[{_ts()}] Interrupted by user.")
     finally:
         try:
-            _send_control_one_shot(ip, args.control_port, "setup.operating_mode=standby")
-            print(f"[{_ts()}] CONTROL one-shot: set standby on exit")
-        except Exception as e:
-            print(f"[{_ts()}] CONTROL one-shot failed: {e}")
+            if CONTROL_SOCKET:
+                CONTROL_SOCKET.sendall(("setup.operating_mode=standby\r\n").encode("utf-8"))
+                print(f"[{_ts()}] [CONTROL] >> setup.operating_mode=standby")
+        except Exception:
+            pass
     return 0
 
 
@@ -244,22 +240,6 @@ def _maybe_print_tags(name: str, msg: str):
 
 
 _SESSION: dict = {"id": None, "bound": False}
-
-
-def _send_control_one_shot(ip: str, port: int, cmd: str):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(3)
-    try:
-        s.connect((ip, port))
-        wire = (cmd.rstrip("\r\n") + "\r\n").encode("utf-8", errors="ignore")
-        s.sendall(wire)
-    finally:
-        try:
-            s.shutdown(socket.SHUT_RDWR)
-        except Exception:
-            pass
-        s.close()
-
 
 
 def _stdin_loop(control_sock: socket.socket):
@@ -331,26 +311,7 @@ def _send_multi_control(cmds: List[str]):
         except OSError as e:
             print(f"[{_ts()}] [CONTROL] send error on persistent socket, falling back: {e}")
 
-    # Fallback to short-lived connection if needed
-    ip_port = getattr(sys.modules['__main__'], 'CONTROL_ENDPOINT', None)
-    if not ip_port:
-        return
-    ip, port = ip_port
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.settimeout(3)
-        s.connect((ip, port))
-        for c in cmds:
-            wire = (c + "\r\n").encode('utf-8', errors='ignore')
-            s.sendall(wire)
-            print(f"[{_ts()}] [CONTROL] >> {c}")
-            time.sleep(0.02)
-    finally:
-        try:
-            s.shutdown(socket.SHUT_RDWR)
-        except Exception:
-            pass
-        s.close()
+
 
 
 if __name__ == "__main__":
