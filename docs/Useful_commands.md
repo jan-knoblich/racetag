@@ -58,3 +58,7 @@ To reboot the reader:
 ```
 reader.reboot() 
 ```
+
+## SSH Access
+
+The device has an SSH server running on port 22. The default user is _cliuser_ without password
