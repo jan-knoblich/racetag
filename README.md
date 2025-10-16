@@ -9,6 +9,8 @@ Minimal TCP client for the Sirit INfinity 510 reader focused on the core flow:
 
 ## Quick start
 
+Open a terminal under src/ and run:
+
 ```bash
 # By default it will try to read 'init_commands' file
 python3 server.py --ip 192.168.1.130
