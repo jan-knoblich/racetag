@@ -1,0 +1,2 @@
+# Runtime dependencies for racetag-reader-service
+requests>=2.28,<3

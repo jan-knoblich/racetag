@@ -1,0 +1,18 @@
+services:
+  racetag-reader-service:
+    build: .
+    image: racetag-reader-service:latest
+    container_name: racetag-reader-service
+    restart: unless-stopped
+
+    env_file:
+      - .env
+  
+    # Optionally mount a custom init commands file
+    # volumes:
+    #   - ./src/init_commands:/app/src/init_commands:ro
+    #   - ./logs:/logs
+
+    # Use host network if the reader or backend are on local network segments but not
+    # defined in this compose file.
+    network_mode: host

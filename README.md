@@ -55,6 +55,47 @@ Expected logs on success (example):
 
 Press Ctrl-C to stop. On exit, the reader is set to standby automatically.
 
+### Docker and Docker Compose
+
+You can run the service in a container. The application reads configuration from environment variables, which you can provide via a `.env` file.
+
+1) Prepare environment
+
+```bash
+cp .env.example .env
+# Edit .env and set at least READER_IP. Set BACKEND_URL if using HTTP transport.
+```
+
+2) Build and run with Compose (recommended)
+
+```bash
+docker compose build
+docker compose up
+```
+
+Notes:
+- The container initiates outbound TCP connections to the reader at `READER_IP:CONTROL_PORT` and `READER_IP:EVENT_PORT`.
+- If your reader/backend are on the same LAN and you need minimal networking translation, consider using host networking on Linux by uncommenting `network_mode: host` in `docker-compose.yml`.
+- To mount a custom init commands file, uncomment the `volumes` example in `docker-compose.yml`.
+
+3) Run with `docker run` (optional)
+
+```bash
+docker build -t racetag-reader-service:latest .
+docker run --rm --env-file .env racetag-reader-service:latest
+# On Linux, host networking (optional):
+# docker run --rm --env-file .env --network host racetag-reader-service:latest
+```
+
+Overriding CLI flags:
+- Environment variables set defaults; CLI flags still take precedence. If you really need CLI flags, you can add a `command:` override in `docker-compose.yml`, for example:
+
+```yaml
+services:
+	racetag-reader:
+		command: ["python", "src/racetag_reader_service.py", "--raw", "--interactive"]
+```
+
 ### Backend integration
 
 Flags related to backend delivery:

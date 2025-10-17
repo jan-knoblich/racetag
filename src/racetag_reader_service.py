@@ -10,29 +10,41 @@ from __future__ import annotations
 import argparse
 import sys
 from typing import List, Optional
+import os
 
 from sirit_client import SiritClient
 from utils import _ts
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Sirit Infinity 510 minimal client (CONTROL then EVENT)")
-    parser.add_argument("--ip", required=True, help="Reader IP address")
-    parser.add_argument("--event-port", type=int, default=50008, help="Event channel port")
-    parser.add_argument("--control-port", type=int, default=50007, help="Control channel port")
-    parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
-    parser.add_argument("--interactive", action="store_true", help="Allow typing CONTROL commands (stdin)")
-    parser.add_argument("--raw", action="store_true", help="Print raw chunks/messages received on sockets")
-    parser.add_argument("--init_commands_file", help="Path to file with configuration commands sent AFTER reader.events.bind once session id known (defaults to 'init_commands')")
-    parser.add_argument("--backend-url", help="Backend base URL to send events (e.g., http://localhost:8000)")
-    parser.add_argument("--backend-token", help="Optional Bearer token for backend auth")
+    parser.add_argument("--ip", default=os.getenv("READER_IP"), help="Reader IP address (env: READER_IP)")
+    parser.add_argument("--event-port", type=int, default=int(os.getenv("EVENT_PORT", "50008")), help="Event channel port (env: EVENT_PORT)")
+    parser.add_argument("--control-port", type=int, default=int(os.getenv("CONTROL_PORT", "50007")), help="Control channel port (env: CONTROL_PORT)")
+    parser.add_argument("--no-color", action="store_true", default=_env_flag("NO_COLOR", False), help="Disable ANSI colors (env: NO_COLOR=true)")
+    parser.add_argument("--interactive", action="store_true", default=_env_flag("INTERACTIVE", False), help="Allow typing CONTROL commands (stdin) (env: INTERACTIVE=true)")
+    parser.add_argument("--raw", action="store_true", default=_env_flag("RAW", False), help="Print raw chunks/messages received on sockets (env: RAW=true)")
+    parser.add_argument("--init_commands_file", default=os.getenv("INIT_COMMANDS_FILE"), help="Path to file with configuration commands sent AFTER reader.events.bind once session id known (env: INIT_COMMANDS_FILE; defaults to 'init_commands' if not set)")
+    parser.add_argument("--backend-url", default=os.getenv("BACKEND_URL"), help="Backend base URL to send events (e.g., http://localhost:8000) (env: BACKEND_URL)")
+    parser.add_argument("--backend-token", default=os.getenv("BACKEND_TOKEN"), help="Optional Bearer token for backend auth (env: BACKEND_TOKEN)")
     parser.add_argument(
         "--backend-transport",
         choices=["http", "mock"],
-        default="http",
+        default=os.getenv("BACKEND_TRANSPORT", "http"),
         help="Type of Backend transport implementation to use; (http) or for testing (mock)",
     )
     args = parser.parse_args(argv)
+
+    # Validate required IP (from CLI or env)
+    if not args.ip:
+        parser.error("--ip is required (or set env READER_IP)")
 
     client = SiritClient(
         ip=args.ip,
