@@ -1,5 +1,5 @@
 """
-Racetag Ingestion Service
+Racetag Reader Service
 
 (C) 2025 Pablo Clemente Maseda
 

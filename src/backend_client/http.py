@@ -75,9 +75,23 @@ class HttpBackendClient(BackendClient):
 
     def _flush(self, session, headers, endpoint: str, items) -> None:
         try:
-            resp = session.post(endpoint, headers=headers, data=json.dumps(items), timeout=2.0)
+            payload = {"events": items}
+            resp = session.post(endpoint, headers=headers, data=json.dumps(payload), timeout=2.0)
             if resp.status_code >= 300:
                 print(f"[{_ts()}] [BACKEND] POST batch failed {resp.status_code}: {resp.text[:200]}")
+                return
+            # Validate processed count strictly using new DTO
+            try:
+                data = resp.json()
+            except Exception as e:
+                raise RuntimeError(f"[{_ts()}] [BACKEND] Expected JSON response, got parse error: {e}")
+            if not isinstance(data, dict) or "events_processed" not in data:
+                raise RuntimeError(f"[{_ts()}] [BACKEND] Invalid response: 'events_processed' missing: {data!r}")
+            processed = int(data["events_processed"])
+            if processed != len(items):
+                msg = f"[{_ts()}] [BACKEND] Batch mismatch: sent={len(items)} processed={processed}"
+                print(msg)
+                raise RuntimeError(msg)
         except Exception as e:
             print(f"[{_ts()}] [BACKEND] POST batch error: {e}")
 
