@@ -13,14 +13,15 @@ Minimal TCP client for the Sirit INfinity 510 reader focused on the core flow:
 Open a terminal under src/ and run:
 
 ```bash
+cd ./src
 # By default it will try to read 'init_commands' file
-python3 racetag_reader_service.py --ip 192.168.1.130
+python3 racetag_reader_service.py --ip 192.168.1.130 --backend-url http://localhost:8000
 
 # Provide a custom init commands file
-python3 racetag_reader_service.py --ip 192.168.1.130 --init_commands_file init_commands.txt
+python3 racetag_reader_service.py --ip 192.168.1.130 --backend-url http://localhost:8000 --init_commands_file init_commands.txt
 
 # With interactive CONTROL and raw socket debug
-python3 racetag_reader_service.py --ip 192.168.1.130 --interactive --raw
+python3 racetag_reader_service.py --ip 192.168.1.130 --backend-url http://localhost:8000 --interactive --raw
 
 # Send events to a backend over HTTP (backend Bearer token will be used if provided)
 python3 racetag_reader_service.py --ip 192.168.1.130 \

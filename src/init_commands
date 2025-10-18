@@ -3,6 +3,8 @@
 # This file is loaded AFTER reader.events.bind(id = <sessionId>) has been sent.
 # You can copy this file to init_commands and edit it.
 
+# Time zone configuration
+info.time_zone=Europe/Berlin
 
 # Register the events
 reader.events.unregister(name = event.tag.report)
@@ -17,7 +19,7 @@ tag.reporting.arrive_fields = tag_id time antenna rssi
 tag.reporting.depart_fields = tag_id time antenna repeat
 tag.reporting.portal_cross_fields = tag_id type time antenna rssi freq
 
-# tag.reporting.depart_time = 3000
+tag.reporting.depart_time = 300  # milliseconds
 tag.reporting.raw_tag_data = false
 
 
