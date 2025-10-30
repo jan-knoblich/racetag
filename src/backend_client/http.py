@@ -51,7 +51,8 @@ class HttpBackendClient(BackendClient):
         session = requests.Session()
         headers = {"Content-Type": "application/json"}
         if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+            # headers["Authorization"] = f"Bearer {self.token}"
+            headers["X-API-Key"] = str(self.token)
         buf = []
         last_flush = time.monotonic()
         endpoint = f"{self.url}/events/tag/batch"
