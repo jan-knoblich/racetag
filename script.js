@@ -13,8 +13,8 @@ const state = {
     || !isPlaceholder(__RACETAG_BACKEND_URL__) && __RACETAG_BACKEND_URL__)
     || 'http://localhost:8600',
   showTagColumn: true,
+  lastStandings: [],
   es: null,
-  standingsByTag: new Map(),
 };
 
 // Mapping from tag_id to {bib, name}
@@ -22,6 +22,7 @@ const tagData = new Map();
 
 // Parsing CSV and load tag data
 function parseCSV(csvText) {
+  tagData.clear();
   const lines = csvText.trim().split('\n');
   if (lines.length < 2) {
     console.warn('CSV file is empty or has no data rows');
@@ -43,6 +44,11 @@ function parseCSV(csvText) {
   
   console.log(`Loaded ${tagData.size} tag mappings from CSV`);
   setStatus(`Loaded ${tagData.size} tags`);
+
+  // Re-render current rows so bib/name updates are shown immediately.
+  if (state.lastStandings.length > 0) {
+    renderStandings(state.lastStandings);
+  }
 }
 
 // Load CSV file
@@ -79,6 +85,7 @@ function applyTagColumnVisibility() {
 }
 
 function renderStandings(items) {
+  state.lastStandings = items;
   const tbody = $('#standingsTable tbody');
   tbody.innerHTML = '';
   items.forEach((p, idx) => {

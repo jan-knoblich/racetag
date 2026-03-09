@@ -2,7 +2,7 @@
 
 A tiny static web UI to test and visualize live race standings from the [racetag-backend](https://github.com/paclema/racetag-backend) backend API. It fetches an initial snapshot and listens to server-sent events (SSE) for real-time updates.
 
-![alt text](<docs/Screenshot 2025-10-18 210334.png>)
+![alt text](<docs/Screenshot 2026-03-09 220300.png>)
 
 Features:
 - Connect to a backend (default http://localhost:8600)
@@ -14,7 +14,7 @@ Features:
 
 The frontend can import a CSV file to display human-readable information (bib numbers and names) instead of raw tag IDs in the standings table since the backend do not provide yet this information.
 
-### CSV Format
+#### CSV Format
 
 The CSV file must contain three columns with headers:
 - `tag_id`: The unique RFID tag identifier
