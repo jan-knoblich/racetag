@@ -16,13 +16,51 @@ const state = {
   standingsByTag: new Map(),
 };
 
-// Mapeo de tag_id a número de bib (race number)
-const tagToBib = {
-  '000000000000000001B541C0': '6064',
-  'C5A1BE1B694E02089950CE2217F46FBA': '3420',
-  'EE6B4AADB6F002FC353CE1BFD8D3C3DF': '3476',
-  '281C5AACBA0E0283B93B419B55EB5407': '24859'
-};
+// Mapping from tag_id to {bib, name}
+const tagData = new Map();
+
+// Parsing CSV and load tag data
+function parseCSV(csvText) {
+  const lines = csvText.trim().split('\n');
+  if (lines.length < 2) {
+    console.warn('CSV file is empty or has no data rows');
+    return;
+  }
+  
+  // Skip header line
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    
+    // Parse CSV line (handle quoted fields if needed)
+    const parts = line.split(',').map(p => p.trim().replace(/^"|"$/g, ''));
+    if (parts.length >= 3) {
+      const [tag_id, bib, name] = parts;
+      tagData.set(tag_id, { bib, name });
+    }
+  }
+  
+  console.log(`Loaded ${tagData.size} tag mappings from CSV`);
+  setStatus(`Loaded ${tagData.size} tags`);
+}
+
+// Load CSV file
+function loadCSVFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      parseCSV(e.target.result);
+    } catch (err) {
+      console.error('Error parsing CSV:', err);
+      setStatus('Error loading CSV file');
+    }
+  };
+  reader.onerror = () => {
+    console.error('Error reading file');
+    setStatus('Error reading CSV file');
+  };
+  reader.readAsText(file);
+}
 
 function setStatus(text) {
   $('#status').textContent = text;
@@ -38,13 +76,16 @@ function renderStandings(items) {
   tbody.innerHTML = '';
   items.forEach((p, idx) => {
     const gap = typeof p.gap_ms === 'number' ? formatMs(p.gap_ms) : '';
-    const bib = tagToBib[p.tag_id] || 'N/A';
+    const data = tagData.get(p.tag_id);
+    const bib = data?.bib || 'N/A';
+    const name = data?.name || 'Unknown';
     const tr = document.createElement('tr');
     const total = typeof p.total_time_ms === 'number' ? secondsWithMs(p.total_time_ms) : '';
     tr.innerHTML = `
       <td>${idx + 1}</td>
       <td>${p.tag_id}</td>
       <td>${bib}</td>
+      <td>${name}</td>
       <td>${p.laps}</td>
       <td class="${p.finished ? 'finished' : ''}">${p.finished ? 'Yes' : 'No'}</td>
       <td>${p.last_pass_time || ''}</td>
@@ -112,6 +153,19 @@ function init() {
       console.error(e);
       setStatus('Failed to connect');
     }
+  });
+  
+  // CSV file upload handler
+  $('#csvFile').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      loadCSVFile(file);
+    }
+  });
+  
+  // Import CSV button triggers file input
+  $('#importCsvBtn').addEventListener('click', () => {
+    $('#csvFile').click();
   });
 }
 

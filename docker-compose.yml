@@ -1,5 +1,6 @@
 services:
   racetag-frontend:
+    build: .
     image: racetag-frontend:latest
     container_name: racetag-frontend
     env_file:

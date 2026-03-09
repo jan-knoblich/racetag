@@ -8,6 +8,24 @@ Features:
 - Connect to a backend (default http://localhost:8600)
 - Show current standings
 - Live updates via SSE (/stream)
+- Import CSV file to map tag IDs to bib numbers and participant names
+
+## CSV Import
+
+The frontend can import a CSV file to display human-readable information (bib numbers and names) instead of raw tag IDs in the standings table since the backend do not provide yet this information.
+
+### CSV Format
+
+The CSV file must contain three columns with headers:
+- `tag_id`: The unique RFID tag identifier
+- `bib`: The race bib number assigned to the participant
+- `name`: The participant's name
+
+See the example file: [tags_example.csv](docs/tags_example.csv)
+
+You can use Excel or Google Sheets to create and export the CSV file with the required format:
+
+![google_sheets_tags_example](docs/google_sheets_tags_example.png)
 
 ## Run locally
 

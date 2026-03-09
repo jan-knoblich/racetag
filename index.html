@@ -14,6 +14,8 @@
           <input id="backendUrl" type="text" />
         </label>
         <button id="connectBtn">Connect</button>
+        <input id="csvFile" type="file" accept=".csv" style="display: none;" />
+        <button id="importCsvBtn">Import CSV</button>
       </div>
       <div class="status" id="status">Disconnected</div>
     </header>
@@ -27,6 +29,7 @@
               <th>#</th>
               <th>Tag</th>
               <th>Bib</th>
+              <th>Name</th>
               <th>Laps</th>
               <th>Finished</th>
               <th>Last pass</th>
