@@ -12,6 +12,7 @@ const state = {
     ( localStorage.getItem('racetag.backend') 
     || !isPlaceholder(__RACETAG_BACKEND_URL__) && __RACETAG_BACKEND_URL__)
     || 'http://localhost:8600',
+  showTagColumn: true,
   es: null,
   standingsByTag: new Map(),
 };
@@ -71,6 +72,12 @@ function saveBackend(url) {
   localStorage.setItem('racetag.backend', state.backend);
 }
 
+function applyTagColumnVisibility() {
+  document.querySelectorAll('.tag-col').forEach((el) => {
+    el.style.display = state.showTagColumn ? '' : 'none';
+  });
+}
+
 function renderStandings(items) {
   const tbody = $('#standingsTable tbody');
   tbody.innerHTML = '';
@@ -83,7 +90,7 @@ function renderStandings(items) {
     const total = typeof p.total_time_ms === 'number' ? secondsWithMs(p.total_time_ms) : '';
     tr.innerHTML = `
       <td>${idx + 1}</td>
-      <td>${p.tag_id}</td>
+      <td class="tag-col">${p.tag_id}</td>
       <td>${bib}</td>
       <td>${name}</td>
       <td>${p.laps}</td>
@@ -94,6 +101,7 @@ function renderStandings(items) {
     `;
     tbody.appendChild(tr);
   });
+  applyTagColumnVisibility();
 }
 
 function formatMs(ms) {
@@ -142,7 +150,16 @@ function connectSSE() {
 
 function init() {
   const input = $('#backendUrl');
+  const tagToggle = $('#tagColumnToggle');
   input.value = state.backend;
+  tagToggle.checked = state.showTagColumn;
+  applyTagColumnVisibility();
+
+  tagToggle.addEventListener('change', (e) => {
+    state.showTagColumn = e.target.checked;
+    applyTagColumnVisibility();
+  });
+
   $('#connectBtn').addEventListener('click', async () => {
     saveBackend(input.value);
     setStatus('Connecting...');
