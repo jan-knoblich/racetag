@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Runtime / data
+*.log
+logs/
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Secrets / env
+.env
+.env.local
+.env.*.local
+
+# PyInstaller artefacts
+apps/desktop/build/
+apps/desktop/dist/
+*.spec.bak
+
+# Icon intermediates
+apps/desktop/icons/*.iconset/
