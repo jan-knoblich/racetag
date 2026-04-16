@@ -1,0 +1,50 @@
+paclema@PB460:~/test/racetag-ingestion-service$ python3 server.py --ip 192.168.1.130 --channels all --event-delimiter $'\r\n\r\n' --data-delimiter $'\r\n\r\n' --raw
+[2025-09-27 17:14:52.250] Connecting to EVENT at 192.168.1.130:50008...
+[2025-09-27 17:14:52.250] Connecting to DATA at 192.168.1.130:50009...
+[2025-09-27 17:14:52.250] Connecting to CONTROL at 192.168.1.130:50007...
+[2025-09-27 17:14:52.251] DATA connection refused at 192.168.1.130:50009. Skipping this channel.
+[2025-09-27 17:14:52.252] EVENT connected. Waiting for messages...
+
+[2025-09-27 17:14:52.252] CONTROL connected. Waiting for messages...
+
+[2025-09-27 17:14:52.549] [EVENT] << 28 bytes
+[2025-09-27 17:14:52.550] [COORD] event.session id set to 17
+[2025-09-27 17:14:52.550] [CONTROL] >> (auto) setup.operating_mode=active
+[2025-09-27 17:14:52.553] [CONTROL] << 6 bytes
+[2025-09-27 17:14:52.553] [CONTROL] [CTRL] ok
+[2025-09-27 17:14:52.600] [CONTROL] >> (auto) reader.events.bind(id = 17)
+[2025-09-27 17:14:52.602] [CONTROL] << 6 bytes
+[2025-09-27 17:14:52.602] [CONTROL] [CTRL] ok
+[2025-09-27 17:14:52.650] [CONTROL] >> (auto) reader.events.unregister(name = event.tag.report)
+[2025-09-27 17:14:52.652] [CONTROL] << 62 bytes
+[2025-09-27 17:14:52.652] [CONTROL] [CTRL] error.parser.illegal_value id 17 not registered with event
+[2025-09-27 17:14:52.700] [CONTROL] >> (auto) reader.events.register(name = event.tag.arrive)
+[2025-09-27 17:14:52.702] [CONTROL] << 6 bytes
+[2025-09-27 17:14:52.702] [CONTROL] [CTRL] ok
+[2025-09-27 17:14:52.751] [CONTROL] >> (auto) reader.events.register(name = event.tag.depart)
+[2025-09-27 17:14:52.753] [CONTROL] << 6 bytes
+[2025-09-27 17:14:52.753] [CONTROL] [CTRL] ok
+[2025-09-27 17:14:52.801] [CONTROL] >> (auto) tag.reporting.arrive_fields = tag_id time antenna
+[2025-09-27 17:14:52.818] [CONTROL] << 6 bytes
+[2025-09-27 17:14:52.819] [CONTROL] [CTRL] ok
+[2025-09-27 17:14:52.852] [CONTROL] >> (auto) tag.reporting.depart_fields = tag_id time repeat antenna
+[2025-09-27 17:14:52.887] [CONTROL] << 6 bytes
+[2025-09-27 17:14:52.888] [CONTROL] [CTRL] ok
+[2025-09-27 17:14:52.902] [CONTROL] >> (auto) tag.reporting.depart_time = 300
+[2025-09-27 17:14:52.904] [CONTROL] << 6 bytes
+[2025-09-27 17:14:52.904] [CONTROL] [CTRL] ok
+[2025-09-27 17:14:52.953] [CONTROL] >> (auto) tag.reporting.raw_tag_data = false
+[2025-09-27 17:14:52.959] [CONTROL] << 6 bytes
+[2025-09-27 17:14:52.959] [CONTROL] [CTRL] ok
+[2025-09-27 17:15:04.834] [EVENT] << 104 bytes
+[2025-09-27 17:15:04.835] [EVENT] [ARRIVE] event.tag.arrive tag_id=0xC5A1BE1B694E02089950CE2217F46FBA, first=2025-09-27T15:15:04.403, antenna=1
+[2025-09-27 17:15:04.835] [EVENT] [TAG][NEW] EPC=C5A1BE1B694E02089950CE2217F46FBA
+[2025-09-27 17:15:08.272] [EVENT] << 115 bytes
+[2025-09-27 17:15:08.272] [EVENT] [DEPART] event.tag.depart tag_id=0xC5A1BE1B694E02089950CE2217F46FBA, last=2025-09-27T15:15:07.392, antenna=1, repeat=314
+[2025-09-27 17:15:08.272] [EVENT] [TAG] EPC=C5A1BE1B694E02089950CE2217F46FBA
+[2025-09-27 17:15:26.214] [EVENT] << 104 bytes
+[2025-09-27 17:15:26.214] [EVENT] [ARRIVE] event.tag.arrive tag_id=0xC5A1BE1B694E02089950CE2217F46FBA, first=2025-09-27T15:15:25.537, antenna=1
+[2025-09-27 17:15:26.214] [EVENT] [TAG] EPC=C5A1BE1B694E02089950CE2217F46FBA
+[2025-09-27 17:15:28.657] [EVENT] << 115 bytes
+[2025-09-27 17:15:28.657] [EVENT] [DEPART] event.tag.depart tag_id=0xC5A1BE1B694E02089950CE2217F46FBA, last=2025-09-27T15:15:27.606, antenna=1, repeat=582
+[2025-09-27 17:15:28.657] [EVENT] [TAG] EPC=C5A1BE1B694E02089950CE2217F46FBA

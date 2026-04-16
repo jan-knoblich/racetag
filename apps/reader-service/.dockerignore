@@ -1,0 +1,17 @@
+# Exclude local files from docker context
+.git
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.logs
+.vscode
+.idea
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+venv
+.build
