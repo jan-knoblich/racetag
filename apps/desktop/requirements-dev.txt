@@ -1,1 +1,4 @@
 pytest>=8,<9
+# httpx is required by fastapi.testclient.TestClient, used in
+# test_app.py::test_build_combined_app_mounts_frontend.
+httpx>=0.27
