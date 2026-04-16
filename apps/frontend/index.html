@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Racetag Live</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Racetag Live</h1>
+      <div class="controls">
+        <label>Backend URL
+          <input id="backendUrl" type="text" />
+        </label>
+        <button id="connectBtn">Connect</button>
+        <input id="csvFile" type="file" accept=".csv" style="display: none;" />
+        <button id="importCsvBtn">Import CSV</button>
+        <label class="toggle-control">
+          <input id="tagColumnToggle" type="checkbox" checked />
+          Show Tag
+        </label>
+      </div>
+      <div class="status" id="status">Disconnected</div>
+    </header>
+
+    <main>
+      <section>
+        <h2>Standings</h2>
+        <table id="standingsTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th class="tag-col">Tag</th>
+              <th>Bib</th>
+              <th>Name</th>
+              <th>Laps</th>
+              <th>Finished</th>
+              <th>Last pass</th>
+              <th>Gap</th>
+              <th>Total time (s)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script src="./api.js"></script>
+    <script src="./script.js"></script>
+  </body>
+  </html>

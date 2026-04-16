@@ -1,0 +1,13 @@
+services:
+  racetag-frontend:
+    build: .
+    image: racetag-frontend:latest
+    container_name: racetag-frontend
+    env_file:
+      - .env
+    environment:
+      - RACETAG_FRONTEND_API_KEY=${RACETAG_FRONTEND_API_KEY}
+      - RACETAG_FRONTEND_BACKEND_URL=${RACETAG_FRONTEND_BACKEND_URL}
+    ports:
+      - "${RACETAG_FRONTEND_PORT:-8680}:80"
+    restart: unless-stopped
