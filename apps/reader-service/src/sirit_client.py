@@ -17,7 +17,7 @@ from backend_client import BackendClient, HttpBackendClient, MockBackendClient
 
 
 class SiritClient:
-    def __init__(self, ip: str, control_port: int, event_port: int, init_commands_path: Optional[str], colorize: bool, raw: bool, interactive: bool, backend_url: Optional[str] = None, backend_token: Optional[str] = None, backend_transport: str = "http"):
+    def __init__(self, ip: str, control_port: int, event_port: int, init_commands_path: Optional[str], colorize: bool, raw: bool, interactive: bool, backend_url: Optional[str] = None, backend_token: Optional[str] = None, backend_transport: str = "http", min_lap_interval_s: float = 10.0):
         self.ip = ip
         self.control_port = control_port
         self.event_port = event_port
@@ -29,8 +29,9 @@ class SiritClient:
         self.backend_token = backend_token
         self.backend_transport = backend_transport
 
+        self.min_lap_interval_s = min_lap_interval_s
         self.session = SessionState()
-        self.tags = TagTracker()
+        self.tags = TagTracker(min_lap_interval_s=min_lap_interval_s)
         self.control_sock: Optional[socket.socket] = None
         self.event_sock: Optional[socket.socket] = None
         self._control_lock = threading.Lock()
@@ -158,20 +159,23 @@ class SiritClient:
             low = msg.lower()
             if "event.tag.arrive" in low:
                 ev = self._parse_event_message("arrive", msg)
-                if ev and self.tags.mark_present(ev.tag_id):
-                    label = _color("ARRIVE", _C.GREEN) if self.colorize else "ARRIVE"
-                    print(f"[{_ts()}] [{name}] [{label}] {msg}")
-                    self._print_tag_id(ev.tag_id)
-                    self._emit_event(ev)
+                if ev:
+                    antenna = ev.antenna if ev.antenna is not None else 0
+                    if self.tags.mark_present(ev.tag_id, antenna):
+                        label = _color("ARRIVE", _C.GREEN) if self.colorize else "ARRIVE"
+                        print(f"[{_ts()}] [{name}] [{label}] {msg}")
+                        self._print_tag_id(ev.tag_id)
+                        self._emit_event(ev)
                 return
             if "event.tag.depart" in low:
                 ev = self._parse_event_message("depart", msg)
                 if ev:
-                    self.tags.mark_absent(ev.tag_id)
-                    label = _color("DEPART", _C.RED) if self.colorize else "DEPART"
-                    print(f"[{_ts()}] [{name}] [{label}] {msg}")
-                    self._print_tag_id(ev.tag_id)
-                    self._emit_event(ev)
+                    antenna = ev.antenna if ev.antenna is not None else 0
+                    if self.tags.mark_absent(ev.tag_id, antenna):
+                        label = _color("DEPART", _C.RED) if self.colorize else "DEPART"
+                        print(f"[{_ts()}] [{name}] [{label}] {msg}")
+                        self._print_tag_id(ev.tag_id)
+                        self._emit_event(ev)
                 return
         base = f"[{_ts()}] [{name}] {msg}"
         if name.upper() == "EVENT":

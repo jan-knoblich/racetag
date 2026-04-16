@@ -26,13 +26,20 @@ class Participant(BaseModel):
 
 
 class RaceState:
-    def __init__(self, total_laps: int = 20) -> None:
+    def __init__(self, total_laps: int = 20, min_pass_interval_s: float = 8.0) -> None:
         self.total_laps = total_laps
+        # Defence-in-depth (W-003 / P0-1): reject duplicate lap events that arrive
+        # within this many seconds of the previous pass for the same tag.
+        self.min_pass_interval_s = min_pass_interval_s
         self.start_time = datetime.now(timezone.utc)
         self.participants: Dict[str, Participant] = {}
 
     def add_lap(self, tag_id: str, pass_time_iso: str) -> Participant:
-        """Add a lap pass. Always increments laps and updates last_pass_time.
+        """Add a lap pass. Increments laps and updates last_pass_time.
+
+        Duplicate suppression (W-003): if `pass_time_iso` is within `min_pass_interval_s`
+        of the participant's current `last_pass_time`, the call is a no-op and the
+        unchanged Participant is returned.
 
         If the participant crosses the finish threshold for the first time, marks finished and
         freezes finish_time/total_time_ms. Subsequent passes will keep laps and last_pass_time
@@ -42,6 +49,15 @@ class RaceState:
         if p is None:
             p = Participant(tag_id=tag_id)
             self.participants[tag_id] = p
+
+        # Cooldown check: suppress passes that arrive too soon after the last one.
+        if p.last_pass_time is not None:
+            delta_s = abs(
+                (parse_iso(pass_time_iso) - parse_iso(p.last_pass_time)).total_seconds()
+            )
+            if delta_s < self.min_pass_interval_s:
+                return p
+
         p.laps += 1
         p.last_pass_time = pass_time_iso
         if not p.finished and p.laps >= self.total_laps:

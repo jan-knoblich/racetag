@@ -41,6 +41,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=os.getenv("BACKEND_TRANSPORT", "http"),
         help="Type of Backend transport implementation to use; (http) or for testing (mock)",
     )
+    parser.add_argument(
+        "--min-lap-interval",
+        type=float,
+        default=float(os.getenv("MIN_LAP_INTERVAL_S", "10.0")),
+        help="Minimum seconds between two forwarded arrive events for the same tag (env: MIN_LAP_INTERVAL_S, default: 10.0)",
+    )
     args = parser.parse_args(argv)
 
     # Validate required IP (from CLI or env)
@@ -58,6 +64,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         backend_url=args.backend_url,
         backend_token=args.backend_token,
         backend_transport=args.backend_transport,
+        min_lap_interval_s=args.min_lap_interval,
     )
     
     # Install signal handlers for graceful shutdown in containers (SIGTERM) and terminals (SIGINT)
