@@ -1,0 +1,5 @@
+pywebview>=5.3
+uvicorn[standard]>=0.30
+fastapi>=0.110
+# backend + reader-service runtime deps are installed separately via their own
+# requirements.txt files (and bundled via PyInstaller spec in W-071/W-072).
