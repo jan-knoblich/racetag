@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            spec: pyinstaller.mac.spec
+            artifact_glob: dist/Racetag.app
+            zip_name: Racetag-mac.zip
+            bundle_kind: app
+          - os: windows-latest
+            spec: pyinstaller.win.spec
+            artifact_glob: dist/Racetag
+            zip_name: Racetag-win.zip
+            bundle_kind: dir
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend + reader-service + desktop deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/backend/requirements.txt
+          pip install -r apps/reader-service/requirements.txt
+          pip install -r apps/desktop/requirements.txt
+          pip install pyinstaller
+
+      - name: Generate Windows version info
+        if: matrix.os == 'windows-latest'
+        working-directory: apps/desktop
+        run: python generate_win_version_info.py
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: echo "version=$(cat apps/desktop/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Build with PyInstaller (macOS)
+        if: matrix.os == 'macos-latest'
+        working-directory: apps/desktop
+        run: pyinstaller ${{ matrix.spec }} --clean --noconfirm
+
+      - name: Build with PyInstaller (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: apps/desktop
+        run: pyinstaller ${{ matrix.spec }} --clean --noconfirm
+
+      - name: Package artefact (macOS)
+        if: matrix.os == 'macos-latest'
+        working-directory: apps/desktop/dist
+        run: zip -r -y ../../../${{ matrix.zip_name }} Racetag.app
+
+      - name: Package artefact (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: apps/desktop/dist
+        shell: pwsh
+        run: Compress-Archive -Path Racetag -DestinationPath ../../../${{ matrix.zip_name }}
+
+      - name: Rename artefact with version
+        shell: bash
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          sha="${GITHUB_SHA:0:7}"
+          case "${{ matrix.os }}" in
+            macos-latest)   mv "${{ matrix.zip_name }}" "Racetag-${v}+${sha}-mac.zip" ;;
+            windows-latest) mv "${{ matrix.zip_name }}" "Racetag-${v}+${sha}-win.zip" ;;
+          esac
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: racetag-${{ matrix.os }}
+          path: Racetag-*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Collect assets
+        id: collect
+        run: |
+          mkdir -p release
+          find dist -type f -name "Racetag-*.zip" -exec cp {} release/ \;
+          ls -la release/
+          echo "assets<<EOF" >> "$GITHUB_OUTPUT"
+          for f in release/*.zip; do echo "$f" >> "$GITHUB_OUTPUT"; done
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.collect.outputs.assets }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}

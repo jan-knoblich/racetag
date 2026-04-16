@@ -33,7 +33,8 @@ services:
     container_name: racetag-reader-service
     restart: unless-stopped
     env_file:
-      - ./apps/reader-service/.env
+      - path: ./apps/reader-service/.env
+        required: false
     network_mode: host
     depends_on:
       - racetag-backend
