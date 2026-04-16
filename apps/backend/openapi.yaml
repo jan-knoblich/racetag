@@ -48,13 +48,97 @@ paths:
   /stream:
     get:
       summary: Server-Sent Events stream for live updates
+      description: |
+        Emits newline-delimited `data:` frames. Known event types:
+        - `lap` – a tag has crossed the timing line.
+        - `standings` – full standings snapshot (enriched with bib/name when a rider is registered).
+        - `unknown_tag` – an `arrive` was received for a tag with no registered rider.
       responses:
         '200':
-          description: SSE stream of lap and standings updates
+          description: SSE stream of lap, standings, and unknown_tag events
           content:
             text/event-stream:
               schema:
                 type: string
+
+  /riders:
+    post:
+      summary: Register or update a rider for a tag
+      description: Upsert semantics — re-POSTing with the same tag_id updates bib/name but preserves created_at.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RiderCreateDTO'
+      responses:
+        '201':
+          description: Rider created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RiderDTO'
+    get:
+      summary: List all registered riders
+      responses:
+        '200':
+          description: All riders
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RidersListDTO'
+
+  /riders/recent-reads:
+    get:
+      summary: Recent unknown-tag reads
+      description: Returns the last N arrive events for tags that have no registered rider, newest first.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Recent unknown-tag reads in reverse-chronological order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecentReadsListDTO'
+
+  /riders/{tag_id}:
+    get:
+      summary: Get a rider by tag id
+      parameters:
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The rider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RiderDTO'
+        '404':
+          description: No rider registered for this tag
+    delete:
+      summary: Delete a rider
+      parameters:
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Rider deleted
+        '404':
+          description: No rider registered for this tag
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -142,6 +226,81 @@ components:
           type: integer
           nullable: true
           description: Number of laps behind the leader (null or 0 if on same lap)
+        bib:
+          type: string
+          nullable: true
+          description: Rider bib number (null if no rider registered for this tag)
+        name:
+          type: string
+          nullable: true
+          description: Rider name (null if no rider registered for this tag)
+
+    RiderDTO:
+      type: object
+      required: [tag_id, bib, name, created_at]
+      properties:
+        tag_id:
+          type: string
+          description: RFID tag id (uppercase hex, primary key)
+        bib:
+          type: string
+          description: Bib number (stored as string to preserve leading zeros)
+        name:
+          type: string
+          description: Rider display name
+        created_at:
+          type: string
+          format: date-time
+          description: UTC timestamp when the rider was first registered
+
+    RiderCreateDTO:
+      type: object
+      required: [tag_id, bib, name]
+      properties:
+        tag_id:
+          type: string
+        bib:
+          type: string
+        name:
+          type: string
+
+    RidersListDTO:
+      type: object
+      required: [count, items]
+      properties:
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RiderDTO'
+
+    RecentReadDTO:
+      type: object
+      required: [tag_id, timestamp]
+      properties:
+        tag_id:
+          type: string
+        timestamp:
+          type: string
+          description: ISO8601 timestamp of the arrive event
+        antenna:
+          type: integer
+          nullable: true
+        rssi:
+          type: integer
+          nullable: true
+
+    RecentReadsListDTO:
+      type: object
+      required: [count, items]
+      properties:
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecentReadDTO'
 
     ClassificationDTO:
       type: object

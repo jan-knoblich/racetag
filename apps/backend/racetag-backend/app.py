@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import collections
+import threading
 from datetime import datetime, timezone
 import json
 import os
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, Depends, HTTPException, Security
+from fastapi import FastAPI, Depends, HTTPException, Query, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader
 
 from domain.race import RaceState
+from domain.riders import Rider, RiderStore
 from models_api import (
     EventType,
     TagEventDTO,
@@ -19,8 +22,12 @@ from models_api import (
     RaceDTO,
     BatchIngestResultDTO,
     TagEventBatchDTO,
+    RiderDTO,
+    RiderCreateDTO,
+    RidersListDTO,
+    RecentReadDTO,
+    RecentReadsListDTO,
 )
-
 
 
 # API Key using env RACETAG_API_KEY
@@ -41,9 +48,9 @@ def require_api_key(api_key: str = Security(_api_key_header)) -> bool:
 _global_deps = [Depends(require_api_key)] if _API_KEY else []
 
 app = FastAPI(
-    title="Racetag Backend", 
+    title="Racetag Backend",
     dependencies=_global_deps
-    )
+)
 
 # CORS for local static frontend (adjust origins for production)
 app.add_middleware(
@@ -64,10 +71,31 @@ events: List[TagEventDTO] = []
 # SSE subscribers: list of buffers
 subscribers: List[List[Dict[str, Any]]] = []
 
+# Rider registry (W-010)
+rider_store = RiderStore()
+
+# W-011: ring buffer of recent unknown-tag reads (max 50, newest at right)
+_UNKNOWN_TAG_CAP = 50
+recent_unknown_tags: collections.deque = collections.deque(maxlen=_UNKNOWN_TAG_CAP)
+_unknown_tags_lock = threading.Lock()
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
+
+def _rider_to_dto(rider: Rider) -> RiderDTO:
+    return RiderDTO(
+        tag_id=rider.tag_id,
+        bib=rider.bib,
+        name=rider.name,
+        created_at=rider.created_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tag-event ingest
+# ---------------------------------------------------------------------------
 
 @app.post("/events/tag/batch", response_model=BatchIngestResultDTO)
 def post_events_batch(batch: TagEventBatchDTO):
@@ -95,21 +123,60 @@ def post_events_batch(batch: TagEventBatchDTO):
                     q.append(lap_payload)
                 except Exception:
                     pass
-            # Broadcast updated standings snapshot
-            table = [s.model_dump() for s in race.standings()]
+            # Broadcast updated standings snapshot (enriched with rider info)
+            table = _build_standings_items()
             standings_payload = {"type": "standings", "items": table}
             for q in list(subscribers):
                 try:
                     q.append(standings_payload)
                 except Exception:
                     pass
+
+            # W-011: if tag has no registered rider, fire unknown_tag SSE + add to ring buffer
+            if ev.tag_id not in rider_store:
+                unknown_payload: Dict[str, Any] = {
+                    "type": "unknown_tag",
+                    "tag_id": ev.tag_id,
+                    "timestamp": ev.timestamp,
+                    "antenna": ev.antenna,
+                    "rssi": ev.rssi,
+                }
+                for q in list(subscribers):
+                    try:
+                        q.append(unknown_payload)
+                    except Exception:
+                        pass
+                ring_entry = {
+                    "tag_id": ev.tag_id,
+                    "timestamp": ev.timestamp,
+                    "antenna": ev.antenna,
+                    "rssi": ev.rssi,
+                }
+                with _unknown_tags_lock:
+                    recent_unknown_tags.append(ring_entry)
+
     return {"events_processed": accepted}
+
+
+# ---------------------------------------------------------------------------
+# Classification / race
+# ---------------------------------------------------------------------------
+
+def _build_standings_items() -> List[Dict[str, Any]]:
+    """Build standings list enriched with rider bib/name from rider_store."""
+    result = []
+    for p in race.standings():
+        d = p.model_dump()
+        rider = rider_store.get(p.tag_id)
+        d["bib"] = rider.bib if rider else None
+        d["name"] = rider.name if rider else None
+        result.append(d)
+    return result
 
 
 @app.get("/classification", response_model=ClassificationDTO)
 def get_classification():
-    # Current classification ordered by race rules
-    items = [ParticipantDTO(**p.model_dump()).model_dump() for p in race.standings()]
+    items = _build_standings_items()
     return {"count": len(items), "standings": items}
 
 
@@ -118,9 +185,13 @@ def get_race():
     return {
         "total_laps": race.total_laps,
         "start_time": race.start_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-        "participants": [ParticipantDTO(**p.model_dump()).model_dump() for p in race.participants.values()],
+        "participants": _build_standings_items(),
     }
 
+
+# ---------------------------------------------------------------------------
+# SSE stream
+# ---------------------------------------------------------------------------
 
 @app.get("/stream")
 def stream_events():
@@ -150,3 +221,61 @@ def stream_events():
                 pass
 
     return StreamingResponse(iterator(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Rider CRUD (W-010)
+# ---------------------------------------------------------------------------
+
+@app.post("/riders", response_model=RiderDTO, status_code=201)
+def post_rider(body: RiderCreateDTO):
+    """Register or update a rider for a given tag_id. Returns 201 (upsert semantics)."""
+    existing = rider_store.get(body.tag_id)
+    created_at = existing.created_at if existing else datetime.now(timezone.utc)
+    rider = Rider(
+        tag_id=body.tag_id,
+        bib=body.bib,
+        name=body.name,
+        created_at=created_at,
+    )
+    rider_store.upsert(rider)
+    return _rider_to_dto(rider)
+
+
+@app.get("/riders/recent-reads", response_model=RecentReadsListDTO)
+def get_recent_reads(limit: int = Query(default=10, ge=1, le=50)):
+    """Return the most recent unknown-tag reads in reverse-chronological order (newest first).
+
+    Query param `limit` is capped at 50 (the ring-buffer size).
+    """
+    with _unknown_tags_lock:
+        # deque is ordered oldest→newest; reverse for newest-first
+        snapshot = list(recent_unknown_tags)
+    snapshot.reverse()
+    sliced = snapshot[:limit]
+    items = [RecentReadDTO(**entry) for entry in sliced]
+    return RecentReadsListDTO(count=len(items), items=items)
+
+
+@app.get("/riders", response_model=RidersListDTO)
+def get_riders():
+    """List all registered riders."""
+    all_riders = rider_store.list()
+    return RidersListDTO(count=len(all_riders), items=[_rider_to_dto(r) for r in all_riders])
+
+
+@app.get("/riders/{tag_id}", response_model=RiderDTO)
+def get_rider(tag_id: str):
+    """Return a single rider by tag_id. 404 if not registered."""
+    rider = rider_store.get(tag_id)
+    if rider is None:
+        raise HTTPException(status_code=404, detail=f"No rider registered for tag '{tag_id}'")
+    return _rider_to_dto(rider)
+
+
+@app.delete("/riders/{tag_id}", status_code=204)
+def delete_rider(tag_id: str):
+    """Delete a rider by tag_id. 404 if not found."""
+    removed = rider_store.delete(tag_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"No rider registered for tag '{tag_id}'")
