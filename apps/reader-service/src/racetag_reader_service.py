@@ -14,7 +14,7 @@ from typing import List, Optional
 import os
 
 from sirit_client import SiritClient
-from utils import _ts
+from utils import _ts, get_logger
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -47,7 +47,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=float(os.getenv("MIN_LAP_INTERVAL_S", "10.0")),
         help="Minimum seconds between two forwarded arrive events for the same tag (env: MIN_LAP_INTERVAL_S, default: 10.0)",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=_env_flag("RACETAG_DEBUG", False),
+        help="Enable debug logging (env: RACETAG_DEBUG=true); also writes logs/reader.log",
+    )
     args = parser.parse_args(argv)
+
+    # W-060: apply debug flag before any logger is created
+    if args.debug:
+        os.environ["RACETAG_DEBUG"] = "1"
 
     # Validate required IP (from CLI or env)
     if not args.ip:
@@ -68,13 +78,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     
     # Install signal handlers for graceful shutdown in containers (SIGTERM) and terminals (SIGINT)
+    _log = get_logger("reader.main")
+
     def _on_signal(signum, frame):  # noqa: ARG001
-        name = {
+        sig_name = {
             getattr(signal, 'SIGINT', None): 'SIGINT',
             getattr(signal, 'SIGTERM', None): 'SIGTERM',
             getattr(signal, 'SIGQUIT', None): 'SIGQUIT',
         }.get(signum, str(signum))
-        print(f"[{_ts()}] Received {name}; stopping...")
+        _log.info("Received %s; stopping...", sig_name)
         client.request_stop()
 
     for sig in (getattr(signal, 'SIGINT', None), getattr(signal, 'SIGTERM', None), getattr(signal, 'SIGQUIT', None)):
@@ -89,7 +101,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         client.start()
         client.run_forever()
     except RuntimeError as e:
-        print(f"[{_ts()}] Startup failed: {e}")
+        _log.error("Startup failed: %s", e)
         client.stop()
         return 1
     return 0

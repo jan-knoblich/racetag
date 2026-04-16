@@ -50,6 +50,10 @@ CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]
 # Stage: runtime-nocodegen (optional, skip codegen)
 # Build with: docker build --target runtime-nocodegen -t racetag-backend .
 #############################################
+# W-040: RACETAG_API_KEY is intentionally NOT set in this image.
+# The packaged desktop build ships without API key auth enabled by default.
+# To enable key auth, pass -e RACETAG_API_KEY=<your-key> at docker run time
+# (or set it in a .env file with docker compose).  See ISSUES.md P1-7.
 FROM runtime-base AS runtime-nocodegen
 
 #############################################

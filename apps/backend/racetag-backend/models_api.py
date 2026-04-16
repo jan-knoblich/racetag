@@ -22,7 +22,7 @@ class EventType(Enum):
 class TagEventDTO(BaseModel):
     source: str = Field(..., example='sirit-510')
     reader_ip: str
-    reader_serial: str
+    reader_serial: str | None = None
     timestamp: str = Field(
         ...,
         description='ISO8601 with milliseconds and Z',

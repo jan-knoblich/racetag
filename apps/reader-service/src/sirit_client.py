@@ -11,9 +11,11 @@ from typing import Dict, List, Optional
 from session_state import SessionState
 from tag_tracker import TagTracker
 
-from utils import _ts, _color, _C, connect_socket
+from utils import _ts, _color, _C, connect_socket, get_logger, parse_reader_time
 from models import TagEvent, EventType
 from backend_client import BackendClient, HttpBackendClient, MockBackendClient
+
+logger = get_logger("reader.sirit")
 
 
 class SiritClient:
@@ -77,7 +79,7 @@ class SiritClient:
             while not self._stop_event.is_set():
                 time.sleep(0.5)
         except KeyboardInterrupt:
-            print(f"\n[{_ts()}] Interrupted by user.")
+            logger.info("Interrupted by user.")
         finally:
             self.stop()
 
@@ -120,11 +122,11 @@ class SiritClient:
             while not self._stop_event.is_set():
                 chunk = sock.recv(4096)
                 if not chunk:
-                    print(f"[{_ts()}] {name} connection closed by the reader.")
+                    logger.info("%s connection closed by the reader.", name)
                     break
                 data = chunk.decode("utf-8", errors="replace")
                 if self.raw:
-                    print(f"[{_ts()}] [{name}] <<RAW_CHUNK {len(chunk)} bytes>> {repr(data)}")
+                    logger.debug("[%s] <<RAW_CHUNK %d bytes>> %r", name, len(chunk), data)
                 buffer += data
                 while True:
                     idx = buffer.find(delim)
@@ -134,10 +136,10 @@ class SiritClient:
                     msg = msg.strip("\r\n")
                     if msg:
                         if self.raw:
-                            print(f"[{_ts()}] [{name}] <<RAW_MSG>> {msg}")
+                            logger.debug("[%s] <<RAW_MSG>> %s", name, msg)
                         self._handle_message(name, msg)
         except OSError as e:
-            print(f"[{_ts()}] {name} socket error: {e}")
+            logger.error("%s socket error: %s", name, e)
         finally:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
@@ -150,11 +152,23 @@ class SiritClient:
 
     def _handle_message(self, name: str, msg: str):
         if name.upper() == "EVENT":
-            if self.session.id is None:
-                m = re.search(r"event\.connection\s+id\s*=\s*(\d+)", msg, re.IGNORECASE)
-                if m:
-                    self.session.id = int(m.group(1))
-                    print(f"[{_ts()}] [SESSION] obtained id from EVENT: {self.session.id}")
+            # W-061: handle connection id changes — reset bind if session id differs
+            m = re.search(r"event\.connection\s+id\s*=\s*(\d+)", msg, re.IGNORECASE)
+            if m:
+                new_id = int(m.group(1))
+                if self.session.id is None:
+                    # First time: record and bind
+                    self.session.id = new_id
+                    logger.info("[SESSION] obtained id from EVENT: %d", self.session.id)
+                    self._maybe_bind_and_config()
+                elif new_id != self.session.id:
+                    # W-061: reader reconnected with a new session id — rebind
+                    logger.warning(
+                        "[SESSION] connection id changed %d -> %d; resetting bind and reconfiguring",
+                        self.session.id, new_id,
+                    )
+                    self.session.id = new_id
+                    self.session.bound = False
                     self._maybe_bind_and_config()
             low = msg.lower()
             if "event.tag.arrive" in low:
@@ -163,7 +177,7 @@ class SiritClient:
                     antenna = ev.antenna if ev.antenna is not None else 0
                     if self.tags.mark_present(ev.tag_id, antenna):
                         label = _color("ARRIVE", _C.GREEN) if self.colorize else "ARRIVE"
-                        print(f"[{_ts()}] [{name}] [{label}] {msg}")
+                        logger.info("[%s] [%s] %s", name, label, msg)
                         self._print_tag_id(ev.tag_id)
                         self._emit_event(ev)
                 return
@@ -173,24 +187,25 @@ class SiritClient:
                     antenna = ev.antenna if ev.antenna is not None else 0
                     if self.tags.mark_absent(ev.tag_id, antenna):
                         label = _color("DEPART", _C.RED) if self.colorize else "DEPART"
-                        print(f"[{_ts()}] [{name}] [{label}] {msg}")
+                        logger.info("[%s] [%s] %s", name, label, msg)
                         self._print_tag_id(ev.tag_id)
                         self._emit_event(ev)
                 return
-        base = f"[{_ts()}] [{name}] {msg}"
         if name.upper() == "EVENT":
             tag = "EVENT"
-            base = f"[{_ts()}] [{name}] [{_color(tag, _C.CYAN) if self.colorize else tag}] {msg}"
+            base = "[%s] [%s] %s"
+            logger.info(base, name, _color(tag, _C.CYAN) if self.colorize else tag, msg)
         elif name.upper() == "CONTROL":
             tag = "CTRL"
-            base = f"[{_ts()}] [{name}] [{_color(tag, _C.YELLOW) if self.colorize else tag}] {msg}"
+            logger.info("[%s] [%s] %s", name, _color(tag, _C.YELLOW) if self.colorize else tag, msg)
             # Capture reader serial number once when still unknown
             if self.reader_serial is None:
                 m = re.match(r"ok\s+([0-9A-Fa-f]{8,})\b", msg.strip())
                 if m:
                     self.reader_serial = m.group(1).upper()
-                    print(f"[{_ts()}] [READER] serial_number={self.reader_serial}")
-        print(base)
+                    logger.info("[READER] serial_number=%s", self.reader_serial)
+        else:
+            logger.info("[%s] %s", name, msg)
 
     def _send_control(self, cmds: List[str]):
         if not self.control_sock:
@@ -199,10 +214,10 @@ class SiritClient:
             with self._control_lock:
                 for c in cmds:
                     self.control_sock.sendall((c + "\r\n").encode("utf-8", errors="ignore"))
-                    print(f"[{_ts()}] [CONTROL] >> {c}")
+                    logger.info("[CONTROL] >> %s", c)
                     time.sleep(0.02)
         except OSError as e:
-            print(f"[{_ts()}] [CONTROL] send error: {e}")
+            logger.error("[CONTROL] send error: %s", e)
 
     def _maybe_bind_and_config(self):
         if self.session.id is None or self.session.bound:
@@ -210,7 +225,7 @@ class SiritClient:
         sid = self.session.id
         try:
             self._send_control([f"reader.events.bind(id = {sid})"])
-            print(f"[{_ts()}] [SESSION] bound event channel id {sid}")
+            logger.info("[SESSION] bound event channel id %d", sid)
             extra_cmds: List[str] = []
             if self.init_commands_path:
                 try:
@@ -221,15 +236,15 @@ class SiritClient:
                                 continue
                             extra_cmds.append(line)
                 except Exception as e:
-                    print(f"[{_ts()}] [CONFIG] Could not read init commands file '{self.init_commands_path}': {e}. Continuing without extra config.")
+                    logger.warning("[CONFIG] Could not read init commands file '%s': %s. Continuing without extra config.", self.init_commands_path, e)
             self._send_control(extra_cmds)
             if extra_cmds:
-                print(f"[{_ts()}] [SESSION] configuration applied ({len(extra_cmds)} commands from {self.init_commands_path} init file)")
+                logger.info("[SESSION] configuration applied (%d commands from %s init file)", len(extra_cmds), self.init_commands_path)
             else:
-                print(f"[{_ts()}] [SESSION] no extra configuration commands were sent (file empty or missing)")
+                logger.info("[SESSION] no extra configuration commands were sent (file empty or missing)")
             self.session.bound = True
         except Exception as e:
-            print(f"[{_ts()}] [SESSION] configuration failed: {e}")
+            logger.error("[SESSION] configuration failed: %s", e)
 
     @staticmethod
     def _extract_kv(msg: str) -> Dict[str, str]:
@@ -255,7 +270,7 @@ class SiritClient:
             prefix = f"[TAG][{_color('NEW', _C.GREEN)}]" if self.colorize else "[TAG][NEW]"
         else:
             prefix = f"[{_color('TAG', _C.DIM)}]" if self.colorize else "[TAG]"
-        print(f"[{_ts()}] [EVENT] {prefix} TAG={tag_hex}")
+        logger.info("[EVENT] %s TAG=%s", prefix, tag_hex)
 
     def _emit_event(self, ev: TagEvent) -> None:
         if not self._backend:
@@ -263,7 +278,7 @@ class SiritClient:
         try:
             self._backend.send(ev)
         except Exception as e:
-            print(f"[{_ts()}] [BACKEND] error queueing event: {e}")
+            logger.error("[BACKEND] error queueing event: %s", e)
 
     def _parse_event_message(self, event_type: EventType, msg: str) -> Optional[TagEvent]:
         """Parse a raw EVENT line into a TagEvent by first building a typed event data model.
@@ -280,10 +295,18 @@ class SiritClient:
         if tag_hex.startswith("0X"):
             tag_hex = tag_hex[2:]
 
+        # W-030: use reader-supplied timestamp (first/last) when available; fall back to wall clock.
+        if event_type == "arrive" and "first" in kv:
+            ts = parse_reader_time(kv["first"])
+        elif event_type == "depart" and "last" in kv:
+            ts = parse_reader_time(kv["last"])
+        else:
+            ts = self._now_iso()
+
         fields: Dict[str, object] = {
             "source": "sirit-510",
             "reader_ip": self.ip,
-            "timestamp": self._now_iso(),
+            "timestamp": ts,
             "event_type": event_type,
             "tag_id": tag_hex,
             "session_id": self.session.id,
@@ -313,7 +336,7 @@ class SiritClient:
             try:
                 if self.control_sock:
                     self.control_sock.sendall((c + "\r\n").encode("utf-8"))
-                    print(f"[{_ts()}] [CONTROL] >> {c}")
+                    logger.info("[CONTROL] >> %s", c)
             except OSError as e:
-                print(f"[{_ts()}] [CONTROL] send error: {e}")
+                logger.error("[CONTROL] send error: %s", e)
                 break

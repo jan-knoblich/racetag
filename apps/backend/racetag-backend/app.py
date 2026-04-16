@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import collections
 import threading
 from datetime import datetime, timezone
@@ -30,7 +31,13 @@ from models_api import (
 )
 
 
-# API Key using env RACETAG_API_KEY
+# ---------------------------------------------------------------------------
+# API Key auth
+# ---------------------------------------------------------------------------
+# RACETAG_API_KEY is intentionally NOT set in the default packaged build.
+# When unset the require_api_key dependency becomes a no-op, so the app works
+# out-of-the-box without any key management (security is not a priority for
+# the packaged desktop build — see W-040 / ISSUES.md P1-7).
 API_KEY_HEADER_NAME = "X-API-Key"
 _API_KEY = os.getenv("RACETAG_API_KEY")
 _RACE_TOTAL_LAPS = int(os.getenv("RACE_TOTAL_LAPS", "5"))
@@ -62,14 +69,35 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------------------
+# Race state
+# ---------------------------------------------------------------------------
+
 # Global single race for MVP
 race = RaceState(total_laps=_RACE_TOTAL_LAPS, min_pass_interval_s=_RACE_MIN_PASS_INTERVAL_S)
 
 # Debug/event store
 events: List[TagEventDTO] = []
 
-# SSE subscribers: list of buffers
-subscribers: List[List[Dict[str, Any]]] = []
+# ---------------------------------------------------------------------------
+# W-032: SSE subscribers — each subscriber is an asyncio.Queue.
+#
+# The subscribers list is mutated from both the async /stream handler and the
+# sync POST /events/tag/batch route.  We protect list mutation with a
+# threading.Lock (safe across sync routes and asyncio tasks in the same
+# process).  Publishing from the sync route uses
+# loop.call_soon_threadsafe(queue.put_nowait, payload) so the queue stays
+# fully async-compatible.
+#
+# Backward-compat shim: test_unknown_tag.py directly appends a plain list to
+# `subscribers` and calls list.append() on it.  We keep that working by
+# accepting both asyncio.Queue objects and plain list objects in the fan-out
+# loop: if the element has a `put_nowait` method we treat it as a queue;
+# otherwise we call `.append()` on it (legacy list-based subscriber).
+# ---------------------------------------------------------------------------
+
+subscribers: List[Any] = []   # elements are asyncio.Queue or legacy list
+_subscribers_lock = threading.Lock()
 
 # Rider registry (W-010)
 rider_store = RiderStore()
@@ -91,6 +119,36 @@ def _rider_to_dto(rider: Rider) -> RiderDTO:
         name=rider.name,
         created_at=rider.created_at,
     )
+
+
+def _publish(payload: Dict[str, Any]) -> None:
+    """Fan-out *payload* to all current subscribers.
+
+    Safe to call from both sync and async contexts.  Handles both queue-based
+    subscribers (asyncio.Queue) and legacy list-based subscribers (used by
+    existing tests that directly append a plain list to `subscribers`).
+    """
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = None
+
+    with _subscribers_lock:
+        current = list(subscribers)
+
+    for sub in current:
+        try:
+            if hasattr(sub, "put_nowait"):
+                # asyncio.Queue — schedule from whichever thread we're on
+                if loop is not None and loop.is_running():
+                    loop.call_soon_threadsafe(sub.put_nowait, payload)
+                else:
+                    sub.put_nowait(payload)
+            else:
+                # Legacy list-based subscriber (test shim)
+                sub.append(payload)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -118,19 +176,11 @@ def post_events_batch(batch: TagEventBatchDTO):
                 "finished": p.finished,
                 "last_pass_time": p.last_pass_time,
             }
-            for q in list(subscribers):
-                try:
-                    q.append(lap_payload)
-                except Exception:
-                    pass
+            _publish(lap_payload)
             # Broadcast updated standings snapshot (enriched with rider info)
             table = _build_standings_items()
             standings_payload = {"type": "standings", "items": table}
-            for q in list(subscribers):
-                try:
-                    q.append(standings_payload)
-                except Exception:
-                    pass
+            _publish(standings_payload)
 
             # W-011: if tag has no registered rider, fire unknown_tag SSE + add to ring buffer
             if ev.tag_id not in rider_store:
@@ -141,11 +191,7 @@ def post_events_batch(batch: TagEventBatchDTO):
                     "antenna": ev.antenna,
                     "rssi": ev.rssi,
                 }
-                for q in list(subscribers):
-                    try:
-                        q.append(unknown_payload)
-                    except Exception:
-                        pass
+                _publish(unknown_payload)
                 ring_entry = {
                     "tag_id": ev.tag_id,
                     "timestamp": ev.timestamp,
@@ -190,37 +236,39 @@ def get_race():
 
 
 # ---------------------------------------------------------------------------
-# SSE stream
+# W-032: async SSE stream
 # ---------------------------------------------------------------------------
 
 @app.get("/stream")
-def stream_events():
-    # Simple Server-Sent Events stream
-    client_buf: List[Dict[str, Any]] = []
-    subscribers.append(client_buf)
+async def stream_events():
+    """Server-Sent Events stream.
 
-    def iterator():
+    Each subscriber gets its own asyncio.Queue.  The publisher (post_events_batch)
+    enqueues payloads via loop.call_soon_threadsafe so the queue stays thread-safe.
+    A 15-second timeout on queue.get() yields a keepalive comment so proxies do
+    not drop the connection.
+    """
+    client_queue: asyncio.Queue = asyncio.Queue()
+    with _subscribers_lock:
+        subscribers.append(client_queue)
+
+    async def event_stream():
         try:
-            last_idx = 0
             while True:
-                if last_idx < len(client_buf):
-                    item = client_buf[last_idx]
-                    last_idx += 1
+                try:
+                    item = await asyncio.wait_for(client_queue.get(), timeout=15.0)
                     data = json.dumps(item, separators=(",", ":"))
                     yield f"data: {data}\n\n"
-                else:
-                    # heartbeat
+                except asyncio.TimeoutError:
                     yield f": keepalive {_now_iso()}\n\n"
-                    import time as _t
-
-                    _t.sleep(1)
         finally:
-            try:
-                subscribers.remove(client_buf)
-            except ValueError:
-                pass
+            with _subscribers_lock:
+                try:
+                    subscribers.remove(client_queue)
+                except ValueError:
+                    pass
 
-    return StreamingResponse(iterator(), media_type="text/event-stream")
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 # ---------------------------------------------------------------------------

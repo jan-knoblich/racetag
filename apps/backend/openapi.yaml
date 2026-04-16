@@ -148,7 +148,7 @@ components:
   schemas:
     TagEventDTO:
       type: object
-      required: [source, reader_ip, reader_serial, timestamp, event_type, tag_id]
+      required: [source, reader_ip, timestamp, event_type, tag_id]
       properties:
         source:
           type: string

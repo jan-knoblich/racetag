@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import List
 
 from models import TagEvent
-from utils import _ts
+from utils import get_logger
 from .base import BackendClient
+
+logger = get_logger("reader.backend.mock")
 
 
 class MockBackendClient(BackendClient):
@@ -17,14 +19,18 @@ class MockBackendClient(BackendClient):
         self._events: List[TagEvent] = []
 
     def start(self) -> None:
-        print(f"[{_ts()}] [BACKEND] Mock client started")
+        logger.info("[BACKEND] Mock client started")
 
     def stop(self) -> None:
-        print(f"[{_ts()}] [BACKEND] Mock client stopped (total events: {len(self._events)})")
+        logger.info("[BACKEND] Mock client stopped (total events: %d)", len(self._events))
 
     def send(self, event: TagEvent) -> None:
         self._events.append(event)
-        print(f"[{_ts()}] [BACKEND][MOCK] {event.event_type.upper()} tag={event.tag_id} ant={event.antenna} rssi={event.rssi} first={event.first} last={event.last}")
+        logger.info(
+            "[BACKEND][MOCK] %s tag=%s ant=%s rssi=%s first=%s last=%s",
+            event.event_type.upper(), event.tag_id, event.antenna, event.rssi,
+            event.first, event.last,
+        )
 
     # Optional helper for tests
     def collected(self) -> List[TagEvent]:  # pragma: no cover

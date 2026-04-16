@@ -4,7 +4,7 @@
 # You can copy this file to init_commands and edit it.
 
 # Time zone configuration
-info.time_zone=Europe/Berlin
+info.time_zone=UTC
 
 # Register the events
 reader.events.unregister(name = event.tag.report)
