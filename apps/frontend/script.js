@@ -18,6 +18,8 @@ const state = {
   // W-012: registration flow state
   awaitingRead: false,
   lastUnknownTag: null, // { tag_id, timestamp } | null
+  // W-036: current total laps setting
+  totalLaps: 5,
 };
 
 // ---------------------------------------------------------------------------
@@ -314,6 +316,51 @@ async function loadSnapshot() {
   renderStandings(data.standings || []);
 }
 
+// W-036: fetch current race config and sync totalLaps + input
+async function loadRaceConfig() {
+  try {
+    const res = await fetch(`${state.backend}/race`, { headers: getApiHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (typeof data.total_laps === 'number') {
+      state.totalLaps = data.total_laps;
+      const input = $('#totalLapsInput');
+      if (input) input.value = state.totalLaps;
+    }
+  } catch {
+    // silently ignore — config sync is best-effort
+  }
+}
+
+// W-051: fetch antenna diagnostics and render into diagnostics table
+async function refreshDiagnostics() {
+  try {
+    const res = await fetch(`${state.backend}/diagnostics/antennas?window_s=60`, {
+      headers: getApiHeaders(),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const tbody = document.querySelector('#diagnosticsTable tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    const counts = data.counts || {};
+    const antennas = Object.keys(counts).sort((a, b) => Number(a) - Number(b));
+    if (antennas.length === 0) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td colspan="2" style="color:var(--muted)">No reads in last 60 s</td>';
+      tbody.appendChild(tr);
+    } else {
+      antennas.forEach((ant) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${ant}</td><td>${counts[ant]}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+  } catch {
+    // silently ignore
+  }
+}
+
 // W-012: fetch recent-reads ring so we can open modal immediately if a tag
 // is already waiting. Called once on first connection.
 async function fetchRecentUnknownTag() {
@@ -354,6 +401,23 @@ function connectSSE() {
             openRegisterModal(data.tag_id);
           }
         }
+
+        // W-036: race reset — clear standings table locally
+        if (data?.type === 'race_reset') {
+          renderStandings([]);
+          showToast('Race has been reset');
+        }
+
+        // W-036: race updated — sync totalLaps
+        if (data?.type === 'race_updated') {
+          if (typeof data.total_laps === 'number') {
+            state.totalLaps = data.total_laps;
+            const input = $('#totalLapsInput');
+            if (input) input.value = state.totalLaps;
+            // Re-render standings so finish threshold visually updates
+            renderStandings(state.lastStandings);
+          }
+        }
       } catch {
         // ignore non-JSON payloads
       }
@@ -383,6 +447,7 @@ function init() {
       await loadSnapshot();
       connectSSE();
       fetchRecentUnknownTag();
+      loadRaceConfig();
     } catch (e) {
       console.error(e);
       setStatus('Failed to connect');
@@ -439,6 +504,76 @@ function init() {
     });
   }
 
+  // W-036: Reset race button
+  const resetRaceBtn = $('#resetRaceBtn');
+  if (resetRaceBtn) {
+    resetRaceBtn.addEventListener('click', async () => {
+      if (!confirm('Reset race? All lap data will be cleared.')) return;
+      try {
+        const res = await fetch(`${state.backend}/race/reset`, {
+          method: 'POST',
+          headers: getApiHeaders(),
+        });
+        if (res.ok) {
+          renderStandings([]);
+          showToast('Race reset');
+        } else {
+          showToast(`Reset failed: HTTP ${res.status}`);
+        }
+      } catch (err) {
+        showToast(`Reset error: ${err.message}`);
+      }
+    });
+  }
+
+  // W-036: Apply total laps button
+  const applyLapsBtn = $('#applyLapsBtn');
+  if (applyLapsBtn) {
+    applyLapsBtn.addEventListener('click', async () => {
+      const input = $('#totalLapsInput');
+      const n = parseInt(input?.value ?? '', 10);
+      if (!n || n < 1 || n > 999) {
+        showToast('Total laps must be 1–999');
+        return;
+      }
+      try {
+        const res = await fetch(`${state.backend}/race`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+          body: JSON.stringify({ total_laps: n }),
+        });
+        if (res.ok) {
+          state.totalLaps = n;
+          renderStandings(state.lastStandings);
+          showToast(`Total laps set to ${n}`);
+        } else {
+          showToast(`Failed: HTTP ${res.status}`);
+        }
+      } catch (err) {
+        showToast(`Error: ${err.message}`);
+      }
+    });
+  }
+
+  // W-051: Diagnostics panel — poll every 5 s while open
+  const diagnosticsPanel = $('#diagnosticsPanel');
+  let _diagnosticsInterval = null;
+  if (diagnosticsPanel) {
+    diagnosticsPanel.addEventListener('toggle', () => {
+      if (diagnosticsPanel.open) {
+        refreshDiagnostics();
+        _diagnosticsInterval = setInterval(() => {
+          if (diagnosticsPanel.open) {
+            refreshDiagnostics();
+          }
+        }, 5000);
+      } else {
+        clearInterval(_diagnosticsInterval);
+        _diagnosticsInterval = null;
+      }
+    });
+  }
+
   // W-012: Modal buttons
   const saveBtn = $('#modalSaveBtn');
   if (saveBtn) saveBtn.addEventListener('click', submitRegisterModal);
@@ -472,6 +607,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadSnapshot();
     connectSSE();
     fetchRecentUnknownTag();
+    loadRaceConfig();
   } catch (e) {
     console.warn('Auto-connect failed, please set backend URL and click Connect');
     setStatus('Disconnected');

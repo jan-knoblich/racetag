@@ -228,3 +228,57 @@ tbody tr:hover { background: #0b1220; }
 @media (prefers-reduced-motion: reduce) {
   .toast { transition: none; }
 }
+
+/* ---- W-036: Total-laps inline control ---- */
+.laps-control {
+  gap: 4px;
+}
+.laps-control input[type="number"] {
+  width: 56px;
+  background: #0b1220;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 14px;
+  text-align: center;
+}
+
+/* ---- W-051: Antenna diagnostics panel ---- */
+.diagnostics-panel {
+  margin-top: 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.diagnostics-panel summary {
+  padding: 8px 12px;
+  background: var(--surface);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--muted);
+  user-select: none;
+  list-style: none;
+}
+.diagnostics-panel summary::-webkit-details-marker { display: none; }
+.diagnostics-panel summary::before {
+  content: '+ ';
+  color: var(--accent);
+}
+.diagnostics-panel[open] summary::before {
+  content: '- ';
+}
+.diagnostics-panel summary:hover { background: var(--surface-hover); }
+.diagnostics-body {
+  padding: 8px 12px;
+  background: var(--bg);
+}
+#diagnosticsTable {
+  width: auto;
+  min-width: 200px;
+}
+#diagnosticsTable th,
+#diagnosticsTable td {
+  padding: 6px 12px;
+}

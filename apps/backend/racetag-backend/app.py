@@ -13,6 +13,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
 
 from domain.race import RaceState
 from domain.riders import Rider, RiderStore
@@ -84,6 +85,14 @@ storage = Storage(_data_dir / "racetag.db")
 # ---------------------------------------------------------------------------
 # Race state
 # ---------------------------------------------------------------------------
+
+# W-036: override env default with persisted total_laps if present in meta.
+_persisted_total_laps = storage.get_meta("total_laps")
+if _persisted_total_laps is not None:
+    try:
+        _RACE_TOTAL_LAPS = int(_persisted_total_laps)
+    except ValueError:
+        pass  # corrupted meta value — fall back to env default
 
 # Global single race for MVP
 race = RaceState(total_laps=_RACE_TOTAL_LAPS, min_pass_interval_s=_RACE_MIN_PASS_INTERVAL_S)
@@ -266,6 +275,57 @@ def get_race():
         "start_time": race.start_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "participants": _build_standings_items(),
     }
+
+
+# ---------------------------------------------------------------------------
+# W-036: Race reset + total-laps control
+# ---------------------------------------------------------------------------
+
+class PatchRaceBody(BaseModel):
+    total_laps: int = Field(..., ge=1, le=999)
+
+
+@app.post("/race/reset", status_code=204)
+def post_race_reset():
+    """Clear all race participants + persisted events. Preserves riders.
+
+    Broadcasts a {type: "race_reset"} SSE event. Returns 204 on success.
+    """
+    race.participants.clear()
+    storage.clear_events()
+    # Clear the in-memory events log too
+    events.clear()
+    # Clear recent unknown-tag ring buffer
+    with _unknown_tags_lock:
+        recent_unknown_tags.clear()
+    _publish({"type": "race_reset"})
+
+
+@app.patch("/race", status_code=200)
+def patch_race(body: PatchRaceBody):
+    """Update total_laps. Persists to meta table so the value survives restart.
+
+    Broadcasts a {type: "race_updated", total_laps: <new>} SSE event.
+    """
+    race.total_laps = body.total_laps
+    storage.set_meta("total_laps", str(body.total_laps))
+    _publish({"type": "race_updated", "total_laps": body.total_laps})
+    return {"total_laps": race.total_laps}
+
+
+# ---------------------------------------------------------------------------
+# W-051: Antenna diagnostics
+# ---------------------------------------------------------------------------
+
+@app.get("/diagnostics/antennas")
+def get_diagnostics_antennas(window_s: int = Query(default=60, ge=5, le=3600)):
+    """Return per-antenna read counts for the last window_s seconds.
+
+    Query: SELECT antenna, COUNT(*) FROM tag_events WHERE timestamp >= ? AND
+           antenna IS NOT NULL GROUP BY antenna.
+    """
+    counts = storage.count_events_by_antenna(window_s)
+    return {"window_s": window_s, "counts": counts}
 
 
 # ---------------------------------------------------------------------------

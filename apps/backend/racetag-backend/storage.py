@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS tag_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tag_events_time ON tag_events(timestamp);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -192,6 +197,49 @@ class Storage:
         """Return total number of persisted tag events. Used in tests."""
         row = self._conn.execute("SELECT COUNT(*) FROM tag_events;").fetchone()
         return row[0]
+
+    def clear_events(self) -> None:
+        """Delete all rows from tag_events. Used by POST /race/reset (W-036)."""
+        self._execute("DELETE FROM tag_events;")
+
+    def count_events_by_antenna(self, window_s: int) -> dict:
+        """Return {antenna_id: count} for events in the last window_s seconds.
+
+        Only rows where antenna IS NOT NULL are included. Antennas with zero
+        reads in the window are not included in the returned dict.
+        W-051.
+        """
+        from datetime import datetime, timezone, timedelta
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=window_s)
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        rows = self._conn.execute(
+            "SELECT antenna, COUNT(*) AS cnt "
+            "FROM tag_events "
+            "WHERE timestamp >= ? AND antenna IS NOT NULL "
+            "GROUP BY antenna;",
+            (cutoff,),
+        ).fetchall()
+        return {row["antenna"]: row["cnt"] for row in rows}
+
+    # ---- Meta key/value store ------------------------------------------
+
+    def get_meta(self, key: str) -> Optional[str]:
+        """Return the value for *key*, or None if not set."""
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = ?;", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Upsert a key/value pair in the meta table."""
+        self._execute(
+            """
+            INSERT INTO meta (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            (key, value),
+        )
 
     # ---- Lifecycle ------------------------------------------------------
 

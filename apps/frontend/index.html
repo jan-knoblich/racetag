@@ -18,6 +18,14 @@
         <button id="importCsvBtn">Import CSV</button>
         <!-- W-012: Register rider button -->
         <button id="coupleTagBtn">Couple tag &#x2192; rider</button>
+        <!-- W-036: Reset race -->
+        <button id="resetRaceBtn" class="btn-warn">Reset race</button>
+        <!-- W-036: Total laps -->
+        <label class="toggle-control laps-control">
+          Total laps:
+          <input id="totalLapsInput" type="number" min="1" max="999" value="5" />
+          <button id="applyLapsBtn">Apply</button>
+        </label>
         <label class="toggle-control">
           <input id="tagColumnToggle" type="checkbox" checked />
           Show Tag
@@ -52,6 +60,22 @@
           <tbody></tbody>
         </table>
       </section>
+
+      <!-- W-051: Antenna diagnostics panel (collapsed by default) -->
+      <details id="diagnosticsPanel" class="diagnostics-panel">
+        <summary>Antenna diagnostics</summary>
+        <div class="diagnostics-body">
+          <table id="diagnosticsTable">
+            <thead>
+              <tr>
+                <th>Antenna</th>
+                <th>Reads (last 60 s)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </details>
     </main>
 
     <!-- W-012: Register rider modal

@@ -45,6 +45,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RaceDTO'
+    patch:
+      summary: Update race settings (W-036)
+      description: Update total_laps. Persists across restarts. Broadcasts race_updated SSE event.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchRaceBody'
+      responses:
+        '200':
+          description: Updated total_laps
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_laps:
+                    type: integer
+
+  /race/reset:
+    post:
+      summary: Reset race (W-036)
+      description: Clears all participant data and persisted events. Riders are preserved. Broadcasts race_reset SSE event.
+      responses:
+        '204':
+          description: Race reset successfully
+
+  /diagnostics/antennas:
+    get:
+      summary: Antenna read counts (W-051)
+      description: Returns per-antenna read counts for the last window_s seconds.
+      parameters:
+        - name: window_s
+          in: query
+          schema:
+            type: integer
+            default: 60
+            minimum: 5
+            maximum: 3600
+      responses:
+        '200':
+          description: Antenna read counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AntennaDiagnosticsDTO'
+
   /stream:
     get:
       summary: Server-Sent Events stream for live updates
@@ -325,3 +373,24 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ParticipantDTO'
+
+    PatchRaceBody:
+      type: object
+      required: [total_laps]
+      properties:
+        total_laps:
+          type: integer
+          minimum: 1
+          maximum: 999
+
+    AntennaDiagnosticsDTO:
+      type: object
+      required: [window_s, counts]
+      properties:
+        window_s:
+          type: integer
+        counts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Map of antenna_id (int) to read count
