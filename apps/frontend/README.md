@@ -1,70 +1,81 @@
-# Racetag Frontend (minimal)
+# apps/frontend — static race standings UI
 
-A tiny static web UI to test and visualize live race standings from the [racetag-backend](https://github.com/paclema/racetag-backend) backend API. It fetches an initial snapshot and listens to server-sent events (SSE) for real-time updates.
+A zero-dependency static HTML/CSS/JavaScript UI that displays live lap standings, supports rider registration (including bulk CSV import), and exposes settings and diagnostics panels. It consumes the backend's REST API and SSE stream.
 
-![alt text](<docs/Screenshot 2026-03-09 220300.png>)
+## Role in the monorepo
 
-Features:
-- Connect to a backend (default http://localhost:8600)
-- Show current standings
-- Live updates via SSE (/stream)
-- Import CSV file to map tag IDs to bib numbers and participant names
+The frontend is a static web app. In Docker it is served by nginx; in development by the bundled `serve.py`; in the desktop build it is mounted directly by the FastAPI backend via `StaticFiles` and rendered inside a pywebview window.
 
-## CSV Import
+## Run it
 
-The frontend can import a CSV file to display human-readable information (bib numbers and names) instead of raw tag IDs in the standings table since the backend do not provide yet this information.
+### Docker Compose (recommended)
 
-#### CSV Format
-
-The CSV file must contain three columns with headers:
-- `tag_id`: The unique RFID tag identifier
-- `bib`: The race bib number assigned to the participant
-- `name`: The participant's name
-
-See the example file: [tags_example.csv](docs/tags_example.csv)
-
-You can use Excel or Google Sheets to create and export the CSV file with the required format:
-
-![google_sheets_tags_example](docs/google_sheets_tags_example.png)
-
-## Run locally
-
-Using the included python server:
+Run from the **monorepo root**:
 
 ```bash
+docker compose up --build racetag-frontend
+```
+
+Frontend: http://localhost:8680
+
+### Native (development)
+
+```bash
+cd apps/frontend
 python3 serve.py --host 127.0.0.1 --port 8680
 ```
 
-Open http://localhost:8680 and click “Connect” (or it will auto-connect if the backend is reachable).The app stores the backend URL in localStorage.
+Open http://localhost:8680. The app auto-connects to the backend URL stored in `localStorage` (defaults to `http://localhost:8600`).
 
-## Docker
+### Desktop build
 
-Build the image:
+In the packaged app, the frontend files are bundled as static assets inside the `Racetag.app` / `Racetag.exe` binary and served by the embedded uvicorn process. No separate frontend server is needed.
 
-```bash
-docker build -t racetag-frontend .
-```
+## Environment variables
 
-Run it:
+These are only relevant when running via Docker (the `docker-entrypoint.sh` script injects them as runtime placeholder replacements in `script.js` and `api.js`).
 
-```bash
-docker run --rm -p 8680:80 racetag-frontend
-```
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RACETAG_FRONTEND_PORT` | `8680` | Host port the nginx container listens on |
+| `RACETAG_FRONTEND_BACKEND_URL` | `http://localhost:8600` | Backend URL injected into JS at container startup |
+| `RACETAG_FRONTEND_API_KEY` | _(empty)_ | API key injected into JS; leave empty if the backend has no key set |
 
-Open http://localhost:8680.
+At runtime the browser also reads and writes the backend URL from `localStorage` (`racetag.backend` key), so it can be changed without restarting the container.
 
-Notes:
-- Backend must be reachable from the browser at the URL you configure (default http://localhost:8600).
-- Backend CORS should allow the frontend origin (the backend in this repo is configured permissively for development).
+## Key files
 
-## Docker Compose
-Build and run using Docker Compose:
+| File | Purpose |
+| --- | --- |
+| `index.html` | App entry point |
+| `script.js` | State, rendering, modal logic, CSV parsing, SSE event handling |
+| `api.js` | `getApiHeaders()` and a `fetch`-based SSE reader (native `EventSource` cannot send `X-API-Key` headers) |
 
-```bash
-docker compose up -d --build
-```
+## Features
 
-## Developer notes
+**Standings table** — live-updated via SSE `standings` frames. Shows bib, name, laps, gap to leader, and last-pass time. Timestamps are rendered in the browser's local timezone via `formatTimestampForDisplay` (UTC stored at source, displayed locally).
 
-- The UI listens to SSE payloads of type "standings" and re-renders the table upon receiving them.
-- To add “gap” to the UI, prefer computing it in the backend’s standings (domain) and include it in the SSE/GET responses; the frontend should simply display the provided value.
+**Register-rider modal** — opens automatically when an `unknown_tag` SSE event arrives. Pre-fills the tag ID from the recent-reads ring buffer. Submits a `POST /riders` request to the backend and persists the mapping in SQLite.
+
+**Bulk CSV import** — the Settings modal includes a CSV import flow. The CSV must have columns `tag_id`, `bib`, `name`. Records are posted to `POST /riders` individually; existing riders are updated (upsert).
+
+**Settings modal** (gear icon) — configures reader IP, total laps, and lap cooldown via `PATCH /config`. Changes persist across restarts.
+
+**Diagnostics panel** — shows per-antenna read counts (calls `GET /diagnostics/antennas`). Useful for confirming all antennas are active before a race.
+
+**SSE auto-reconnect** — the fetch-based SSE reader retries with exponential backoff when the connection drops or the backend restarts.
+
+## Wire protocol
+
+The frontend speaks only to the backend (default `http://localhost:8600`). It uses:
+- `GET /classification` for the initial standings snapshot on load.
+- `GET /stream` (SSE, `text/event-stream`) for live updates.
+- `GET /riders/recent-reads` to populate the register-rider modal.
+- `POST /riders`, `GET /riders`, `DELETE /riders/{tag_id}` for rider management.
+- `GET /config`, `PATCH /config` for settings.
+- `GET /diagnostics/antennas` for the diagnostics panel.
+- `POST /race/reset`, `PATCH /race` for race control.
+
+## Tests
+
+The frontend has no automated unit tests. Manual smoke tests are described in `tests/manual/` in the repo root.

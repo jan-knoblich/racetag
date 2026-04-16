@@ -1,169 +1,119 @@
-# Racetag Backend
+# apps/backend — FastAPI race-state service
 
-Minimal FastAPI backend to ingest race tag events, compute a race classification, and stream live updates.
+Ingests tag events from the reader-service, applies lap-counting and double-count defence, manages the rider registry, streams live standings via Server-Sent Events, and persists all state to SQLite.
 
+## Role in the monorepo
 
-Endpoints:
-- POST /events/tag/batch: ingest a batch (body TagEventBatchDTO) and returns BatchIngestResultDTO with events_processed counter
-- GET /classification: current classification (ordered)
-- GET /race: race metadata and participants
-- GET /stream: Server-Sent Events stream of lap/standings updates
+The backend is the single source of truth for race state, rider data, and configuration. It is the only service that writes to the SQLite database. All other services and the browser UI talk to it over HTTP.
 
-Notes:
-- `/classification` returns a snapshot of standings at the moment of the request. For live updates, use `/stream` (SSE).
+## Run it
 
-Send events from reader client running the `racetag-reader-service`. Follow the [quick start instructions](https://github.com/paclema/racetag-reader-service?tab=readme-ov-file#quick-start)
+### Docker Compose (recommended)
 
-Run locally this backend with:
+Run from the **monorepo root**:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+docker compose up --build racetag-backend
+```
 
+Backend: http://localhost:8600
+
+### Native (development)
+
+```bash
+cd apps/backend
+python3.13 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt -r requirements-dev.txt
 
 uvicorn --app-dir racetag-backend app:app --reload --host 0.0.0.0 --port 8600
-
-# Optional: configure env variables first
-export PORT=8600
-export RACETAG_API_KEY=changeme
-export RACE_TOTAL_LAPS=5
-
-uvicorn --app-dir racetag-backend app:app --reload --host 0.0.0.0 --port ${PORT}
-
-deactivate
 ```
 
-Using Docker:
+## Environment variables
 
-```bash
-# Create a simple image running uvicorn
-docker build -t racetag-backend .
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RACETAG_PORT` | `8600` | Port uvicorn listens on |
+| `RACETAG_API_KEY` | _(unset)_ | When set, all requests must include `X-API-Key: <value>`. **Off by default in the packaged build** — set only if the backend is exposed beyond localhost. |
+| `RACE_TOTAL_LAPS` | `5` | Initial target laps; can also be changed at runtime via `PATCH /config` or `PATCH /race`. |
+| `RACE_MIN_PASS_INTERVAL_S` | `8` | Backend-side cooldown (seconds) — secondary defence against double-counts. Set lower than `MIN_LAP_INTERVAL_S` in the reader-service so the reader is the primary gate. |
+| `RACETAG_DATA_DIR` | `./data` | Directory where `racetag.db` is stored. Use an absolute path in production so the DB survives container restarts with a mounted volume. |
 
-# Default port
-docker run -p 8600:8600 racetag-backend
+## SQLite persistence
 
-# Custom port: map host 9000 -> container ${PORT}, pass PORT env
-docker run -e PORT=9000 -p 9000:9000 racetag-backend
+The database (`racetag.db` inside `RACETAG_DATA_DIR`) is opened with:
 
-# Optional: skip openapi model code generation (use existing racetag-backend/models_api.py)
-docker build --target runtime-nocodegen -t racetag-backend:nocodegen .
-docker run -p 8600:8600 racetag-backend:nocodegen
+```sql
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=FULL;
 ```
 
-### Using Docker Compose
+WAL mode allows concurrent reads while a write is in progress. `synchronous=FULL` flushes to disk on every write, eliminating data loss on power failure. See [ARCHITECTURE.md](../../ARCHITECTURE.md) for the durability rationale.
 
-You can also run it with Docker Compose. Follow the [doker-compose.yml](docker-compose.yml) as reference.
+A `meta` table stores persistent configuration overrides (reader IP, lap count, cooldown). On startup the backend merges these with env defaults so settings survive restarts.
 
-Check the default environment variables in [.env.example](.env.example) and create your own `.env` file to set them up if needed.
+## Endpoints
 
-```bash
-# Build and start
-docker compose up --build -d
+Full spec: [`openapi.yaml`](openapi.yaml)
 
-# Logs
-docker compose logs -f
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/events/tag/batch` | Ingest tag events; triggers lap counting and SSE fan-out |
+| `GET` | `/classification` | Standings snapshot, ordered by laps then last-pass time |
+| `GET` | `/race` | Race metadata (total_laps, start_time, participants) |
+| `PATCH` | `/race` | Update `total_laps` |
+| `POST` | `/race/reset` | Clear lap data; preserve rider registrations |
+| `GET` | `/config` | Effective config (env defaults merged with persisted overrides) |
+| `PATCH` | `/config` | Update `reader_ip`, `min_lap_interval_s`, or `total_laps` |
+| `GET` | `/diagnostics/antennas` | Per-antenna read counts for `?window_s=60` (default) |
+| `GET` | `/stream` | SSE stream (see below) |
+| `POST` | `/riders` | Register or update a rider — upsert by `tag_id` |
+| `GET` | `/riders` | List all registered riders |
+| `GET` | `/riders/recent-reads` | Last N unknown-tag arrive events (ring buffer, default 10) |
+| `GET` | `/riders/{tag_id}` | Look up a rider by tag |
+| `DELETE` | `/riders/{tag_id}` | Remove a rider |
 
-# Stop
-docker compose down
-```
+## SSE stream frame types
 
-Notes:
-- Storage is in-memory for MVP; replace with a DB for production.
+The `/stream` endpoint emits newline-delimited `data:` frames. Known `type` values:
+
+| Type | When emitted | Payload |
+| --- | --- | --- |
+| `lap` | On every accepted lap | `{type, tag_id, laps, finished, last_pass_time}` |
+| `standings` | After every accepted lap | Full `ClassificationDTO` |
+| `unknown_tag` | Arrive for an unregistered tag | `{type, tag_id, timestamp, antenna, rssi}` |
+| `race_reset` | After `POST /race/reset` | `{type}` |
+| `race_updated` | After `PATCH /race` or `PATCH /config` (total_laps) | `{type, total_laps}` |
+
+The stream uses `asyncio.Queue` per subscriber (one queue per SSE connection). A heartbeat comment (`: heartbeat`) is emitted every 15 seconds to keep the connection alive through proxies.
 
 ## OpenAPI-first workflow
 
-This project includes an OpenAPI spec at `openapi.yaml`. Recommended workflow:
-
-1) Define/modify contract in `openapi.yaml` (paths, schemas, examples).
-2) Generate clients (frontend) or typed models from the spec.
-3) Implement or adapt FastAPI endpoints to match the spec (keeping domain logic in `domain/`).
-
-Why not auto-generate the entire FastAPI server on every change?
-- Full server generation can overwrite your custom routing and calls to domain classes. Instead, we keep `app.py` as a thin layer and evolve it manually against the spec.
-- What we do auto-generate safely: client SDKs and Pydantic models.
-
-### Generate models from OpenAPI (Pydantic)
-
-Use a dedicated local virtualenv to generate Pydantic models from the spec. Schemas in `openapi.yaml` use DTO suffixes (TagEventDTO, ParticipantDTO), and the generated file is `models_api.py`.
-
-To generate again the API models after redefining the OpenAPI specification, the next command with create a Python env to build up a replace the current `models_api.py` file:
-
+The spec at `openapi.yaml` is the contract. Pydantic models in `racetag-backend/models_api.py` are generated from it:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
 pip install datamodel-code-generator
-
-datamodel-codegen --input openapi.yaml --input-file-type openapi --output racetag-backend/models_api.py
-
-deactivate
+datamodel-codegen --input openapi.yaml --input-file-type openapi \
+  --output racetag-backend/models_api.py
 ```
 
-Then import it in your domain source code with: `from models_api import TagEventDTO, ParticipantDTO, EventType`. Avoid overwriting domain code; keep business models in `domain/`.
+Keep business logic in `racetag-backend/domain/`; keep API wiring in `racetag-backend/app.py`.
 
-### Generate frontend client SDK (TypeScript)
+## Key files
 
-Using OpenAPI Generator CLI:
+| File | Purpose |
+| --- | --- |
+| `racetag-backend/app.py` | FastAPI app instance, all route handlers |
+| `racetag-backend/domain/race.py` | `RaceState`, `Participant` — lap-counting domain logic |
+| `racetag-backend/domain/riders.py` | `RiderRegistry` — rider CRUD and recent-reads ring buffer |
+| `racetag-backend/storage.py` | `Storage` — SQLite wrapper (`WAL`, `synchronous=FULL`, meta table) |
+| `openapi.yaml` | API contract (source of truth for models and clients) |
 
-```bash
-# Install once (requires Java)
-# brew install openapi-generator
-# or
-# npm install @openapitools/openapi-generator-cli -g
-
-openapi-generator-cli generate \
-	-i openapi.yaml \
-	-g typescript-fetch \
-	-o ./frontend-api \
-	--additional-properties=typescriptThreePlus=true
-```
-
-This produces a typed client for the frontend. You can regenerate it when the spec changes.
-
-### Generate a temporary FastAPI server (stubs) safely
-
-If you want scaffolding for new endpoints from the spec, generate the server into a separate temporary folder and never over your hand-written app/domain. Two options:
-
-Option A: fastapi-code-generator
+## Tests
 
 ```bash
+cd apps/backend
 source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-
-pip install fastapi-code-generator
-mkdir -p _gen/server
-
-fastapi-codegen --input openapi.yaml --output _gen/server
-
-deactivate
+pytest
 ```
 
-Option B: OpenAPI Generator (python-fastapi)
-
-```bash
-openapi-generator-cli generate \
-	-i openapi.yaml \
-	-g python-fastapi \
-	-o _gen/server
-```
-
-Workflow with generated server:
-- Treat `_gen/server` as throwaway scaffolding. Do NOT edit generated files.
-- Use it to inspect path/operation signatures (request/response models) and copy only what you need into your real routers (`app.py` or dedicated routers).
-- Keep domain logic in `domain/` and import it from your hand-written endpoints.
-
-Overwriting policy for models:
-- It’s acceptable to regenerate `models_api.py` on each contract change, as long as domain types/functions live in `domain/`.
-- If you start importing generated models broadly, keep them behind a stable module name (`models_api`) and avoid manual edits.
-
-### Adding a new endpoint (process)
-
-1) Edit `openapi.yaml` to add the new path, method, request/response schemas.
-2) Regenerate client SDKs and/or models as needed.
-3) Implement the FastAPI endpoint in `app.py` (or route module) and call into domain code (`domain/`).
-
-Important: we do NOT auto-generate the FastAPI server on each change to avoid losing hand-written domain wiring. If you do use a server generator, place generated code in a separate folder and wire it to the domain manually without overwriting existing files.
+Tests live in `tests/`. CI runs 49 tests with Python 3.13 on every push (see `.github/workflows/ci.yml`).

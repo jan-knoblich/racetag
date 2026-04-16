@@ -53,12 +53,13 @@ work without install.
 ## CI
 
 The workflow at `.github/workflows/ci.yml` runs on every push and pull request.
-It has two independent jobs:
+It has three independent jobs:
 
-| Job | Python | App |
-|-----|--------|-----|
-| `reader-service-tests` | 3.11 | `apps/reader-service/` |
-| `backend-tests` | 3.13 | `apps/backend/` |
+| Job | Python | App | Tests |
+|-----|--------|-----|-------|
+| `reader-service-tests` | 3.11 | `apps/reader-service/` | 16 |
+| `backend-tests` | 3.13 | `apps/backend/` | 49 |
+| `desktop-tests` | 3.13 | `apps/desktop/` | 9 |
 
 Each job:
 1. Checks out the repo.

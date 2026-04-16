@@ -33,7 +33,7 @@ Racetag originated as three Git repositories owned by the GitHub user `paclema`;
 | `apps/frontend/`       | [`paclema/racetag-frontend`](https://github.com/paclema/racetag-frontend)                    | Browser UI (standings table, SSE)   | Static HTML/JS + nginx   | Browser          |
 | `apps/desktop/`        | _new — added in Phase 4_                                                                     | PyInstaller + pywebview shell       | Python + bundled assets  | Local desktop    |
 
-All three runtime apps are already dockerised and interact successfully end-to-end. Storage is in-memory only; restarting the backend wipes the race (addressed by `W-050` with `PRAGMA synchronous=FULL`).
+All four apps are implemented and ship as a single double-clickable binary for macOS and Windows (see `apps/desktop/` and `PACKAGING.md`). The backend persists race state and rider data to SQLite (`journal_mode=WAL`, `synchronous=FULL`; `W-050` complete).
 
 Tech-stack observation: every application is Python-or-browser based. No Go, no Rust, no native code. This simplifies packaging dramatically (see `PACKAGING.md`).
 
@@ -135,8 +135,12 @@ Tech-stack observation: every application is Python-or-browser based. No Go, no 
   - `GET /race` — race metadata.
   - `GET /stream` — Server-Sent Events; a simple list-based subscriber queue, one `time.sleep(1)` heartbeat loop per client.
 - **Auth:** optional `X-API-Key` via env var `RACETAG_API_KEY`. CORS is `*`.
-- **Persistence:** **none** — `race`, `events`, and `subscribers` are in-memory Python lists/dicts. All data is lost on restart.
-- **Configuration:** `RACE_TOTAL_LAPS` (default 5) governs when a participant is marked `finished`.
+- **Persistence:** SQLite (`racetag.db` in `RACETAG_DATA_DIR`, default `./data`). `Storage` class wraps the connection with `journal_mode=WAL` and `synchronous=FULL`. A `meta` table stores config overrides.
+- **Configuration:** `RACE_TOTAL_LAPS` (default 5) governs when a participant is marked `finished`. Overridable at runtime via `PATCH /config` or `PATCH /race`.
+
+#### Persistence durability (W-050)
+
+SQLite is opened with `journal_mode=WAL` (concurrent reads during writes) and `synchronous=FULL` (fdatasync on every commit). Single-event write latency budget: under 5 ms p99 on SSD. Event rate is dominated by the `min_pass_interval_s=8 s` cooldown and reader quiet periods between laps, so the ~1 ms fsync cost per accepted event is well within budget. A `meta` table stores persistent config overrides (reader IP, lap count, cooldown) so settings survive process restarts.
 
 ### 4.3 `apps/frontend/` [legacy: `racetag-frontend`]
 
