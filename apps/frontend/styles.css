@@ -4,13 +4,44 @@
   --muted: #94a3b8;
   --accent: #22c55e;
   --warn: #f97316;
+  --error: #ef4444;
+  --surface: #1e293b;
+  --surface-hover: #243048;
+  --border: #334155;
+  --border-subtle: #1e293b;
 }
+
 * { box-sizing: border-box; }
-body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; background: var(--bg); color: var(--fg); }
-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #1e293b; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell,
+    Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* ---- Header ---- */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+  gap: 8px;
+}
 h1 { font-size: 18px; margin: 0; }
-.controls { display: flex; gap: 8px; align-items: center; }
-.controls input { background: #0b1220; color: var(--fg); border: 1px solid #1e293b; padding: 6px 8px; border-radius: 6px; width: 360px; }
+
+.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.controls input[type="text"] {
+  background: #0b1220;
+  color: var(--fg);
+  border: 1px solid var(--border-subtle);
+  padding: 6px 8px;
+  border-radius: 6px;
+  width: 360px;
+}
 .controls .toggle-control {
   display: inline-flex;
   align-items: center;
@@ -24,13 +55,176 @@ h1 { font-size: 18px; margin: 0; }
   margin: 0;
   accent-color: var(--accent);
 }
-button { background: #1e293b; color: var(--fg); border: 1px solid #334155; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
-button:hover { background: #243048; }
-.status { font-size: 12px; color: var(--muted); }
+
+/* ---- Buttons ---- */
+button {
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+button:hover { background: var(--surface-hover); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.btn-primary {
+  background: var(--accent);
+  color: #0f172a;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.btn-primary:hover { filter: brightness(1.1); }
+
+.btn-warn {
+  background: var(--warn);
+  color: #0f172a;
+  border-color: var(--warn);
+  font-weight: 600;
+}
+.btn-warn:hover { filter: brightness(1.1); }
+
+/* ---- Status bar ---- */
+.status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+/* ---- Main content ---- */
 main { padding: 16px; }
+
+/* ---- Standings table ---- */
 table { width: 100%; border-collapse: collapse; }
-th, td { padding: 8px; border-bottom: 1px solid #1e293b; text-align: left; }
+th, td { padding: 8px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
 th { color: var(--muted); font-weight: 600; }
 tbody tr:hover { background: #0b1220; }
 .finished { color: var(--accent); font-weight: 600; }
 .warning { color: var(--warn); }
+
+/* ---- CSV import error list ---- */
+.import-errors-toggle {
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.import-error-list {
+  list-style: disc;
+  padding-left: 20px;
+  margin: 4px 0 12px;
+  font-size: 13px;
+  color: var(--warn);
+}
+
+/* ---- W-012 Register rider modal ---- */
+/*
+  Backdrop: fixed, full-viewport, semi-transparent dark overlay.
+  Modal box: centred, 320 px wide, dark card, consistent with existing theme.
+*/
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  /* Hidden state managed via the `hidden` HTML attribute */
+}
+
+/* When hidden attribute is present, override to hide the backdrop */
+.modal-backdrop[hidden] { display: none; }
+
+.modal-box {
+  background: #162032;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 320px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.modal-field label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.modal-field input {
+  background: #0b1220;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  width: 100%;
+}
+.modal-field input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.modal-field input[readonly] {
+  color: var(--muted);
+  cursor: default;
+}
+
+.modal-error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--error);
+}
+.modal-error[hidden] { display: none; }
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ---- W-012 Toast notification ---- */
+/*
+  Position: bottom-right, 200 px wide, auto-dismiss after 3 s.
+  Hidden by default; .toast--visible slides it in.
+*/
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 200px;
+  background: #1e3a2f;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  z-index: 200;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+.toast--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .toast { transition: none; }
+}

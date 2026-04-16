@@ -16,6 +16,8 @@
         <button id="connectBtn">Connect</button>
         <input id="csvFile" type="file" accept=".csv" style="display: none;" />
         <button id="importCsvBtn">Import CSV</button>
+        <!-- W-012: Register rider button -->
+        <button id="coupleTagBtn">Couple tag &#x2192; rider</button>
         <label class="toggle-control">
           <input id="tagColumnToggle" type="checkbox" checked />
           Show Tag
@@ -25,6 +27,12 @@
     </header>
 
     <main>
+      <!-- W-013: CSV import errors collapsible -->
+      <div id="importErrors" hidden>
+        <button id="importErrorsToggle" class="import-errors-toggle">Show import errors</button>
+        <ul id="importErrorList" class="import-error-list" hidden></ul>
+      </div>
+
       <section>
         <h2>Standings</h2>
         <table id="standingsTable">
@@ -46,7 +54,54 @@
       </section>
     </main>
 
+    <!-- W-012: Register rider modal
+         DOM structure:
+           #registerModal (backdrop, role=dialog, aria-modal=true)
+             .modal-box
+               h2 "Register rider"
+               .modal-field  label + #modalTagId (readonly)
+               .modal-field  label + #modalBib (number input)
+               .modal-field  label + #modalName (text input)
+               #modalError   (hidden error banner)
+               .modal-actions
+                 #modalSaveBtn
+                 #modalCancelBtn
+                 #modalRetryBtn (hidden until 401)
+    -->
+    <div id="registerModal" class="modal-backdrop" role="dialog" aria-modal="true"
+         aria-labelledby="registerModalTitle" hidden>
+      <div class="modal-box">
+        <h2 id="registerModalTitle" class="modal-title">Register rider</h2>
+
+        <div class="modal-field">
+          <label for="modalTagId">Tag ID</label>
+          <input id="modalTagId" type="text" readonly />
+        </div>
+
+        <div class="modal-field">
+          <label for="modalBib">Bib number</label>
+          <input id="modalBib" type="number" min="1" placeholder="e.g. 42" />
+        </div>
+
+        <div class="modal-field">
+          <label for="modalName">Rider name</label>
+          <input id="modalName" type="text" placeholder="e.g. Jane Doe" />
+        </div>
+
+        <div id="modalError" class="modal-error" hidden></div>
+
+        <div class="modal-actions">
+          <button id="modalSaveBtn" class="btn-primary">Save</button>
+          <button id="modalCancelBtn">Cancel</button>
+          <button id="modalRetryBtn" class="btn-warn" hidden>Retry</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- W-012: Toast notification container (bottom-right) -->
+    <div id="toastContainer" class="toast" aria-live="polite" aria-atomic="true"></div>
+
     <script src="./api.js"></script>
     <script src="./script.js"></script>
   </body>
-  </html>
+</html>
