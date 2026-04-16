@@ -1,0 +1,168 @@
+openapi: 3.1.0
+info:
+  title: Racetag Backend API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8600
+    description: Local Development Server
+security:
+  - ApiKeyAuth: []
+paths:
+  /events/tag/batch:
+    post:
+      summary: Ingest a batch of tag events
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TagEventBatchDTO'
+      responses:
+        '200':
+          description: Batch processed summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchIngestResultDTO'
+  /classification:
+    get:
+      summary: Current classification standings
+      description: Returns a snapshot of standings at request time. For live updates, subscribe to the Server-Sent Events stream at /stream.
+      responses:
+        '200':
+          description: Standings ordered by race rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClassificationDTO'
+  /race:
+    get:
+      summary: Race state
+      responses:
+        '200':
+          description: Current race metadata and participants
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RaceDTO'
+  /stream:
+    get:
+      summary: Server-Sent Events stream for live updates
+      responses:
+        '200':
+          description: SSE stream of lap and standings updates
+          content:
+            text/event-stream:
+              schema:
+                type: string
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    TagEventDTO:
+      type: object
+      required: [source, reader_ip, reader_serial, timestamp, event_type, tag_id]
+      properties:
+        source:
+          type: string
+          example: sirit-510
+        reader_ip:
+          type: string
+        reader_serial:
+          type: string
+        timestamp:
+          type: string
+          description: ISO8601 with milliseconds and Z
+          example: 2025-10-16T11:53:32.298Z
+        event_type:
+          type: string
+          enum: [arrive, depart]
+        tag_id:
+          type: string
+          description: Uppercase hex without 0x
+        session_id:
+          type: integer
+          nullable: true
+        antenna:
+          type: integer
+          nullable: true
+        rssi:
+          type: integer
+          nullable: true
+        first:
+          type: string
+          nullable: true
+        last:
+          type: string
+          nullable: true
+
+    TagEventBatchDTO:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagEventDTO'
+
+    BatchIngestResultDTO:
+      type: object
+      required: [events_processed]
+      properties:
+        events_processed:
+          type: integer
+  
+    ParticipantDTO:
+      type: object
+      required: [tag_id, laps, finished]
+      properties:
+        tag_id:
+          type: string
+        laps:
+          type: integer
+        last_pass_time:
+          type: string
+          nullable: true
+        finish_time:
+          type: string
+          nullable: true
+        finished:
+          type: boolean
+        total_time_ms:
+          type: integer
+          nullable: true
+        gap_ms:
+          type: integer
+          nullable: true
+          description: Time gap to the leader in milliseconds when on the same lap (0 for leader; null if lapped)
+        laps_behind:
+          type: integer
+          nullable: true
+          description: Number of laps behind the leader (null or 0 if on same lap)
+
+    ClassificationDTO:
+      type: object
+      required: [count, standings]
+      properties:
+        count:
+          type: integer
+        standings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParticipantDTO'
+
+    RaceDTO:
+      type: object
+      required: [total_laps, start_time, participants]
+      properties:
+        total_laps:
+          type: integer
+        start_time:
+          type: string
+        participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParticipantDTO'

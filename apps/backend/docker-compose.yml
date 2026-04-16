@@ -1,0 +1,16 @@
+services:
+  racetag-backend:
+    build: .
+    image: racetag-backend:latest
+    container_name: racetag-backend
+    environment:
+      # Port inside the container, defaults to 8600 if RACETAG_PORT is not set
+      - PORT=${RACETAG_PORT:-8600}
+      # API key
+      - RACETAG_API_KEY=${RACETAG_API_KEY}
+      # Race configuration
+      - RACE_TOTAL_LAPS=${RACE_TOTAL_LAPS:-5}
+    ports:
+      # Map host port to container port using RACETAG_PORT (defaults to 8600)
+      - "${RACETAG_PORT:-8600}:${RACETAG_PORT:-8600}"
+    restart: unless-stopped

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pytest_cache/
+
+# Virtual environments
+.venv/
+
+# Build outputs
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# VCS
+.git/
+.gitignore
+
+# Editors
+.vscode/
+.idea/
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Generated files
+_gen/

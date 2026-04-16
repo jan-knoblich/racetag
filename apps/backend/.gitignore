@@ -1,0 +1,10 @@
+.venv
+__pycache__
+
+_gen
+_codegen_venv/
+frontend-api/
+
+openapitools.json
+
+.env
