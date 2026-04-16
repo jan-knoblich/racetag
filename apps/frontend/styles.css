@@ -244,6 +244,20 @@ tbody tr:hover { background: #0b1220; }
   text-align: center;
 }
 
+/* ---- W-074: Settings gear button ---- */
+.btn-icon {
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 6px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.btn-icon:hover { background: var(--surface-hover); }
+.btn-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* ---- W-051: Antenna diagnostics panel ---- */
 .diagnostics-panel {
   margin-top: 20px;

@@ -236,6 +236,111 @@ async function submitRegisterModal() {
 }
 
 // ---------------------------------------------------------------------------
+// W-074 — Settings modal
+// ---------------------------------------------------------------------------
+
+// Snapshot of values fetched from GET /config when modal opens.
+let _settingsOriginal = {};
+
+async function openSettingsModal() {
+  const modal = $('#settingsModal');
+  if (!modal) return;
+
+  // Reset error banner
+  const errBanner = $('#settingsError');
+  if (errBanner) errBanner.hidden = true;
+
+  try {
+    const res = await fetch(`${state.backend}/config`, { headers: getApiHeaders() });
+    if (!res.ok) throw new Error(`GET /config failed: ${res.status}`);
+    const cfg = await res.json();
+    _settingsOriginal = cfg;
+
+    const ipInput = $('#settingsReaderIp');
+    const minLapInput = $('#settingsMinLap');
+    const totalLapsInput = $('#settingsTotalLaps');
+
+    if (ipInput) ipInput.value = cfg.reader_ip ?? '';
+    if (minLapInput) minLapInput.value = cfg.min_lap_interval_s ?? '';
+    if (totalLapsInput) totalLapsInput.value = cfg.total_laps ?? '';
+  } catch (err) {
+    _settingsOriginal = {};
+    if (errBanner) {
+      errBanner.textContent = `Could not load config: ${err.message}`;
+      errBanner.hidden = false;
+    }
+  }
+
+  modal.hidden = false;
+  const ipInput = $('#settingsReaderIp');
+  if (ipInput) ipInput.focus();
+}
+
+function closeSettingsModal() {
+  const modal = $('#settingsModal');
+  if (modal) modal.hidden = true;
+}
+
+async function submitSettingsModal() {
+  const errBanner = $('#settingsError');
+  if (errBanner) errBanner.hidden = true;
+
+  const ipVal = $('#settingsReaderIp')?.value.trim() || null;
+  const minLapVal = $('#settingsMinLap')?.value;
+  const totalLapsVal = $('#settingsTotalLaps')?.value;
+
+  // Build patch body with only changed fields
+  const patch = {};
+
+  const originalIp = _settingsOriginal.reader_ip ?? null;
+  const newIp = ipVal || null;
+  if (newIp !== originalIp) patch.reader_ip = newIp;
+
+  const originalMinLap = _settingsOriginal.min_lap_interval_s ?? null;
+  const newMinLap = minLapVal !== '' && minLapVal != null ? parseFloat(minLapVal) : null;
+  if (newMinLap !== originalMinLap) patch.min_lap_interval_s = newMinLap;
+
+  const originalTotal = _settingsOriginal.total_laps ?? null;
+  const newTotal = totalLapsVal !== '' && totalLapsVal != null ? parseInt(totalLapsVal, 10) : null;
+  if (newTotal !== originalTotal) patch.total_laps = newTotal;
+
+  if (Object.keys(patch).length === 0) {
+    closeSettingsModal();
+    return;
+  }
+
+  try {
+    const res = await fetch(`${state.backend}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify(patch),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => `HTTP ${res.status}`);
+      if (errBanner) {
+        errBanner.textContent = `Save failed (${res.status}): ${body}`;
+        errBanner.hidden = false;
+      }
+      return;
+    }
+
+    closeSettingsModal();
+    showToast('Settings saved');
+
+    // If reader IP changed, show a non-blocking note via a second toast with delay
+    if ('reader_ip' in patch) {
+      setTimeout(() => showToast('Reader IP changes take effect on next app restart'), 3200);
+    }
+  } catch (err) {
+    if (errBanner) {
+      errBanner.textContent = `Network error: ${err.message}`;
+      errBanner.hidden = false;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Toast notification (bottom-right, auto-dismiss after 3 s)
 // ---------------------------------------------------------------------------
 function showToast(message) {
@@ -573,6 +678,30 @@ function init() {
       }
     });
   }
+
+  // W-074: Settings button + modal
+  const settingsBtn = $('#settingsBtn');
+  if (settingsBtn) settingsBtn.addEventListener('click', openSettingsModal);
+
+  const settingsSaveBtn = $('#settingsSaveBtn');
+  if (settingsSaveBtn) settingsSaveBtn.addEventListener('click', submitSettingsModal);
+
+  const settingsCancelBtn = $('#settingsCancelBtn');
+  if (settingsCancelBtn) settingsCancelBtn.addEventListener('click', closeSettingsModal);
+
+  // Close settings modal on backdrop click
+  const settingsModal = $('#settingsModal');
+  if (settingsModal) {
+    settingsModal.addEventListener('click', (e) => {
+      if (e.target === settingsModal) closeSettingsModal();
+    });
+  }
+
+  // Submit settings on Enter in modal inputs
+  ['#settingsReaderIp', '#settingsMinLap', '#settingsTotalLaps'].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitSettingsModal(); });
+  });
 
   // W-012: Modal buttons
   const saveBtn = $('#modalSaveBtn');

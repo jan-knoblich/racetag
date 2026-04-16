@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
+from domain.config import Config, ConfigStore, is_valid_ipv4
 from domain.race import RaceState
 from domain.riders import Rider, RiderStore
 from models_api import (
@@ -45,6 +46,8 @@ API_KEY_HEADER_NAME = "X-API-Key"
 _API_KEY = os.getenv("RACETAG_API_KEY")
 _RACE_TOTAL_LAPS = int(os.getenv("RACE_TOTAL_LAPS", "5"))
 _RACE_MIN_PASS_INTERVAL_S = float(os.getenv("RACE_MIN_PASS_INTERVAL_S", "8.0"))
+_READER_IP_ENV = os.getenv("READER_IP", None)
+_MIN_LAP_INTERVAL_S_ENV = float(os.getenv("MIN_LAP_INTERVAL_S", "8.0"))
 _api_key_header = APIKeyHeader(name=API_KEY_HEADER_NAME, auto_error=False)
 
 def require_api_key(api_key: str = Security(_api_key_header)) -> bool:
@@ -80,6 +83,7 @@ app.add_middleware(
 _data_dir = Path(os.getenv("RACETAG_DATA_DIR", "./data"))
 _data_dir.mkdir(parents=True, exist_ok=True)
 storage = Storage(_data_dir / "racetag.db")
+config_store = ConfigStore(storage)
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +315,83 @@ def patch_race(body: PatchRaceBody):
     storage.set_meta("total_laps", str(body.total_laps))
     _publish({"type": "race_updated", "total_laps": body.total_laps})
     return {"total_laps": race.total_laps}
+
+
+# ---------------------------------------------------------------------------
+# W-074: Config endpoints — GET/PATCH /config
+# ---------------------------------------------------------------------------
+
+class PatchConfigBody(BaseModel):
+    """Partial config update — all fields optional."""
+
+    reader_ip: str | None = None
+    min_lap_interval_s: float | None = None
+    total_laps: int | None = None
+
+
+def _effective_config() -> Config:
+    """Build the effective Config by merging persisted values over env defaults."""
+    return Config(
+        reader_ip=config_store.get_reader_ip() or _READER_IP_ENV,
+        min_lap_interval_s=(
+            config_store.get_min_lap_interval_s()
+            if config_store.get_min_lap_interval_s() is not None
+            else _MIN_LAP_INTERVAL_S_ENV
+        ),
+        total_laps=(
+            config_store.get_total_laps()
+            if config_store.get_total_laps() is not None
+            else _RACE_TOTAL_LAPS
+        ),
+    )
+
+
+@app.get("/config", response_model=Config)
+def get_config():
+    """Return the effective config (persisted values merged over env defaults)."""
+    return _effective_config()
+
+
+@app.patch("/config", response_model=Config)
+def patch_config(body: PatchConfigBody):
+    """Partially update config. Validates ranges; persists via meta table.
+
+    On total_laps change: updates race.total_laps live and broadcasts
+    race_updated SSE.  reader_ip and min_lap_interval_s are persisted only
+    (their consumers are external processes managed by the desktop shell).
+    """
+    errors = []
+
+    if body.reader_ip is not None:
+        if not is_valid_ipv4(body.reader_ip):
+            errors.append("reader_ip must be a valid IPv4 address")
+
+    if body.min_lap_interval_s is not None:
+        if not (0.0 <= body.min_lap_interval_s <= 60.0):
+            errors.append("min_lap_interval_s must be between 0.0 and 60.0")
+
+    if body.total_laps is not None:
+        if not (1 <= body.total_laps <= 999):
+            errors.append("total_laps must be between 1 and 999")
+
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
+
+    if body.reader_ip is not None:
+        config_store.set_reader_ip(body.reader_ip)
+
+    if body.min_lap_interval_s is not None:
+        config_store.set_min_lap_interval_s(body.min_lap_interval_s)
+
+    if body.total_laps is not None:
+        config_store.set_total_laps(body.total_laps)
+        # Update in-memory race state immediately
+        race.total_laps = body.total_laps
+        # Also keep legacy meta key in sync (W-036 reads "total_laps" on startup)
+        storage.set_meta("total_laps", str(body.total_laps))
+        _publish({"type": "race_updated", "total_laps": body.total_laps})
+
+    return _effective_config()
 
 
 # ---------------------------------------------------------------------------

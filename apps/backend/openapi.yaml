@@ -73,6 +73,44 @@ paths:
         '204':
           description: Race reset successfully
 
+  /config:
+    get:
+      summary: Get effective config (W-074)
+      description: Returns persisted values merged over env defaults. Any field not yet persisted falls back to the env default.
+      responses:
+        '200':
+          description: Effective configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigDTO'
+    patch:
+      summary: Partially update config (W-074)
+      description: |
+        Accepts a partial ConfigDTO. Validates ranges:
+        - min_lap_interval_s: 0.0–60.0
+        - total_laps: 1–999
+        - reader_ip: must be valid IPv4
+
+        On total_laps change the in-memory race is updated immediately and a
+        race_updated SSE event is broadcast.  reader_ip and min_lap_interval_s
+        are persisted only (external consumers restart separately).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigDTO'
+      responses:
+        '200':
+          description: Merged effective config after applying the update
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigDTO'
+        '422':
+          description: Validation error (out-of-range value or invalid IPv4)
+
   /diagnostics/antennas:
     get:
       summary: Antenna read counts (W-051)
@@ -382,6 +420,30 @@ components:
           type: integer
           minimum: 1
           maximum: 999
+
+    ConfigDTO:
+      type: object
+      description: Application configuration — all fields optional (nullable); GET returns effective merged values.
+      properties:
+        reader_ip:
+          type: string
+          nullable: true
+          description: IPv4 address of the RFID reader (null if not configured)
+          example: 192.168.1.100
+        min_lap_interval_s:
+          type: number
+          format: float
+          nullable: true
+          minimum: 0.0
+          maximum: 60.0
+          description: Minimum seconds between two counted laps for the same tag
+          example: 8.0
+        total_laps:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 999
+          description: Target total laps for the race
 
     AntennaDiagnosticsDTO:
       type: object
