@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Security
@@ -29,6 +30,7 @@ from models_api import (
     RecentReadDTO,
     RecentReadsListDTO,
 )
+from storage import Storage
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +72,16 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
+# W-050: Storage — open SQLite with WAL + synchronous=FULL durability.
+# RACETAG_DATA_DIR defaults to ./data (relative to cwd at startup).
+# ---------------------------------------------------------------------------
+
+_data_dir = Path(os.getenv("RACETAG_DATA_DIR", "./data"))
+_data_dir.mkdir(parents=True, exist_ok=True)
+storage = Storage(_data_dir / "racetag.db")
+
+
+# ---------------------------------------------------------------------------
 # Race state
 # ---------------------------------------------------------------------------
 
@@ -99,13 +111,31 @@ events: List[TagEventDTO] = []
 subscribers: List[Any] = []   # elements are asyncio.Queue or legacy list
 _subscribers_lock = threading.Lock()
 
-# Rider registry (W-010)
-rider_store = RiderStore()
+# Rider registry (W-010) — backed by persistent storage (W-050)
+rider_store = RiderStore(storage=storage)
 
 # W-011: ring buffer of recent unknown-tag reads (max 50, newest at right)
 _UNKNOWN_TAG_CAP = 50
 recent_unknown_tags: collections.deque = collections.deque(maxlen=_UNKNOWN_TAG_CAP)
 _unknown_tags_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# W-050: Replay persisted events on startup to restore race state.
+#
+# We replay without re-persisting (replay_event skips storage.append_event).
+# This is idempotent: events already in the DB are not duplicated.
+# ---------------------------------------------------------------------------
+
+def _replay_event(ev: TagEventDTO) -> None:
+    """Apply a single event to in-memory state without writing to storage."""
+    events.append(ev)
+    if ev.event_type == EventType.arrive:
+        race.add_lap(ev.tag_id, ev.timestamp)
+
+
+for _ev in storage.iter_events():
+    _replay_event(_ev)
 
 
 def _now_iso() -> str:
@@ -166,7 +196,10 @@ def post_events_batch(batch: TagEventBatchDTO):
         accepted += 1
         # Update race on ARRIVE (simple rule for MVP)
         if ev.event_type == EventType.arrive:
-            # Use event timestamp as the pass time
+            # Persist BEFORE mutating in-memory state (W-050 durability policy).
+            # add_lap returns the unchanged participant if the event is suppressed
+            # by the cooldown; we persist regardless so the event is on record.
+            storage.append_event(ev)
             p = race.add_lap(ev.tag_id, ev.timestamp)
             # Broadcast lap update (always, laps keep advancing)
             lap_payload = {
