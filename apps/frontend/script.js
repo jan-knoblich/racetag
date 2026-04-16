@@ -7,10 +7,40 @@ const __RACETAG_BACKEND_URL__ = "__RACETAG_FRONTEND_BACKEND_URL__";
 
 const isPlaceholder = (v) => typeof v === 'string' && v.startsWith('__RACETAG_');
 
+// Migrate a stale localStorage value that was the old hardcoded default
+// ('http://localhost:8600' / '127.0.0.1:8600') written by earlier builds
+// before same-origin defaulting. If we're being served from a different
+// origin (e.g. the desktop app on a random port), the stored value is wrong
+// for this run — drop it so the new window.location.origin default wins.
+(() => {
+  try {
+    const stored = localStorage.getItem('racetag.backend');
+    const stale = ['http://localhost:8600', 'http://127.0.0.1:8600'];
+    if (
+      stored && stale.includes(stored.replace(/\/$/, '')) &&
+      window.location.origin && !stale.includes(window.location.origin.replace(/\/$/, ''))
+    ) {
+      localStorage.removeItem('racetag.backend');
+    }
+  } catch (_e) { /* localStorage may be unavailable — ignore */ }
+})();
+
+// Default backend URL resolution, highest priority first:
+//   1. Explicit user override saved in localStorage (set via the UI input).
+//   2. Docker build-time substitution of the __RACETAG_FRONTEND_BACKEND_URL__
+//      placeholder — used in the nginx container where backend + frontend are
+//      on different origins.
+//   3. Same origin as the page itself (window.location.origin) — this is the
+//      right answer for the packaged desktop app (FastAPI serves the frontend
+//      via StaticFiles, so every fetch stays on the same host:port) and for
+//      anyone who opens http://localhost:8600/ directly with a running backend.
+//   4. http://localhost:8600 as a last-resort fallback (e.g. if window.location
+//      is somehow unavailable, which shouldn't happen in a browser context).
 const state = {
   backend:
-    ( localStorage.getItem('racetag.backend')
-    || !isPlaceholder(__RACETAG_BACKEND_URL__) && __RACETAG_BACKEND_URL__)
+    localStorage.getItem('racetag.backend')
+    || (!isPlaceholder(__RACETAG_BACKEND_URL__) && __RACETAG_BACKEND_URL__)
+    || (typeof window !== 'undefined' && window.location && window.location.origin)
     || 'http://localhost:8600',
   showTagColumn: true,
   lastStandings: [],
