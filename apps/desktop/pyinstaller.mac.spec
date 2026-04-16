@@ -140,7 +140,10 @@ exe = EXE(
     upx=True,
     console=False,          # windowed app — no Terminal window
     disable_windowed_traceback=False,
-    argv_emulation=True,    # macOS: handle Apple Event open-file on startup
+    argv_emulation=False,   # DO NOT enable on macOS — PyInstaller's Apple-Event
+                            # interception conflicts with pywebview's Cocoa
+                            # bootstrap and the GUI window silently fails to
+                            # appear when double-clicked from Finder.
     target_arch=None,       # None = native arch; set to 'universal2' for fat binary
     codesign_identity=None,
     entitlements_file=None,
