@@ -20,20 +20,26 @@ Design:
       that lives inside the background thread without sharing mutable state
       across threads beyond a single flag write.
 
-  TODO (W-073): spawn the reader-service subprocess here, passing
-  --backend-url http://127.0.0.1:<port>.  Pattern:
-      reader_proc = subprocess.Popen([
-          sys.executable, "-m", "racetag_reader_service.cli",
-          "--ip", reader_ip,
-          "--backend-url", f"http://127.0.0.1:{port}",
-      ])
-  Kill it (reader_proc.terminate()) after webview.start() returns.
+  W-073: Reader-service subprocess.
+    The reader-service is spawned as a subprocess before the pywebview window
+    opens, and terminated after the window closes.  The subprocess entry point
+    is resolved via _reader_service_entry() which handles both source-tree and
+    PyInstaller frozen modes.
+
+    Frozen mode dispatch: when PyInstaller freezes the app into a single
+    binary, sys.executable is the Racetag binary.  We re-invoke ourselves with
+    "--reader-service" which routes to racetag_reader_service.main().
+
+    Set RACETAG_BUNDLED_READER=0 to skip spawning (useful during development
+    when running a separate reader with mocks).
 """
 
 import os
 import socket
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -42,8 +48,114 @@ from pathlib import Path
 
 THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parent.parent
-BACKEND_SRC = REPO_ROOT / "apps" / "backend" / "racetag-backend"
-FRONTEND_DIR = REPO_ROOT / "apps" / "frontend"
+
+# ---------------------------------------------------------------------------
+# Frozen-mode path resolution (PyInstaller).
+# When frozen, all bundled data lives under sys._MEIPASS.
+# We bundle backend source as "backend_src/" and frontend as "frontend/".
+# In source mode we fall back to the repo layout.
+# ---------------------------------------------------------------------------
+
+if getattr(sys, "frozen", False):
+    _BUNDLE = Path(sys._MEIPASS)  # noqa: SLF001
+    BACKEND_SRC = _BUNDLE / "backend_src"
+    FRONTEND_DIR = _BUNDLE / "frontend"
+else:
+    BACKEND_SRC = REPO_ROOT / "apps" / "backend" / "racetag-backend"
+    FRONTEND_DIR = REPO_ROOT / "apps" / "frontend"
+
+# ---------------------------------------------------------------------------
+# Reader-service subprocess (W-073)
+# ---------------------------------------------------------------------------
+
+# Module-level handle to the reader-service Popen object.  Set by
+# _spawn_reader_service(); read by _stop_reader_service().
+_reader_proc: "subprocess.Popen | None" = None
+
+
+def _reader_service_entry() -> list:
+    """Return the argv list used to spawn the reader-service.
+
+    Source (non-frozen) mode:
+        [sys.executable, "<repo>/apps/reader-service/src/racetag_reader_service.py"]
+
+    Frozen (PyInstaller) mode:
+        [sys.executable, "--reader-service"]
+        The main entry point dispatches "--reader-service" to
+        racetag_reader_service.main() before the UI path runs.
+    """
+    if getattr(sys, "frozen", False):
+        # sys.executable is the Racetag binary; re-invoke with dispatch flag.
+        return [sys.executable, "--reader-service"]
+    # Source mode: invoke the script directly.
+    reader_script = REPO_ROOT / "apps" / "reader-service" / "src" / "racetag_reader_service.py"
+    return [sys.executable, str(reader_script)]
+
+
+def _spawn_reader_service(backend_url: str) -> "subprocess.Popen | None":
+    """Spawn the reader-service subprocess and return the Popen handle.
+
+    Returns None if RACETAG_BUNDLED_READER=0 (developer opt-out).
+    """
+    global _reader_proc
+
+    if os.environ.get("RACETAG_BUNDLED_READER", "1") == "0":
+        print("RACETAG_BUNDLED_READER=0 — skipping reader-service spawn", flush=True)
+        return None
+
+    reader_ip = os.environ.get("READER_IP", "192.168.1.130")
+    min_lap = os.environ.get("MIN_LAP_INTERVAL_S", "10")
+
+    argv = _reader_service_entry() + [
+        "--ip", reader_ip,
+        "--backend-url", backend_url,
+        "--min-lap-interval", min_lap,
+    ]
+
+    env = os.environ.copy()
+    env["READER_IP"] = reader_ip
+    env["BACKEND_URL"] = backend_url
+    env["MIN_LAP_INTERVAL_S"] = min_lap
+
+    # Add reader-service src to PYTHONPATH so its local imports resolve when
+    # invoked as a plain script (source mode only; frozen mode uses bundle).
+    if not getattr(sys, "frozen", False):
+        reader_src = str(REPO_ROOT / "apps" / "reader-service" / "src")
+        existing_pp = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{reader_src}:{existing_pp}" if existing_pp else reader_src
+
+    print(f"Spawning reader-service: {' '.join(argv)}", flush=True)
+    try:
+        _reader_proc = subprocess.Popen(argv, env=env)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Failed to spawn reader-service: {exc}", file=sys.stderr)
+        _reader_proc = None
+
+    return _reader_proc
+
+
+def _stop_reader_service() -> None:
+    """Terminate the reader-service subprocess with a 5 s grace period."""
+    global _reader_proc
+    proc = _reader_proc
+    if proc is None:
+        return
+    _reader_proc = None
+
+    if proc.poll() is not None:
+        return  # already exited
+
+    print("Stopping reader-service…", flush=True)
+    proc.terminate()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    if proc.poll() is None:
+        print("reader-service did not stop in 5 s — killing", file=sys.stderr)
+        proc.kill()
+        proc.wait()
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +300,28 @@ def _run_server(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # ---------------------------------------------------------------------------
+    # Frozen-mode dispatch (W-073): when re-invoked as "--reader-service", hand
+    # off to the reader-service main() immediately.  This keeps one binary that
+    # can play two roles without shipping a second interpreter.
+    # ---------------------------------------------------------------------------
+    if "--reader-service" in sys.argv:
+        # Reader-service src must be on sys.path so its relative imports work.
+        if getattr(sys, "frozen", False):
+            # In frozen mode, _MEIPASS contains the bundled reader-service src.
+            reader_src_in_bundle = str(Path(sys._MEIPASS) / "reader_src")  # noqa: SLF001
+            if reader_src_in_bundle not in sys.path:
+                sys.path.insert(0, reader_src_in_bundle)
+        else:
+            reader_src = str(REPO_ROOT / "apps" / "reader-service" / "src")
+            if reader_src not in sys.path:
+                sys.path.insert(0, reader_src)
+
+        # Remove our dispatch flag before forwarding to the reader's argparser.
+        reader_argv = [a for a in sys.argv[1:] if a != "--reader-service"]
+        import racetag_reader_service  # noqa: PLC0415
+        sys.exit(racetag_reader_service.main(reader_argv))
+
     _bootstrap_env()
 
     app = _build_combined_app()
@@ -211,12 +345,16 @@ def main() -> None:
     url = f"http://127.0.0.1:{port}"
     print(f"Racetag backend listening on {url}", flush=True)
 
+    # Spawn the reader-service subprocess (W-073).
+    _spawn_reader_service(backend_url=url)
+
     import webview  # noqa: PLC0415  (optional dep; import late so tests skip it)
 
     webview.create_window("Racetag", url, width=1280, height=800)
     webview.start()  # blocks on main thread until the window is closed
 
-    # Window closed — signal uvicorn to stop and wait briefly for clean teardown.
+    # Window closed — stop reader then signal uvicorn.
+    _stop_reader_service()
     handle.stop()
     done.wait(timeout=3)
 
