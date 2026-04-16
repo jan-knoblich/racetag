@@ -7,15 +7,14 @@ from typing import Optional, Dict, Any, Literal
 @dataclass(frozen=True)
 class TagEvent:
     source: str              # e.g., "sirit-510"
-    reader_serial: str       # reader serial number
     reader_ip: str           # reader IP
     timestamp: str           # ISO8601 UTC string with milliseconds, e.g., 2025-10-16T10:20:30.123Z
     event_type: str          # "arrive" | "depart"
     tag_id: str              # HEX uppercase, without 0x
+    reader_serial: Optional[str] = None  # unknown until reader replies with info.serial_number (W-033)
     session_id: Optional[int] = None
     antenna: Optional[int] = None
     rssi: Optional[int] = None
-    # Reader-provided timestamps for first seen (arrive) / last seen (depart)
     first: Optional[str] = None
     last: Optional[str] = None
     extra: Optional[Dict[str, Any]] = None

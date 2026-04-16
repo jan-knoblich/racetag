@@ -171,29 +171,13 @@ def test_session_log_replay_arrive_count():
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG-001: TagEvent.reader_serial is a required non-default field but "
-        "SiritClient._parse_event_message omits it when self.reader_serial is None. "
-        "Calling TagEvent(**fields) without reader_serial raises TypeError. "
-        "Fix: add `reader_serial: Optional[str] = None` to TagEvent dataclass, "
-        "or ensure _parse_event_message always provides the field (e.g. '' sentinel). "
-        "This test exercises the bug directly so it is documented and cannot regress silently."
-    ),
-    raises=TypeError,
-    strict=True,
-)
-def test_parse_event_message_without_reader_serial_raises_type_error():
-    """Reproduce BUG-001: _parse_event_message without reader_serial raises TypeError.
+def test_parse_event_message_without_reader_serial_builds_tag_event():
+    """BUG-001 regression: parsing an arrive line before the reader replies with
+    its serial number must not raise.
 
-    The SiritClient is constructed without calling start() (no network) so
-    reader_serial remains None. Feeding an ARRIVE log line through
-    _parse_event_message must fail with TypeError because TagEvent.__init__
-    requires reader_serial but it is absent from the fields dict.
-
-    When BUG-001 is fixed (TagEvent.reader_serial gets a default or
-    _parse_event_message always injects the field), this xfail will flip to
-    a pass and strict=True will catch it, reminding us to remove the xfail marker.
+    `reader_serial` is Optional on TagEvent (W-033 backend + reader-service fix);
+    constructing one without it should succeed and the resulting event's
+    reader_serial should be None.
     """
     lines = _load_log_lines()
     if not lines:
@@ -227,8 +211,11 @@ def test_parse_event_message_without_reader_serial_raises_type_error():
     # reader_serial is None — the bug condition
 
     sirit_msg = _extract_sirit_msg(arrive_lines[0])
-    # This call should raise TypeError due to BUG-001
-    client._parse_event_message("arrive", sirit_msg)
+    event = client._parse_event_message("arrive", sirit_msg)
+    assert event is not None
+    assert event.reader_serial is None
+    assert event.event_type == "arrive"
+    assert event.tag_id
 
 
 def test_session_log_total_line_count():
