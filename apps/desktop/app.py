@@ -106,16 +106,28 @@ def _spawn_reader_service(backend_url: str) -> "subprocess.Popen | None":
     reader_ip = os.environ.get("READER_IP", "192.168.1.130")
     min_lap = os.environ.get("MIN_LAP_INTERVAL_S", "10")
 
+    # Resolve the init_commands file to an absolute path so the reader-service
+    # finds it regardless of the cwd when the .app was launched. Without this,
+    # the relative default 'init_commands' silently fails and NO event
+    # registration commands are sent to the reader — meaning arrive/depart
+    # events never propagate to the backend.
+    if getattr(sys, "frozen", False):
+        init_commands_path = str(Path(sys._MEIPASS) / "reader_src" / "init_commands")  # noqa: SLF001
+    else:
+        init_commands_path = str(REPO_ROOT / "apps" / "reader-service" / "src" / "init_commands")
+
     argv = _reader_service_entry() + [
         "--ip", reader_ip,
         "--backend-url", backend_url,
         "--min-lap-interval", min_lap,
+        "--init_commands_file", init_commands_path,
     ]
 
     env = os.environ.copy()
     env["READER_IP"] = reader_ip
     env["BACKEND_URL"] = backend_url
     env["MIN_LAP_INTERVAL_S"] = min_lap
+    env["INIT_COMMANDS_FILE"] = init_commands_path
 
     # Add reader-service src to PYTHONPATH so its local imports resolve when
     # invoked as a plain script (source mode only; frozen mode uses bundle).
