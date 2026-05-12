@@ -15,26 +15,69 @@ Target audience: race marshal with no prior exposure to the software. Follow the
 - UHF passive RFID tags (RAIN/EPC Gen 2, UHF 860–960 MHz) — one per rider
 
 **Network**
-- The laptop and the reader must be on the same LAN, or connected directly via Ethernet (see Section 3 for the Windows ICS bridge).
+- A wireless router or LAN switch (recommended — simplest setup), **or** a direct Ethernet cable between the reader and your laptop (Section 3.2 / 3.3 below).
 - No internet access is required during a race.
 
 ---
 
 ## 2. One-time reader setup
 
-1. Mount antennas at the timing line (typically 2 antennas spread across the track width, facing up toward passing riders).
-2. Connect antennas to the reader's antenna ports.
-3. Power the reader via PoE. The reader boots in approximately 30 seconds.
-4. Assign the reader a static IP on your LAN. The default factory IP varies by unit; check the label on the reader or use the Sirit web interface (connect directly via Ethernet and browse to `http://169.254.x.x` — the reader's link-local address). Set the IP to something predictable, e.g., `192.168.1.130`.
-5. Note the IP — you will enter it in Racetag's Settings on first launch.
+The reader ships with a static link-local IP `169.254.1.2`. Before plugging it into a normal network, flip it to DHCP so a router or your laptop can assign it an address.
 
-For deep dives on the reader protocol and firmware, see `apps/reader-service/docs/Sirit INfinity 510/`.
+1. **Mount antennas** at the timing line (typically 2 antennas spread across the track width, facing up toward passing riders).
+2. **Connect antennas** to the reader's antenna ports.
+3. **Power the reader via PoE.** It boots in ~30 seconds.
+4. **Connect the reader's Ethernet directly to your laptop** for this one-time step.
+5. **Set your laptop's Ethernet adapter to `169.254.1.100` / netmask `255.255.255.0`** so it can talk to the reader's factory IP.
+   - **macOS:** System Settings → Network → Ethernet → Details → **TCP/IP** → Configure IPv4: **Manually** → IP `169.254.1.100`, Subnet `255.255.255.0`. (Router/DNS fields can stay empty.)
+   - **Windows:** `ncpa.cpl` → right-click Ethernet → Properties → IPv4 → Properties → Use the following IP address: `169.254.1.100` / `255.255.255.0`.
+6. **SSH into the reader and flip it to DHCP:**
+   ```
+   ssh cliuser@169.254.1.2          # no password
+   com.network.1.set(dhcp)
+   reader.reboot()
+   ```
+7. **Revert your laptop's Ethernet** back to "Using DHCP" (or "Obtain an IP address automatically").
+
+The reader will now ask for an IP via DHCP every time it boots. Pick **one** of the network topologies in Section 3.
+
+For deep dives on the reader's CLI and protocol, see `apps/reader-service/docs/Sirit INfinity 510/`.
 
 ---
 
-## 3. ICS bridging on Windows (direct Ethernet connection)
+## 3. Network topology — pick one
 
-If the reader is connected directly to your laptop's Ethernet port (not through a LAN switch), Windows needs Internet Connection Sharing (ICS) to bridge the Wi-Fi and Ethernet adapters so the reader gets an IP address.
+### 3.1 Wireless router or LAN switch (recommended)
+
+The easiest setup once the reader is in DHCP mode.
+
+1. **Plug the reader's Ethernet into your router's LAN port** (or any switch on the same network your laptop is on — wired or wireless).
+2. **Find the IP the router gave it:**
+   - **Easiest:** open your router's admin page and look for a device with hostname starting with `00179e…` (Sirit's MAC prefix).
+   - **macOS / Linux:** `arp -a | grep -i "0:17:9e"`
+   - **Windows:** `arp -a | findstr "00-17-9e"`
+   - **mDNS shortcut:** the reader advertises itself as `<serial>.local`. Try `ping 00179eXXXXXX.local` where `XXXXXX` is the last six characters of the serial number on the reader's sticker, or open `http://00179eXXXXXX.local` in a browser to hit the reader's web portal (user `admin`, pass `readeradmin`).
+3. **Note the IP** — you'll enter it in Racetag's Settings (Section 4).
+
+### 3.2 Direct Ethernet on macOS (Internet Sharing)
+
+Use this if there's no router available and the reader is plugged straight into your Mac.
+
+1. **Connect the reader to the Mac with an Ethernet cable** (USB-Ethernet adapters work fine).
+2. **System Settings → General → Sharing → Internet Sharing → ⓘ.**
+3. **Share your connection from:** Wi-Fi.
+4. **To devices using:** check the Ethernet adapter (e.g., "USB 10/100/1000 LAN").
+5. **Toggle Internet Sharing on** (top-right of the sheet). Confirm "Start" when prompted.
+6. macOS sets the Ethernet adapter to `192.168.2.1` and runs a DHCP server on it. The reader will get an address in the `192.168.2.x` range. (Note: the exact subnet depends on the macOS version — older versions used `10.0.2.x`; check the actual Ethernet IP under Network details.)
+7. **Find the reader's IP:**
+   ```
+   arp -a | grep -i "0:17:9e"
+   ```
+8. **Note the IP** — you'll enter it in Racetag's Settings.
+
+If macOS asks for firewall permission when Racetag opens, allow it (System Settings → Network → Firewall → Options).
+
+### 3.3 Direct Ethernet on Windows (Internet Connection Sharing)
 
 1. Connect the reader to the laptop with an Ethernet cable.
 2. Press `Win + R`, type `ncpa.cpl`, press Enter.
@@ -43,18 +86,14 @@ If the reader is connected directly to your laptop's Ethernet port (not through 
 5. In the **Home networking connection** dropdown, select the Ethernet adapter connected to the reader.
 6. Click **OK**. Windows sets the Ethernet adapter to a static `192.168.137.1` and starts a DHCP server on it. The reader will receive an address in the `192.168.137.x` range.
 7. Find the reader's IP:
-
-```powershell
-arp -a
-# Or search by the reader's MAC prefix, e.g.:
-arp -a | findstr "00-17-9e"
-```
-
-8. Enter this IP in Racetag's Settings (see Section 4).
+   ```powershell
+   arp -a | findstr "00-17-9e"
+   ```
+8. Note the IP — you'll enter it in Racetag's Settings.
 
 Windows Defender Firewall may show a prompt the first time Racetag opens outbound TCP connections. Allow it.
 
-(See `apps/reader-service/docs/Sirit INfinity 510/` for screenshots.)
+(See `apps/reader-service/docs/Sirit INfinity 510/` for screenshots of the web portal.)
 
 ---
 
@@ -101,8 +140,11 @@ In Settings, use the **Import CSV** button to register many riders at once. The 
 
 **"Reader not reachable" / no tags detected**
 - Confirm the reader is powered and the Ethernet cable is plugged in.
-- On Windows with a direct connection, confirm ICS is configured (Section 3) and the reader has an IP in the `192.168.137.x` range.
-- Verify the IP in Settings matches the reader's actual IP (`arp -a`).
+- Ping the reader: `ping <reader-ip>` should succeed. If it doesn't, the laptop and reader aren't on the same network.
+- If using a router (§3.1), check the router admin page or `arp -a` again — the reader may have got a different DHCP lease this boot.
+- If using direct Ethernet on macOS (§3.2), confirm Internet Sharing is still on (System Settings → Sharing) and the Ethernet adapter has the `192.168.2.1`-ish address.
+- If using direct Ethernet on Windows (§3.3), confirm ICS is configured and the reader has an IP in the `192.168.137.x` range.
+- Verify the IP in Settings matches the reader's actual IP.
 - Check that no firewall is blocking outbound TCP on ports 50007 and 50008.
 
 **Laps counted twice**
@@ -110,7 +152,7 @@ In Settings, use the **Import CSV** button to register many riders at once. The 
 - The backend has a secondary cooldown (`RACE_MIN_PASS_INTERVAL_S`). In the packaged build this defaults to `8` and is not exposed in the Settings UI; contact the operator guide author if you need to override it.
 
 **Window didn't open / blank screen**
-- On macOS: check that Racetag has permission to accept incoming connections (System Preferences → Security & Privacy → Firewall → App exceptions).
+- On macOS: check that Racetag has permission to accept incoming connections (System Settings → Network → Firewall → Options). If you're testing an unsigned local build, right-click `Racetag.app` → Open the first time to clear Gatekeeper.
 - On Windows: allow Racetag through Windows Defender Firewall if prompted.
 - Try restarting the app. The backend port is picked dynamically on each launch.
 
