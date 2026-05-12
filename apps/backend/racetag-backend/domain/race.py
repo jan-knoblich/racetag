@@ -12,6 +12,21 @@ def parse_iso(s: str) -> datetime:
     return datetime.fromisoformat(s)
 
 
+def _now_iso_utc() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
+
+
+# Defence for the "reader has no battery-backed RTC and reports year-1999
+# timestamps" failure mode (W-030 + reader-service info.time push). We
+# substitute server-now ONLY for timestamps that are obviously the reader's
+# manufacturer epoch (year-2000 or earlier). A narrower guard than "older
+# than race start by N seconds" so that legitimate replay/test fixtures with
+# fixed past timestamps still flow through unchanged.
+_IMPLAUSIBLE_BEFORE_YEAR = 2020
+
+
 class Participant(BaseModel):
     tag_id: str
     laps: int = 0
@@ -45,6 +60,20 @@ class RaceState:
         freezes finish_time/total_time_ms. Subsequent passes will keep laps and last_pass_time
         advancing, but standings/gaps are computed against the finish state.
         """
+        # Defensive timestamp sanity check. If the upstream reader-service is
+        # configured to push the host clock (sirit_client._maybe_bind_and_config)
+        # this branch never fires. But on a reader whose clock failed to set —
+        # e.g. the info.time push raced the first arrive event, or the user
+        # ran a custom reader script — pass_time_iso can be year-1999 nonsense
+        # (the Sirit's manufacturer epoch) that breaks the standings math.
+        # Substitute server-now for anything before 2020 or unparseable.
+        try:
+            t_in = parse_iso(pass_time_iso)
+            if t_in.year < _IMPLAUSIBLE_BEFORE_YEAR:
+                pass_time_iso = _now_iso_utc()
+        except (ValueError, TypeError):
+            pass_time_iso = _now_iso_utc()
+
         p = self.participants.get(tag_id)
         if p is None:
             p = Participant(tag_id=tag_id)

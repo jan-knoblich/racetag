@@ -116,3 +116,56 @@ def test_add_lap_z_suffix_timestamps():
     race.add_lap("TAGZ01", "2026-04-15T10:00:15.000Z")  # 15 s later — allowed
 
     assert race.participants["TAGZ01"].laps == 2
+
+
+# ---------------------------------------------------------------------------
+# Defensive guard for implausibly-old reader timestamps.
+#
+# The Sirit INfinity 510 has no battery-backed RTC; if the reader-service
+# fails to push the host clock, events can carry year-1999 timestamps that
+# would make race-time math wildly negative. add_lap substitutes server-now
+# for any pass_time older than 24h before race start.
+# ---------------------------------------------------------------------------
+
+def test_add_lap_replaces_year_1999_timestamp_with_server_now():
+    """A year-1999 pass_time gets rewritten to ~now; total_time_ms stays positive."""
+    race = RaceState(total_laps=5, min_pass_interval_s=0.0)
+
+    race.add_lap("OLDREADER", "1999-11-29T23:03:20.000Z")
+
+    p = race.participants["OLDREADER"]
+    assert p.laps == 1
+    assert p.last_pass_time is not None
+    # The 1999 timestamp must NOT have been stored verbatim.
+    assert not p.last_pass_time.startswith("1999")
+    assert p.total_time_ms is not None
+    # Race-start is "now" at RaceState construction; the synthetic substitute
+    # is also "now", so the difference must be small and non-negative.
+    assert p.total_time_ms >= 0
+    assert p.total_time_ms < 5_000
+
+
+def test_add_lap_keeps_realistic_timestamp_unmodified():
+    """Sane recent timestamps are passed through unchanged."""
+    race = RaceState(total_laps=5, min_pass_interval_s=0.0)
+
+    from domain.race import _now_iso_utc
+
+    realistic = _now_iso_utc()
+    race.add_lap("OK_TAG", realistic)
+
+    assert race.participants["OK_TAG"].last_pass_time == realistic
+
+
+def test_add_lap_handles_garbage_timestamp_string():
+    """A non-ISO timestamp string is replaced by server-now rather than crashing."""
+    race = RaceState(total_laps=5, min_pass_interval_s=0.0)
+
+    race.add_lap("GARBAGE", "this is not a date")
+
+    p = race.participants["GARBAGE"]
+    assert p.laps == 1
+    assert p.last_pass_time is not None
+    # Substitute must be a valid ISO string we can parse back.
+    from domain.race import parse_iso
+    parse_iso(p.last_pass_time)

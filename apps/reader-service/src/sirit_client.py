@@ -226,6 +226,21 @@ class SiritClient:
         try:
             self._send_control([f"reader.events.bind(id = {sid})"])
             logger.info("[SESSION] bound event channel id %d", sid)
+            # Push the host's UTC clock to the reader. The Sirit INfinity 510
+            # has no battery-backed RTC and boots at a manufacturer epoch
+            # (~1999), which would make every event timestamp wildly in the
+            # past and break race-time / standings math downstream. We send
+            # this BEFORE init_commands so the rest of the session (including
+            # the very first arrive event) carries a sane timestamp.
+            #
+            # Format: ISO 8601 without timezone suffix, e.g. "2026-05-12T20:05:00.123".
+            # info.time_zone is set to UTC by init_commands, so the reader
+            # interprets the naive value as UTC.
+            now_for_reader = (
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+            )
+            self._send_control([f"info.time={now_for_reader}"])
+            logger.info("[SESSION] pushed host UTC clock to reader: %s", now_for_reader)
             extra_cmds: List[str] = []
             if self.init_commands_path:
                 try:
