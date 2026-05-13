@@ -50,6 +50,9 @@ const state = {
   lastUnknownTag: null, // { tag_id, timestamp } | null
   // W-036: current total laps setting
   totalLaps: 5,
+  // Explicit-start model: race must be started before laps count
+  raceStarted: false,
+  raceStartedAt: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -462,8 +465,31 @@ async function loadRaceConfig() {
       const input = $('#totalLapsInput');
       if (input) input.value = state.totalLaps;
     }
+    state.raceStarted = !!data.started;
+    state.raceStartedAt = data.started_at || null;
+    renderRaceStatus();
   } catch {
     // silently ignore — config sync is best-effort
+  }
+}
+
+// Update the in-header race-status banner + Start-button enabled state.
+function renderRaceStatus() {
+  const banner = $('#raceStatus');
+  const btn = $('#startRaceBtn');
+  if (state.raceStarted && state.raceStartedAt) {
+    const t = formatTimestampForDisplay(state.raceStartedAt);
+    if (banner) banner.textContent = `Race: running since ${t}`;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Race started';
+    }
+  } else {
+    if (banner) banner.textContent = 'Race: not started — press Start to begin';
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Start race';
+    }
   }
 }
 
@@ -553,6 +579,13 @@ function connectSSE() {
             renderStandings(state.lastStandings);
           }
         }
+
+        // Race started — explicit-start model
+        if (data?.type === 'race_started') {
+          state.raceStarted = true;
+          state.raceStartedAt = data.started_at || null;
+          renderRaceStatus();
+        }
       } catch {
         // ignore non-JSON payloads
       }
@@ -639,6 +672,30 @@ function init() {
     });
   }
 
+  // Start race button (explicit-start model)
+  const startRaceBtn = $('#startRaceBtn');
+  if (startRaceBtn) {
+    startRaceBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch(`${state.backend}/race/start`, {
+          method: 'POST',
+          headers: getApiHeaders(),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          state.raceStarted = true;
+          state.raceStartedAt = data.started_at || null;
+          renderRaceStatus();
+          showToast('Race started');
+        } else {
+          showToast(`Start failed: HTTP ${res.status}`);
+        }
+      } catch (err) {
+        showToast(`Start error: ${err.message}`);
+      }
+    });
+  }
+
   // W-036: Reset race button
   const resetRaceBtn = $('#resetRaceBtn');
   if (resetRaceBtn) {
@@ -651,6 +708,9 @@ function init() {
         });
         if (res.ok) {
           renderStandings([]);
+          state.raceStarted = false;
+          state.raceStartedAt = null;
+          renderRaceStatus();
           showToast('Race reset');
         } else {
           showToast(`Reset failed: HTTP ${res.status}`);

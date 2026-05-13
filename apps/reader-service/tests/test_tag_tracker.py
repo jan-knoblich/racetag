@@ -84,6 +84,62 @@ def test_single_antenna_single_pass():
     assert tracker.mark_absent("112233", 1) is True
 
 
+def test_multi_antenna_slight_misalignment_emits_one_arrive():
+    """Two antennas see the same tag fractionally apart (timing skew of
+    100 ms-ish), then both depart at slightly different times. Even with the
+    misalignment, exactly one arrive and one depart must be emitted — the
+    per-tag presence set absorbs the skew."""
+    tracker, clock = make_tracker(min_lap_interval_s=10.0, clock_start=0.0)
+    tag = "AABBCC"
+
+    # ant=1 arrives first (closer or earlier in the rider's pass through the gate)
+    assert tracker.mark_present(tag, 1) is True
+
+    # ~150 ms later, ant=2 also picks up the same tag (misalignment skew)
+    clock.advance(0.15)
+    assert tracker.mark_present(tag, 2) is False, (
+        "second antenna seeing same tag during one pass must not emit a second arrive"
+    )
+
+    # ant=1 sees its last read first → departs while ant=2 still has the tag
+    clock.advance(0.20)
+    assert tracker.mark_absent(tag, 1) is False, (
+        "first antenna departing while second still has the tag must not emit depart"
+    )
+
+    # ant=2 finally departs ~250 ms after ant=1's depart
+    clock.advance(0.25)
+    assert tracker.mark_absent(tag, 2) is True, (
+        "only the LAST antenna's depart (= when the rider has fully cleared the "
+        "gate) should emit the depart event"
+    )
+
+
+def test_multi_antenna_skew_does_not_double_count_after_cooldown_elapsed():
+    """Even if antenna-2's read straggles in well after antenna-1's depart, as
+    long as both readings belong to the same pass (within cooldown), only one
+    lap is counted. This guards against the failure mode where the rider has
+    fully cleared antenna 1 before antenna 2 finally registers the tag."""
+    tracker, clock = make_tracker(min_lap_interval_s=10.0, clock_start=0.0)
+    tag = "DEADBE"
+
+    # ant=1: full arrive + depart cycle
+    assert tracker.mark_present(tag, 1) is True
+    clock.advance(0.4)
+    assert tracker.mark_absent(tag, 1) is True
+
+    # ant=2 finally picks up the tag 2 s later — still within the 10 s cooldown
+    # window. Even though presence set is currently empty (so the transition
+    # would normally emit), the cooldown gate must suppress it.
+    clock.advance(2.0)
+    assert tracker.mark_present(tag, 2) is False
+    assert tracker.mark_absent(tag, 2) is True
+
+    # Way past the cooldown — next pass legitimately starts another lap
+    clock.advance(15.0)
+    assert tracker.mark_present(tag, 1) is True
+
+
 # ---------------------------------------------------------------------------
 # W-002: minimum lap interval cooldown tests
 # ---------------------------------------------------------------------------

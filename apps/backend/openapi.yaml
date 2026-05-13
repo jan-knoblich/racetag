@@ -65,10 +65,31 @@ paths:
                   total_laps:
                     type: integer
 
+  /race/start:
+    post:
+      summary: Start the race (explicit-start model)
+      description: |
+        Marks the race as started; until this is called add_lap is a no-op.
+        Idempotent — calling twice returns the existing started_at so UI
+        double-clicks don't reset the clock. Broadcasts a race_started SSE
+        event with the started_at timestamp.
+      responses:
+        '200':
+          description: Race started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  started:
+                    type: boolean
+                  started_at:
+                    type: string
+
   /race/reset:
     post:
       summary: Reset race (W-036)
-      description: Clears all participant data and persisted events. Riders are preserved. Broadcasts race_reset SSE event.
+      description: Clears all participant data and persisted events. Resets the started flag too — after reset the race is back in the pending state. Riders are preserved. Broadcasts race_reset SSE event.
       responses:
         '204':
           description: Race reset successfully
@@ -407,6 +428,15 @@ components:
           type: integer
         start_time:
           type: string
+          description: RaceState construction time (kept for backward compatibility).
+        started:
+          type: boolean
+          default: false
+          description: True after POST /race/start has been called.
+        started_at:
+          type: string
+          nullable: true
+          description: ISO 8601 UTC timestamp the race was explicitly started.
         participants:
           type: array
           items:

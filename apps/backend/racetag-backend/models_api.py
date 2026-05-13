@@ -72,6 +72,11 @@ class ClassificationDTO(BaseModel):
 class RaceDTO(BaseModel):
     total_laps: int
     start_time: str
+    # Explicit-start model: started_at is the timestamp the user clicked
+    # "Start race". None until then. start_time (above) is the RaceState
+    # construction time and is kept for backward compatibility / debugging.
+    started: bool = False
+    started_at: Optional[str] = None
     participants: List[ParticipantDTO]
 
 

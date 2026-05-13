@@ -101,6 +101,19 @@ if _persisted_total_laps is not None:
 # Global single race for MVP
 race = RaceState(total_laps=_RACE_TOTAL_LAPS, min_pass_interval_s=_RACE_MIN_PASS_INTERVAL_S)
 
+# Explicit-start model: restore started state from persisted meta on boot so
+# a restart mid-race continues counting laps rather than dropping back into
+# pre-start. The race-reset endpoint clears both keys.
+_persisted_started_at = storage.get_meta("race_started_at")
+if _persisted_started_at:
+    try:
+        from datetime import datetime as _dt
+        # parse_iso lives in domain.race; import lazily to keep top-of-file tidy
+        from domain.race import parse_iso as _parse_iso
+        race.start(now=_parse_iso(_persisted_started_at))
+    except (ValueError, TypeError):
+        pass  # corrupted meta value — leave race as not-started
+
 # Debug/event store
 events: List[TagEventDTO] = []
 
@@ -274,11 +287,33 @@ def get_classification():
 
 @app.get("/race", response_model=RaceDTO)
 def get_race():
+    started_at_iso = None
+    if race.started_at is not None:
+        started_at_iso = (
+            race.started_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        )
     return {
         "total_laps": race.total_laps,
         "start_time": race.start_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "started": race.started,
+        "started_at": started_at_iso,
         "participants": _build_standings_items(),
     }
+
+
+@app.post("/race/start", status_code=200)
+def post_race_start():
+    """Mark the race as started. Idempotent: returns the existing started_at
+    if already started (UI double-clicks don't reset the clock). Broadcasts
+    a {type: "race_started", started_at: <ISO>} SSE event."""
+    from datetime import datetime, timezone
+    started_at = race.start(now=datetime.now(timezone.utc))
+    started_at_iso = (
+        started_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    )
+    storage.set_meta("race_started_at", started_at_iso)
+    _publish({"type": "race_started", "started_at": started_at_iso})
+    return {"started": True, "started_at": started_at_iso}
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +331,11 @@ def post_race_reset():
     Broadcasts a {type: "race_reset"} SSE event. Returns 204 on success.
     """
     race.participants.clear()
+    # Reset the explicit-start flag and clear its persisted meta so a fresh
+    # race begins in the pending/not-started state.
+    race.started = False
+    race.started_at = None
+    storage.set_meta("race_started_at", "")
     storage.clear_events()
     # Clear the in-memory events log too
     events.clear()

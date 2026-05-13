@@ -161,7 +161,13 @@ def test_classification_reflects_posted_events(fresh_app):
     This is a contract test: verifies that the ingest → race-state → classification
     pipeline is wired end-to-end through the HTTP layer.
     """
-    client, _ = fresh_app
+    client, app_module = fresh_app
+
+    # Race must be started before laps count. Use direct domain access to set
+    # started_at well before the test's fixed timestamps so the first-pass
+    # cooldown is already satisfied.
+    from domain.race import parse_iso as _parse_iso
+    app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
 
     # Two arrives for tag A separated by 12 s (past the 8 s min_pass_interval default)
     client.post("/events/tag/batch", json=_batch([
@@ -312,6 +318,10 @@ def test_events_ingested_trigger_sse_broadcast(fresh_app):
     Registers the rider first so no unknown_tag frame is also generated (keeps assertion clean).
     """
     client, app_module = fresh_app
+
+    # Start race before posting events
+    from domain.race import parse_iso as _parse_iso
+    app_module.race.start(now=_parse_iso("2026-04-15T13:00:00.000Z"))
 
     tag = "SSEBCAST01"
     # Register rider so the arrive doesn't generate an unknown_tag frame

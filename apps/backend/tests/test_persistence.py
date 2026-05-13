@@ -102,6 +102,14 @@ def test_restart_preserves_standings(tmp_path, monkeypatch):
     # Timestamps must be strictly increasing per tag so the 0-second interval
     # gate is never triggered (delta > 0 is needed for the boundary check).
     app_module = _load_fresh_app(data_dir)
+    # Start race before posting events (pre-start events don't count laps).
+    # Persist started_at to meta so the phase-2 reloaded module rehydrates
+    # the started state — otherwise replay would re-apply events to a
+    # not-started race and laps would stay at 0.
+    from domain.race import parse_iso as _parse_iso
+    started_at_iso = "2026-04-15T11:00:00.000Z"
+    app_module.race.start(now=_parse_iso(started_at_iso))
+    app_module.storage.set_meta("race_started_at", started_at_iso)
     with TestClient(app_module.app) as client:
         # TAG-A: 3 laps
         for lap in range(3):
