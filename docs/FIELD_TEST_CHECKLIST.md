@@ -61,6 +61,7 @@ Roughly worst-first.
   Test at the venue with a tag at the height riders will carry it.
 - **No "rider DNF" UI.** A rider who drops out keeps showing in standings. Workaround for v0.1: ignore them.
 - **Stress test missing.** Never run with 20+ tags simultaneously. The async SSE refactor should handle it, but unverified. Mitigation: 5 minutes of "wave 5+ tags rapidly past the antenna" pre-event to spot throughput bugs.
+- **BUG-002: same physical tag may produce two participant rows.** Observed live (2026-05-13): a tag passed twice resulted in two rows in standings; the second pass did not increment laps on the first row. Suspected cause: the same physical tag is emitting two distinct `tag_id` strings (case, `0x` prefix, whitespace, or length difference) between reads, so the backend's per-tag dedupe treats them as different riders. Reader-service does `.upper()` + strip `0X` in `sirit_client.py:309-311`, so this shouldn't happen — needs investigation. Diagnostic plan documented in the chat log; runs `sqlite3 ~/.racetag/data/racetag.db "SELECT DISTINCT tag_id, length(tag_id) FROM tag_events;"` after a repro to compare the two strings character-by-character. Fix is likely 5 lines once the discrepancy is identified. Until fixed, manually delete duplicate riders via `DELETE /riders/{tag_id}` when they appear.
 
 ---
 
