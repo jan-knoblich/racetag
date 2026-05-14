@@ -1,4 +1,4 @@
-# apps/desktop — Racetag desktop bundle
+2# apps/desktop — Racetag desktop bundle
 
 Packages the backend (`apps/backend/`), frontend (`apps/frontend/`), and reader-service (`apps/reader-service/`) into a single double-clickable binary per OS using **pywebview** + **PyInstaller**.
 
@@ -14,7 +14,6 @@ Packages the backend (`apps/backend/`), frontend (`apps/frontend/`), and reader-
 6. Opens a native window via pywebview pointing at `http://127.0.0.1:<port>/`.
 7. On window close, terminates the reader-service subprocess and signals uvicorn to shut down.
 
-See `PACKAGING.md` for the rationale behind pywebview + PyInstaller versus Tauri, Electron, or nativefier.
 
 ## Current files
 

@@ -47,7 +47,7 @@ PRAGMA journal_mode=WAL;
 PRAGMA synchronous=FULL;
 ```
 
-WAL mode allows concurrent reads while a write is in progress. `synchronous=FULL` flushes to disk on every write, eliminating data loss on power failure. See [ARCHITECTURE.md](../../ARCHITECTURE.md) for the durability rationale.
+WAL mode allows concurrent reads while a write is in progress. `synchronous=FULL` flushes to disk on every write, eliminating data loss on power failure.
 
 A `meta` table stores persistent configuration overrides (reader IP, lap count, cooldown). On startup the backend merges these with env defaults so settings survive restarts.
 
