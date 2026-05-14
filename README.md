@@ -142,6 +142,7 @@ See [docs/TESTING.md](docs/TESTING.md). The CI workflow (`.github/workflows/ci.y
 - [ARCHITECTURE.md](ARCHITECTURE.md) — component diagram, data flow, tech stack
 - [docs/OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md) — field setup guide for race marshals
 - [docs/FIELD_TEST_CHECKLIST.md](docs/FIELD_TEST_CHECKLIST.md) — first-field-test prep, gaps to close, what to test for
+- [docs/issues/](docs/issues/) — per-bug / per-TODO write-ups with diagnostics and mitigation options
 - [PACKAGING.md](PACKAGING.md) — pywebview + PyInstaller desktop-build strategy
 - [ISSUES.md](ISSUES.md) — catalogued bugs with `file:line` references
 - [PLAN.md](PLAN.md) — phased work breakdown
