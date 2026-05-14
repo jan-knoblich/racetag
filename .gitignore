@@ -46,3 +46,12 @@ apps/desktop/dist/
 
 # Icon intermediates
 apps/desktop/icons/*.iconset/
+
+# Private planning / audit docs — kept on disk for local reference but
+# not tracked. Re-add with `git add -f <file>` if a specific document needs
+# to ship in the public repo.
+/ARCHITECTURE.md
+/ISSUES.md
+/PACKAGING.md
+/PLAN.md
+docs/issues/
