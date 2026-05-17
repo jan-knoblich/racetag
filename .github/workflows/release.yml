@@ -43,7 +43,9 @@ jobs:
           pip install -r apps/backend/requirements.txt
           pip install -r apps/reader-service/requirements.txt
           pip install -r apps/desktop/requirements.txt
-          pip install pyinstaller
+          # Pin to the 6.19.x line — that's what was verified locally for the
+          # mac bundle. Allow patch updates but block major-version drift.
+          pip install "pyinstaller==6.19.*"
 
       - name: Generate Windows version info
         if: matrix.os == 'windows-latest'
