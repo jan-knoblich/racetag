@@ -229,25 +229,38 @@ class SiritClient:
             # Push the host's UTC clock to the reader. The Sirit INfinity 510
             # has no battery-backed RTC and boots at a manufacturer epoch
             # (~1999), which would make every event timestamp wildly in the
-            # past and break race-time / standings math downstream. We send
-            # this BEFORE init_commands so the rest of the session (including
-            # the very first arrive event) carries a sane timestamp.
+            # past and break race-time / standings math downstream.
+            #
+            # ORDER MATTERS: we set info.time_zone=UTC *before* pushing the
+            # clock. If the reader is still in a non-UTC zone (e.g. Europe/Berlin,
+            # UTC+2) when we send a UTC value, it interprets our value as LOCAL
+            # time and converts it — leaving the reader clock offset by the zone
+            # (observed: 2 h behind), which makes event timestamps land before
+            # the race start and total times go negative. Setting the zone first
+            # means the naive value we send is taken as UTC, as intended.
             #
             # Format: ISO 8601 without timezone suffix, e.g. "2026-05-12T20:05:00.123".
-            # info.time_zone is set to UTC by init_commands, so the reader
-            # interprets the naive value as UTC.
             now_for_reader = (
                 datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
             )
-            self._send_control([f"info.time={now_for_reader}"])
-            logger.info("[SESSION] pushed host UTC clock to reader: %s", now_for_reader)
+            self._send_control([
+                "info.time_zone=UTC",
+                f"info.time={now_for_reader}",
+            ])
+            logger.info("[SESSION] set reader zone=UTC and pushed host UTC clock: %s", now_for_reader)
             extra_cmds: List[str] = []
             if self.init_commands_path:
                 try:
                     with open(self.init_commands_path, "r", encoding="utf-8") as f:
                         for line in f:
-                            line = line.strip()
-                            if not line or line.startswith('#'):
+                            # Strip inline comments (everything from the first '#')
+                            # AND full-line comments. The reader's parser does not
+                            # tolerate trailing comments, e.g.
+                            #   tag.reporting.depart_time = 300  # milliseconds
+                            # would otherwise be sent verbatim and rejected with
+                            # error.parser.illegal_value.
+                            line = line.split('#', 1)[0].strip()
+                            if not line:
                                 continue
                             extra_cmds.append(line)
                 except Exception as e:
