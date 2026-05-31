@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Security
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +24,10 @@ from models_api import (
     ParticipantDTO,
     ClassificationDTO,
     RaceDTO,
+    RaceSummaryDTO,
+    RaceListDTO,
+    RaceCreateDTO,
+    RaceUpdateDTO,
     BatchIngestResultDTO,
     TagEventBatchDTO,
     RiderDTO,
@@ -90,29 +94,62 @@ config_store = ConfigStore(storage)
 # Race state
 # ---------------------------------------------------------------------------
 
-# W-036: override env default with persisted total_laps if present in meta.
-_persisted_total_laps = storage.get_meta("total_laps")
-if _persisted_total_laps is not None:
-    try:
-        _RACE_TOTAL_LAPS = int(_persisted_total_laps)
-    except ValueError:
-        pass  # corrupted meta value — fall back to env default
+# Multi-race (2026-05-25): the active race is the one currently being raced.
+# storage.__init__ bootstraps a default race + active_race_id on a fresh DB
+# and migrates the legacy single-race tables into a default race on an old DB.
+# RaceState here mirrors the active Race row; switching active rebuilds it.
 
-# Global single race for MVP
-race = RaceState(total_laps=_RACE_TOTAL_LAPS, min_pass_interval_s=_RACE_MIN_PASS_INTERVAL_S)
+def _load_active_race_state() -> "tuple[RaceState, RiderStore]":
+    """Build a RaceState + RiderStore for whatever race is currently active.
 
-# Explicit-start model: restore started state from persisted meta on boot so
-# a restart mid-race continues counting laps rather than dropping back into
-# pre-start. The race-reset endpoint clears both keys.
-_persisted_started_at = storage.get_meta("race_started_at")
-if _persisted_started_at:
-    try:
-        from datetime import datetime as _dt
-        # parse_iso lives in domain.race; import lazily to keep top-of-file tidy
-        from domain.race import parse_iso as _parse_iso
-        race.start(now=_parse_iso(_persisted_started_at))
-    except (ValueError, TypeError):
-        pass  # corrupted meta value — leave race as not-started
+    Reads the active Race row from storage and applies legacy meta overrides
+    (``total_laps`` and ``race_started_at`` keys) for backward compat with
+    pre-multi-race tests that touch meta directly.
+    """
+    from domain.race import parse_iso as _parse_iso
+
+    active_id = storage.get_active_race_id()
+    if active_id is None:
+        raise RuntimeError("storage bootstrap failed to provide an active race")
+    race_row = storage.get_race(active_id)
+    if race_row is None:
+        raise RuntimeError(f"active_race_id={active_id} but no race row")
+
+    # total_laps — prefer the legacy meta override if it exists (test compat).
+    total_laps = race_row.total_laps
+    legacy_total = storage.get_meta("total_laps")
+    if legacy_total:
+        try:
+            total_laps = int(legacy_total)
+        except ValueError:
+            pass
+
+    rs = RaceState(
+        total_laps=total_laps,
+        min_pass_interval_s=_RACE_MIN_PASS_INTERVAL_S,
+        race_id=active_id,
+    )
+
+    # started state — Race row OR legacy meta key
+    started_at = race_row.started_at
+    legacy_started = storage.get_meta("race_started_at")
+    if legacy_started:
+        try:
+            started_at = _parse_iso(legacy_started)
+        except (ValueError, TypeError):
+            pass
+    if started_at is not None:
+        rs.start(now=started_at)
+
+    # ended state — only from Race row
+    if race_row.ended and race_row.ended_at is not None:
+        rs.end(now=race_row.ended_at)
+
+    rstore = RiderStore(storage=storage, race_id=active_id)
+    return rs, rstore
+
+
+race, rider_store = _load_active_race_state()
 
 # Debug/event store
 events: List[TagEventDTO] = []
@@ -137,8 +174,7 @@ events: List[TagEventDTO] = []
 subscribers: List[Any] = []   # elements are asyncio.Queue or legacy list
 _subscribers_lock = threading.Lock()
 
-# Rider registry (W-010) — backed by persistent storage (W-050)
-rider_store = RiderStore(storage=storage)
+# Rider registry (W-010) is built per-race by _load_active_race_state() above.
 
 # W-011: ring buffer of recent unknown-tag reads (max 50, newest at right)
 _UNKNOWN_TAG_CAP = 50
@@ -285,33 +321,143 @@ def get_classification():
     return {"count": len(items), "standings": items}
 
 
+def _slugify(s: str) -> str:
+    """Filesystem-safe slug for the export filename. Keeps letters/numbers/dash."""
+    import re
+    s = s.strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s or "race"
+
+
+def _build_classification_csv() -> tuple[str, str]:
+    """Build the CSV body for the active race and a filename hint.
+
+    Returns (csv_text, filename). The body starts with a UTF-8 BOM so Excel
+    auto-detects the encoding, plus a few '#'-prefixed metadata lines
+    (Excel treats them as text in column A), then the header + rows.
+    """
+    import csv
+    import io
+    from datetime import datetime, timezone
+
+    race_row = storage.get_race(race.race_id) if race.race_id else None
+    race_name = race_row.name if race_row else "Race"
+    scheduled_iso = _iso_or_none(race_row.scheduled_at) if race_row else None
+    started_iso = _iso_or_none(race.started_at)
+    ended_iso = _iso_or_none(race.ended_at)
+    exported_iso = datetime.now(timezone.utc).isoformat(
+        timespec="milliseconds"
+    ).replace("+00:00", "Z")
+
+    items = _build_standings_items()
+
+    buf = io.StringIO()
+    buf.write("﻿")  # UTF-8 BOM
+    buf.write(f"# Race: {race_name}\n")
+    if scheduled_iso:
+        buf.write(f"# Scheduled: {scheduled_iso}\n")
+    if started_iso:
+        buf.write(f"# Started: {started_iso}\n")
+    if ended_iso:
+        buf.write(f"# Ended: {ended_iso}\n")
+    buf.write(f"# Exported: {exported_iso}\n")
+    buf.write(f"# Total laps: {race.total_laps}\n")
+
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(
+        ["position", "bib", "name", "tag_id", "laps", "finished",
+         "finish_time", "total_time_ms", "last_pass_time"]
+    )
+    for idx, item in enumerate(items, start=1):
+        writer.writerow([
+            idx,
+            item.get("bib") or "",
+            item.get("name") or "",
+            item.get("tag_id") or "",
+            item.get("laps", 0),
+            "true" if item.get("finished") else "false",
+            item.get("finish_time") or "",
+            item.get("total_time_ms") if item.get("total_time_ms") is not None else "",
+            item.get("last_pass_time") or "",
+        ])
+
+    # Filename: racetag-<slug>-<YYYY-MM-DD>.csv (use scheduled date if set,
+    # else export date)
+    date_for_name = (
+        race_row.scheduled_at.strftime("%Y-%m-%d") if (race_row and race_row.scheduled_at)
+        else datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    )
+    filename = f"racetag-{_slugify(race_name)}-{date_for_name}.csv"
+    return buf.getvalue(), filename
+
+
+@app.get("/classification.csv", responses={200: {"content": {"text/csv": {}}}})
+def get_classification_csv():
+    """CSV export of the active race standings. UTF-8 with BOM for Excel."""
+    from fastapi.responses import Response
+    body, filename = _build_classification_csv()
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/races/{race_id}/classification.csv",
+         responses={200: {"content": {"text/csv": {}}}})
+def get_classification_csv_for_race(race_id: str):
+    """CSV export per race. For now only supported on the **active** race
+    (matches the in-memory RaceState). For non-active races, returns 409 —
+    the operator should activate the race first."""
+    if storage.get_race(race_id) is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    if race.race_id != race_id:
+        raise HTTPException(
+            status_code=409,
+            detail="race is not active; activate it first to export results",
+        )
+    return get_classification_csv()
+
+
+def _iso_or_none(dt) -> Optional[str]:
+    if dt is None:
+        return None
+    return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 @app.get("/race", response_model=RaceDTO)
 def get_race():
-    started_at_iso = None
-    if race.started_at is not None:
-        started_at_iso = (
-            race.started_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-        )
+    """Return the active race, enriched with id/name/scheduled_at from the
+    persisted Race row plus the in-memory standings."""
+    race_row = storage.get_race(race.race_id) if race.race_id else None
     return {
+        "id": race_row.id if race_row else None,
+        "name": race_row.name if race_row else None,
+        "scheduled_at": _iso_or_none(race_row.scheduled_at) if race_row else None,
         "total_laps": race.total_laps,
         "start_time": race.start_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "started": race.started,
-        "started_at": started_at_iso,
+        "started_at": _iso_or_none(race.started_at),
+        "ended": race.ended,
+        "ended_at": _iso_or_none(race.ended_at),
         "participants": _build_standings_items(),
     }
 
 
 @app.post("/race/start", status_code=200)
 def post_race_start():
-    """Mark the race as started. Idempotent: returns the existing started_at
-    if already started (UI double-clicks don't reset the clock). Broadcasts
-    a {type: "race_started", started_at: <ISO>} SSE event."""
+    """Mark the active race as started. Idempotent: returns the existing
+    started_at if already started. Persists to both the legacy meta key
+    (backward compat) and the active Race row. Broadcasts race_started SSE."""
     from datetime import datetime, timezone
     started_at = race.start(now=datetime.now(timezone.utc))
     started_at_iso = (
         started_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     )
     storage.set_meta("race_started_at", started_at_iso)
+    if race.race_id:
+        storage.update_race(race.race_id, started=True, started_at=started_at)
     _publish({"type": "race_started", "started_at": started_at_iso})
     return {"started": True, "started_at": started_at_iso}
 
@@ -326,35 +472,224 @@ class PatchRaceBody(BaseModel):
 
 @app.post("/race/reset", status_code=204)
 def post_race_reset():
-    """Clear all race participants + persisted events. Preserves riders.
-
-    Broadcasts a {type: "race_reset"} SSE event. Returns 204 on success.
-    """
+    """Clear all active-race participants + persisted events. Preserves riders.
+    Resets started/ended state on both the in-memory race AND the Race row.
+    Broadcasts race_reset SSE."""
     race.participants.clear()
-    # Reset the explicit-start flag and clear its persisted meta so a fresh
-    # race begins in the pending/not-started state.
     race.started = False
     race.started_at = None
+    race.ended = False
+    race.ended_at = None
     storage.set_meta("race_started_at", "")
+    storage.set_meta("race_ended_at", "")
+    if race.race_id:
+        storage.update_race(
+            race.race_id,
+            started=False, started_at=None,
+            ended=False, ended_at=None,
+        )
     storage.clear_events()
-    # Clear the in-memory events log too
     events.clear()
-    # Clear recent unknown-tag ring buffer
     with _unknown_tags_lock:
         recent_unknown_tags.clear()
     _publish({"type": "race_reset"})
 
 
-@app.patch("/race", status_code=200)
-def patch_race(body: PatchRaceBody):
-    """Update total_laps. Persists to meta table so the value survives restart.
+class PatchRaceFullBody(BaseModel):
+    """Body of PATCH /race — any subset of fields may be set."""
+    total_laps: Optional[int] = Field(default=None, ge=1, le=999)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    scheduled_at: Optional[str] = None
 
-    Broadcasts a {type: "race_updated", total_laps: <new>} SSE event.
-    """
-    race.total_laps = body.total_laps
-    storage.set_meta("total_laps", str(body.total_laps))
-    _publish({"type": "race_updated", "total_laps": body.total_laps})
-    return {"total_laps": race.total_laps}
+
+@app.patch("/race", status_code=200)
+def patch_race(body: PatchRaceFullBody):
+    """Update active-race metadata (total_laps / name / scheduled_at).
+    Persists to both the legacy meta key (total_laps only, for backward compat)
+    and the active Race row. Broadcasts race_updated SSE."""
+    from domain.race import parse_iso as _parse_iso
+
+    fields_to_update = {}
+    if body.total_laps is not None:
+        race.total_laps = body.total_laps
+        storage.set_meta("total_laps", str(body.total_laps))
+        fields_to_update["total_laps"] = body.total_laps
+    if body.name is not None:
+        fields_to_update["name"] = body.name
+    if body.scheduled_at is not None:
+        # Empty string == clear it.
+        if body.scheduled_at.strip():
+            try:
+                fields_to_update["scheduled_at"] = _parse_iso(body.scheduled_at)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="scheduled_at must be ISO 8601")
+        else:
+            fields_to_update["scheduled_at"] = None
+
+    if race.race_id and fields_to_update:
+        storage.update_race(race.race_id, **fields_to_update)
+
+    payload = {"type": "race_updated"}
+    if body.total_laps is not None:
+        payload["total_laps"] = body.total_laps
+    _publish(payload)
+
+    # Return the active race id + the updated fields for the caller.
+    race_row = storage.get_race(race.race_id) if race.race_id else None
+    return {
+        "id": race_row.id if race_row else None,
+        "name": race_row.name if race_row else None,
+        "scheduled_at": _iso_or_none(race_row.scheduled_at) if race_row else None,
+        "total_laps": race.total_laps,
+    }
+
+
+@app.post("/race/end", status_code=200)
+def post_race_end():
+    """Freeze the active race: ended/ended_at set, add_lap becomes a no-op.
+    Events still flow through to storage (record stays complete). Idempotent.
+    Broadcasts race_ended SSE."""
+    from datetime import datetime, timezone
+    ended_at = race.end(now=datetime.now(timezone.utc))
+    ended_at_iso = ended_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    storage.set_meta("race_ended_at", ended_at_iso)
+    if race.race_id:
+        storage.update_race(race.race_id, ended=True, ended_at=ended_at)
+    _publish({"type": "race_ended", "ended_at": ended_at_iso})
+    return {"ended": True, "ended_at": ended_at_iso}
+
+
+# ---------------------------------------------------------------------------
+# Multi-race CRUD (2026-05-25)
+# ---------------------------------------------------------------------------
+
+def _race_row_to_summary(row, *, active_id: Optional[str]) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "scheduled_at": _iso_or_none(row.scheduled_at),
+        "total_laps": row.total_laps,
+        "started": row.started,
+        "started_at": _iso_or_none(row.started_at),
+        "ended": row.ended,
+        "ended_at": _iso_or_none(row.ended_at),
+        "created_at": _iso_or_none(row.created_at),
+        "is_active": row.id == active_id,
+    }
+
+
+def _switch_active_race(new_race_id: str) -> None:
+    """Persist new active id, rebuild race + rider_store + replay events.
+
+    Single-threaded assumption: the operator UI sends one request at a time;
+    not safe for concurrent /races/{id}/activate calls (good enough for now)."""
+    global race, rider_store
+    if storage.get_race(new_race_id) is None:
+        raise HTTPException(status_code=404, detail=f"race {new_race_id} not found")
+    storage.set_active_race_id(new_race_id)
+    # Clear legacy meta keys so they don't bleed into the new race.
+    storage.set_meta("race_started_at", "")
+    storage.set_meta("race_ended_at", "")
+    storage.set_meta("total_laps", "")
+    race, rider_store = _load_active_race_state()
+    events.clear()
+    for ev in storage.iter_events():
+        _replay_event(ev)
+    with _unknown_tags_lock:
+        recent_unknown_tags.clear()
+
+
+@app.get("/races", response_model=RaceListDTO)
+def get_races():
+    active_id = storage.get_active_race_id()
+    rows = storage.list_races()
+    return {
+        "count": len(rows),
+        "items": [_race_row_to_summary(r, active_id=active_id) for r in rows],
+        "active_race_id": active_id,
+    }
+
+
+@app.post("/races", response_model=RaceSummaryDTO, status_code=201)
+def post_race(body: RaceCreateDTO):
+    from domain.race import parse_iso as _parse_iso
+    from domain.races import Race
+
+    sched = None
+    if body.scheduled_at:
+        try:
+            sched = _parse_iso(body.scheduled_at)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="scheduled_at must be ISO 8601")
+
+    new_race = Race(name=body.name, scheduled_at=sched, total_laps=body.total_laps)
+    storage.create_race(new_race)
+    active_id = storage.get_active_race_id()
+    return _race_row_to_summary(new_race, active_id=active_id)
+
+
+@app.get("/races/{race_id}", response_model=RaceSummaryDTO)
+def get_one_race(race_id: str):
+    row = storage.get_race(race_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    active_id = storage.get_active_race_id()
+    return _race_row_to_summary(row, active_id=active_id)
+
+
+@app.patch("/races/{race_id}", response_model=RaceSummaryDTO)
+def patch_race_by_id(race_id: str, body: RaceUpdateDTO):
+    from domain.race import parse_iso as _parse_iso
+
+    if storage.get_race(race_id) is None:
+        raise HTTPException(status_code=404, detail="race not found")
+
+    fields_to_update = {}
+    if body.name is not None:
+        fields_to_update["name"] = body.name
+    if body.total_laps is not None:
+        fields_to_update["total_laps"] = body.total_laps
+    if body.scheduled_at is not None:
+        if body.scheduled_at.strip():
+            try:
+                fields_to_update["scheduled_at"] = _parse_iso(body.scheduled_at)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="scheduled_at must be ISO 8601")
+        else:
+            fields_to_update["scheduled_at"] = None
+
+    if fields_to_update:
+        storage.update_race(race_id, **fields_to_update)
+
+    # If we just patched the active race, mirror total_laps onto the in-memory race.
+    if race.race_id == race_id and "total_laps" in fields_to_update:
+        race.total_laps = fields_to_update["total_laps"]
+        storage.set_meta("total_laps", str(fields_to_update["total_laps"]))
+
+    active_id = storage.get_active_race_id()
+    return _race_row_to_summary(storage.get_race(race_id), active_id=active_id)
+
+
+@app.delete("/races/{race_id}", status_code=204)
+def delete_race_by_id(race_id: str):
+    if storage.get_race(race_id) is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    if storage.get_active_race_id() == race_id:
+        raise HTTPException(
+            status_code=409,
+            detail="cannot delete the active race — switch to another race first",
+        )
+    storage.delete_race(race_id)
+
+
+@app.post("/races/{race_id}/activate", response_model=RaceSummaryDTO)
+def post_race_activate(race_id: str):
+    """Make race_id the active race: persist, rebuild in-memory state, replay events.
+    Broadcasts active_race_changed SSE so clients can refresh."""
+    _switch_active_race(race_id)
+    _publish({"type": "active_race_changed", "race_id": race_id})
+    active_id = storage.get_active_race_id()
+    return _race_row_to_summary(storage.get_race(race_id), active_id=active_id)
 
 
 # ---------------------------------------------------------------------------

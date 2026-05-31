@@ -41,7 +41,15 @@ class Participant(BaseModel):
 
 
 class RaceState:
-    def __init__(self, total_laps: int = 20, min_pass_interval_s: float = 8.0) -> None:
+    def __init__(
+        self,
+        total_laps: int = 20,
+        min_pass_interval_s: float = 8.0,
+        race_id: Optional[str] = None,
+    ) -> None:
+        # Which persisted race this runtime state belongs to. Optional so
+        # in-memory-only tests can construct a RaceState without storage.
+        self.race_id = race_id
         self.total_laps = total_laps
         # Defence-in-depth (W-003 / P0-1): reject duplicate lap events that arrive
         # within this many seconds of the previous pass for the same tag. Also
@@ -55,6 +63,11 @@ class RaceState:
         # authoritative anchor for the first-lap cooldown.
         self.started: bool = False
         self.started_at: Optional[datetime] = None
+        # Explicit-end model (multi-race). After end() the race is frozen:
+        # add_lap is a no-op so late/stray reads don't change standings, but
+        # the event is still persisted upstream so the record is complete.
+        self.ended: bool = False
+        self.ended_at: Optional[datetime] = None
         self.participants: Dict[str, Participant] = {}
 
     def start(self, now: Optional[datetime] = None) -> datetime:
@@ -65,6 +78,14 @@ class RaceState:
         self.started_at = now or datetime.now(timezone.utc)
         self.started = True
         return self.started_at
+
+    def end(self, now: Optional[datetime] = None) -> datetime:
+        """Mark the race as ended. Idempotent. After this, add_lap is a no-op."""
+        if self.ended and self.ended_at is not None:
+            return self.ended_at
+        self.ended_at = now or datetime.now(timezone.utc)
+        self.ended = True
+        return self.ended_at
 
     def add_lap(self, tag_id: str, pass_time_iso: str) -> Participant:
         """Add a lap pass. Increments laps and updates last_pass_time.
@@ -105,6 +126,12 @@ class RaceState:
         # Pre-start: don't count laps yet. Storage of the event has already
         # happened upstream so the read survives in the event log.
         if not self.started or self.started_at is None:
+            return p
+
+        # Post-end: race is frozen — late/stray reads don't change standings,
+        # but the upstream event log keeps the record (storage.append_event ran
+        # already in the app layer).
+        if self.ended:
             return p
 
         # First-pass-after-start cooldown: at least min_pass_interval_s must

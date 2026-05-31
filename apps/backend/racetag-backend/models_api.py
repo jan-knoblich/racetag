@@ -70,6 +70,17 @@ class ClassificationDTO(BaseModel):
 
 
 class RaceDTO(BaseModel):
+    """Race detail — used by GET /race (active race) and GET /races/{id}."""
+
+    # Multi-race fields (2026-05-25). id/name are required once multi-race
+    # ships; default to None for backward compat with anything still building a
+    # RaceDTO without an explicit race row.
+    id: Optional[str] = None
+    name: Optional[str] = None
+    scheduled_at: Optional[str] = None
+    ended: bool = False
+    ended_at: Optional[str] = None
+
     total_laps: int
     start_time: str
     # Explicit-start model: started_at is the timestamp the user clicked
@@ -78,6 +89,43 @@ class RaceDTO(BaseModel):
     started: bool = False
     started_at: Optional[str] = None
     participants: List[ParticipantDTO]
+
+
+class RaceSummaryDTO(BaseModel):
+    """Race summary — used by GET /races (no participant list, lighter)."""
+
+    id: str
+    name: str
+    scheduled_at: Optional[str] = None
+    total_laps: int
+    started: bool = False
+    started_at: Optional[str] = None
+    ended: bool = False
+    ended_at: Optional[str] = None
+    created_at: Optional[str] = None
+    is_active: bool = False
+
+
+class RaceListDTO(BaseModel):
+    count: int
+    items: List[RaceSummaryDTO]
+    active_race_id: Optional[str] = None
+
+
+class RaceCreateDTO(BaseModel):
+    """Body of POST /races."""
+
+    name: str = Field(..., min_length=1, max_length=200)
+    scheduled_at: Optional[str] = None  # ISO 8601 datetime; nullable
+    total_laps: int = Field(default=5, ge=1, le=999)
+
+
+class RaceUpdateDTO(BaseModel):
+    """Body of PATCH /races/{id} — every field optional, only set ones apply."""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    scheduled_at: Optional[str] = None
+    total_laps: Optional[int] = Field(default=None, ge=1, le=999)
 
 
 # ---------------------------------------------------------------------------
