@@ -53,6 +53,12 @@ const state = {
   // Explicit-start model: race must be started before laps count
   raceStarted: false,
   raceStartedAt: null,
+  // Multi-race: id/name of active race + ended state
+  activeRaceId: null,
+  activeRaceName: null,
+  activeRaceScheduledAt: null,
+  raceEnded: false,
+  raceEndedAt: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -454,7 +460,7 @@ async function loadSnapshot() {
   renderStandings(data.standings || []);
 }
 
-// W-036: fetch current race config and sync totalLaps + input
+// W-036: fetch current race config (and multi-race fields)
 async function loadRaceConfig() {
   try {
     const res = await fetch(`${state.backend}/race`, { headers: getApiHeaders() });
@@ -467,6 +473,11 @@ async function loadRaceConfig() {
     }
     state.raceStarted = !!data.started;
     state.raceStartedAt = data.started_at || null;
+    state.raceEnded = !!data.ended;
+    state.raceEndedAt = data.ended_at || null;
+    state.activeRaceId = data.id || null;
+    state.activeRaceName = data.name || null;
+    state.activeRaceScheduledAt = data.scheduled_at || null;
     renderRaceStatus();
   } catch {
     // silently ignore — config sync is best-effort
@@ -476,20 +487,78 @@ async function loadRaceConfig() {
 // Update the in-header race-status banner + Start-button enabled state.
 function renderRaceStatus() {
   const banner = $('#raceStatus');
-  const btn = $('#startRaceBtn');
-  if (state.raceStarted && state.raceStartedAt) {
+  const startBtn = $('#startRaceBtn');
+  const endBtn = $('#endRaceBtn');
+  const racePrefix = state.activeRaceName
+    ? `${state.activeRaceName} — `
+    : '';
+
+  if (state.raceEnded && state.raceEndedAt) {
+    const t = formatTimestampForDisplay(state.raceEndedAt);
+    if (banner) banner.textContent = `${racePrefix}Ended at ${t}`;
+    if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Race ended'; }
+    if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'Ended'; }
+  } else if (state.raceStarted && state.raceStartedAt) {
     const t = formatTimestampForDisplay(state.raceStartedAt);
-    if (banner) banner.textContent = `Race: running since ${t}`;
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = 'Race started';
-    }
+    if (banner) banner.textContent = `${racePrefix}Running since ${t}`;
+    if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Race started'; }
+    if (endBtn) { endBtn.disabled = false; endBtn.textContent = 'End race'; }
   } else {
-    if (banner) banner.textContent = 'Race: not started — press Start to begin';
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = 'Start race';
+    if (banner) banner.textContent = `${racePrefix}Not started — press Start to begin`;
+    if (startBtn) { startBtn.disabled = false; startBtn.textContent = 'Start race'; }
+    if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'End race'; }
+  }
+}
+
+// Multi-race: load the race list into the selector and sync active state.
+async function loadRaces() {
+  try {
+    const res = await fetch(`${state.backend}/races`, { headers: getApiHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    const sel = $('#raceSelect');
+    if (!sel) return;
+    sel.innerHTML = '';
+    (data.items || []).forEach((r) => {
+      const opt = document.createElement('option');
+      opt.value = r.id;
+      const schedSuffix = r.scheduled_at
+        ? ` (${formatTimestampForDisplay(r.scheduled_at)})`
+        : '';
+      opt.textContent = `${r.name}${schedSuffix}`;
+      if (r.is_active) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    state.activeRaceId = data.active_race_id;
+    const activeRace = (data.items || []).find((r) => r.is_active);
+    state.activeRaceName = activeRace ? activeRace.name : null;
+    state.activeRaceScheduledAt = activeRace ? activeRace.scheduled_at : null;
+    renderRaceStatus();
+  } catch {
+    // best-effort, ignore
+  }
+}
+
+// Multi-race: switch the active race on the backend, then reload everything.
+async function activateRace(raceId) {
+  try {
+    const res = await fetch(`${state.backend}/races/${raceId}/activate`, {
+      method: 'POST',
+      headers: getApiHeaders(),
+    });
+    if (!res.ok) {
+      showToast(`Activate failed: HTTP ${res.status}`);
+      return;
     }
+    showToast('Race switched');
+    // After activate, re-pull everything that's race-scoped
+    await Promise.all([
+      loadRaces(),
+      loadRaceConfig(),
+      loadSnapshot(),
+    ]);
+  } catch (e) {
+    showToast(`Activate error: ${e.message}`);
   }
 }
 
@@ -586,6 +655,21 @@ function connectSSE() {
           state.raceStartedAt = data.started_at || null;
           renderRaceStatus();
         }
+
+        // Race ended — multi-race
+        if (data?.type === 'race_ended') {
+          state.raceEnded = true;
+          state.raceEndedAt = data.ended_at || null;
+          renderRaceStatus();
+        }
+
+        // Multi-race: active race changed (someone activated a different race)
+        if (data?.type === 'active_race_changed') {
+          // Re-pull everything race-scoped
+          loadRaces();
+          loadRaceConfig();
+          loadSnapshot();
+        }
       } catch {
         // ignore non-JSON payloads
       }
@@ -616,11 +700,129 @@ function init() {
       connectSSE();
       fetchRecentUnknownTag();
       loadRaceConfig();
+      loadRaces();
     } catch (e) {
       console.error(e);
       setStatus('Failed to connect');
     }
   });
+
+  // Multi-race: switch active race via selector
+  const raceSelect = $('#raceSelect');
+  if (raceSelect) {
+    raceSelect.addEventListener('change', (e) => {
+      const newId = e.target.value;
+      if (newId && newId !== state.activeRaceId) {
+        activateRace(newId);
+      }
+    });
+  }
+
+  // Multi-race: open create-race modal
+  const newRaceBtn = $('#newRaceBtn');
+  if (newRaceBtn) {
+    newRaceBtn.addEventListener('click', () => {
+      const modal = $('#newRaceModal');
+      const err = $('#newRaceError');
+      const nameInput = $('#newRaceName');
+      if (modal) modal.hidden = false;
+      if (err) err.hidden = true;
+      if (nameInput) { nameInput.value = ''; nameInput.focus(); }
+      const sched = $('#newRaceScheduled');
+      if (sched) sched.value = '';
+      const laps = $('#newRaceTotalLaps');
+      if (laps) laps.value = state.totalLaps || 5;
+      const act = $('#newRaceActivate');
+      if (act) act.checked = true;
+    });
+  }
+
+  const newRaceCancel = $('#newRaceCancelBtn');
+  if (newRaceCancel) {
+    newRaceCancel.addEventListener('click', () => {
+      const modal = $('#newRaceModal');
+      if (modal) modal.hidden = true;
+    });
+  }
+
+  const newRaceSave = $('#newRaceSaveBtn');
+  if (newRaceSave) {
+    newRaceSave.addEventListener('click', async () => {
+      const name = ($('#newRaceName')?.value || '').trim();
+      const schedRaw = ($('#newRaceScheduled')?.value || '').trim();
+      const totalLaps = parseInt($('#newRaceTotalLaps')?.value || '5', 10) || 5;
+      const activate = !!$('#newRaceActivate')?.checked;
+      const errBox = $('#newRaceError');
+      if (!name) {
+        if (errBox) { errBox.textContent = 'Race name is required'; errBox.hidden = false; }
+        return;
+      }
+      // datetime-local gives "YYYY-MM-DDTHH:MM" \u2014 treat as UTC for simplicity
+      // (operators on race day enter the local time of the event; we keep it
+      // as-is and tag with Z so the backend parses it; race-day timezone
+      // policy can be refined later).
+      const scheduled_at = schedRaw ? `${schedRaw}:00.000Z` : null;
+      try {
+        const res = await fetch(`${state.backend}/races`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+          body: JSON.stringify({ name, scheduled_at, total_laps: totalLaps }),
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          if (errBox) { errBox.textContent = `Create failed: ${res.status} ${txt}`; errBox.hidden = false; }
+          return;
+        }
+        const created = await res.json();
+        const modal = $('#newRaceModal');
+        if (modal) modal.hidden = true;
+        showToast(`Race "${created.name}" created`);
+        if (activate) {
+          await activateRace(created.id);
+        } else {
+          await loadRaces();
+        }
+      } catch (e) {
+        if (errBox) { errBox.textContent = `Error: ${e.message}`; errBox.hidden = false; }
+      }
+    });
+  }
+
+  // End race button
+  const endRaceBtn = $('#endRaceBtn');
+  if (endRaceBtn) {
+    endRaceBtn.addEventListener('click', async () => {
+      if (!confirm('End the race? Standings will be frozen.')) return;
+      try {
+        const res = await fetch(`${state.backend}/race/end`, {
+          method: 'POST',
+          headers: getApiHeaders(),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          state.raceEnded = true;
+          state.raceEndedAt = data.ended_at || null;
+          renderRaceStatus();
+          showToast('Race ended');
+        } else {
+          showToast(`End failed: HTTP ${res.status}`);
+        }
+      } catch (e) {
+        showToast(`End error: ${e.message}`);
+      }
+    });
+  }
+
+  // Export CSV button
+  const exportBtn = $('#exportCsvBtn');
+  if (exportBtn) {
+    exportBtn.addEventListener('click', () => {
+      // Trigger a download by navigating to the endpoint. Browser handles
+      // Content-Disposition. Note: this doesn't carry API headers; if the
+      // backend is keyed, the user needs to extend this (open with auth).
+      window.location.href = `${state.backend}/classification.csv`;
+    });
+  }
 
   // CSV file upload handler (W-013: now POSTs to /riders)
   $('#csvFile').addEventListener('change', (e) => {
@@ -710,6 +912,8 @@ function init() {
           renderStandings([]);
           state.raceStarted = false;
           state.raceStartedAt = null;
+          state.raceEnded = false;
+          state.raceEndedAt = null;
           renderRaceStatus();
           showToast('Race reset');
         } else {
@@ -827,6 +1031,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     connectSSE();
     fetchRecentUnknownTag();
     loadRaceConfig();
+    loadRaces();
   } catch (e) {
     console.warn('Auto-connect failed, please set backend URL and click Connect');
     setStatus('Disconnected');

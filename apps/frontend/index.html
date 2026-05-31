@@ -18,8 +18,18 @@
         <button id="importCsvBtn">Import CSV</button>
         <!-- W-012: Register rider button -->
         <button id="coupleTagBtn">Couple tag &#x2192; rider</button>
+        <!-- Multi-race: race selector + create -->
+        <label class="toggle-control race-select-control">
+          Race:
+          <select id="raceSelect"></select>
+          <button id="newRaceBtn" title="Create a new race">+</button>
+        </label>
         <!-- Race start (explicit-start model) -->
         <button id="startRaceBtn" class="btn-primary">Start race</button>
+        <!-- End race (multi-race) -->
+        <button id="endRaceBtn" class="btn-warn">End race</button>
+        <!-- Export CSV results -->
+        <button id="exportCsvBtn">Export results</button>
         <!-- W-036: Reset race -->
         <button id="resetRaceBtn" class="btn-warn">Reset race</button>
         <!-- W-074: Settings -->
@@ -123,6 +133,41 @@
           <button id="modalSaveBtn" class="btn-primary">Save</button>
           <button id="modalCancelBtn">Cancel</button>
           <button id="modalRetryBtn" class="btn-warn" hidden>Retry</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Multi-race: create-race modal -->
+    <div id="newRaceModal" class="modal-backdrop" role="dialog" aria-modal="true"
+         aria-labelledby="newRaceModalTitle" hidden>
+      <div class="modal-box">
+        <h2 id="newRaceModalTitle" class="modal-title">Create race</h2>
+
+        <div class="modal-field">
+          <label for="newRaceName">Race name</label>
+          <input id="newRaceName" type="text" placeholder="e.g. Volksradrennen Sonntag" />
+        </div>
+
+        <div class="modal-field">
+          <label for="newRaceScheduled">Scheduled date / time</label>
+          <input id="newRaceScheduled" type="datetime-local" />
+        </div>
+
+        <div class="modal-field">
+          <label for="newRaceTotalLaps">Total laps</label>
+          <input id="newRaceTotalLaps" type="number" min="1" max="999" value="5" />
+        </div>
+
+        <label class="modal-field" style="flex-direction: row; align-items: center; gap: 6px;">
+          <input id="newRaceActivate" type="checkbox" checked />
+          Activate this race after creating
+        </label>
+
+        <div id="newRaceError" class="modal-error" hidden></div>
+
+        <div class="modal-actions">
+          <button id="newRaceSaveBtn" class="btn-primary">Create</button>
+          <button id="newRaceCancelBtn">Cancel</button>
         </div>
       </div>
     </div>

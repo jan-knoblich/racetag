@@ -235,6 +235,22 @@ tbody tr:hover { background: #0b1220; }
   .toast { transition: none; }
 }
 
+/* ---- Multi-race: race selector inline control ---- */
+.race-select-control {
+  gap: 4px;
+}
+.race-select-control select {
+  background: #0b1220;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  min-width: 160px;
+}
+.race-select-control button {
+  padding: 4px 8px;
+}
+
 /* ---- W-036: Total-laps inline control ---- */
 .laps-control {
   gap: 4px;
