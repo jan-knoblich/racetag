@@ -235,6 +235,26 @@ tbody tr:hover { background: #0b1220; }
   .toast { transition: none; }
 }
 
+/* ---- Multi-race: checkbox row inside modals ---- */
+.modal-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.modal-checkbox-row input[type="checkbox"] {
+  width: auto;        /* override .modal-field input width:100% */
+  margin: 0;
+}
+.modal-checkbox-row label {
+  font-size: 13px;
+  color: var(--fg);
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
 /* ---- Multi-race: race selector inline control ---- */
 .race-select-control {
   gap: 4px;

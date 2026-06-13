@@ -76,7 +76,9 @@ CREATE TABLE IF NOT EXISTS tag_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tag_events_time ON tag_events(timestamp);
-CREATE INDEX IF NOT EXISTS idx_tag_events_race ON tag_events(race_id);
+-- idx_tag_events_race is created in _migrate_legacy() AFTER the migration adds
+-- the race_id column to legacy tag_events tables (creating the index here would
+-- fail on a pre-multi-race DB that doesn't have the column yet).
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -132,6 +134,11 @@ class Storage:
         # is at least one race + an active id set.
         self._migrate_legacy()
         self._ensure_default_race()
+        # Create the race index now that tag_events.race_id is guaranteed to exist.
+        with self._lock:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tag_events_race ON tag_events(race_id);"
+            )
 
     # ---- internal helpers -----------------------------------------------
 
@@ -180,39 +187,39 @@ class Storage:
         self._set_active_race_id_locked(default_race.id)
         default_id = default_race.id
 
+        # executescript() and ALTER TABLE both auto-commit on their own, so
+        # wrapping them in BEGIN/COMMIT would conflict. Run each statement
+        # individually inside the write lock; on a fresh DB this whole block
+        # is a no-op anyway.
         with self._lock:
-            self._conn.execute("BEGIN;")
-            try:
-                if needs_rider_migration:
-                    # Rebuild riders with the new (race_id, tag_id) primary key.
-                    self._conn.executescript(
-                        f"""
-                        CREATE TABLE riders_new (
-                            race_id    TEXT NOT NULL,
-                            tag_id     TEXT NOT NULL,
-                            bib        TEXT NOT NULL,
-                            name       TEXT NOT NULL,
-                            created_at TEXT NOT NULL,
-                            PRIMARY KEY (race_id, tag_id),
-                            FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE
-                        );
-                        INSERT INTO riders_new (race_id, tag_id, bib, name, created_at)
-                            SELECT '{default_id}', tag_id, bib, name, created_at FROM riders;
-                        DROP TABLE riders;
-                        ALTER TABLE riders_new RENAME TO riders;
-                        """
-                    )
-                if needs_event_migration:
-                    self._conn.execute(
-                        f"ALTER TABLE tag_events ADD COLUMN race_id TEXT NOT NULL DEFAULT '{default_id}';"
-                    )
-                    self._conn.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_tag_events_race ON tag_events(race_id);"
-                    )
-                self._conn.execute("COMMIT;")
-            except Exception:
-                self._conn.execute("ROLLBACK;")
-                raise
+            if needs_rider_migration:
+                # Rebuild riders with the new (race_id, tag_id) primary key.
+                # Use individual execute() calls (not executescript, which
+                # would commit any in-flight transaction halfway through).
+                self._conn.execute(
+                    """
+                    CREATE TABLE riders_new (
+                        race_id    TEXT NOT NULL,
+                        tag_id     TEXT NOT NULL,
+                        bib        TEXT NOT NULL,
+                        name       TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (race_id, tag_id),
+                        FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE
+                    );
+                    """
+                )
+                self._conn.execute(
+                    "INSERT INTO riders_new (race_id, tag_id, bib, name, created_at) "
+                    "SELECT ?, tag_id, bib, name, created_at FROM riders;",
+                    (default_id,),
+                )
+                self._conn.execute("DROP TABLE riders;")
+                self._conn.execute("ALTER TABLE riders_new RENAME TO riders;")
+            if needs_event_migration:
+                self._conn.execute(
+                    f"ALTER TABLE tag_events ADD COLUMN race_id TEXT NOT NULL DEFAULT '{default_id}';"
+                )
 
     def _build_default_race_from_legacy_meta(self) -> "Race":
         """Build a Race object from old single-race meta keys (or sensible defaults)."""
