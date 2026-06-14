@@ -813,14 +813,62 @@ function init() {
     });
   }
 
-  // Export CSV button
+  // Export CSV button.
+  //
+  // In the packaged desktop app (pywebview/WKWebView) the usual Blob +
+  // <a download> trick fails — WKWebView opens the CSV INSIDE the app
+  // window instead of downloading it. So we first try the pywebview-
+  // exposed Python API (`save_csv`), which pops a native macOS/Windows
+  // save dialog. Fallback for a normal browser keeps the Blob+anchor
+  // path so /classification.csv still works when opened directly.
   const exportBtn = $('#exportCsvBtn');
   if (exportBtn) {
-    exportBtn.addEventListener('click', () => {
-      // Trigger a download by navigating to the endpoint. Browser handles
-      // Content-Disposition. Note: this doesn't carry API headers; if the
-      // backend is keyed, the user needs to extend this (open with auth).
-      window.location.href = `${state.backend}/classification.csv`;
+    exportBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch(`${state.backend}/classification.csv`, {
+          headers: getApiHeaders(),
+        });
+        if (!res.ok) {
+          showToast(`Export failed: HTTP ${res.status}`);
+          return;
+        }
+
+        // Pull filename out of Content-Disposition if present.
+        let filename = 'racetag-export.csv';
+        const cd = res.headers.get('content-disposition') || '';
+        const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";\n]+)"?/i);
+        if (m && m[1]) {
+          try { filename = decodeURIComponent(m[1]); }
+          catch { filename = m[1]; }
+        }
+
+        const csvText = await res.text();
+
+        // Path 1: pywebview's native save dialog (desktop app).
+        if (window.pywebview && window.pywebview.api && window.pywebview.api.save_csv) {
+          const saved = await window.pywebview.api.save_csv(csvText, filename);
+          if (saved) {
+            showToast(`Exported: ${filename}`);
+          } else {
+            showToast('Export cancelled');
+          }
+          return;
+        }
+
+        // Path 2: fallback for plain browsers — Blob + <a download>.
+        const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+        showToast(`Exported: ${filename}`);
+      } catch (e) {
+        showToast(`Export error: ${e.message}`);
+      }
     });
   }
 

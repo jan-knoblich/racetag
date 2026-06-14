@@ -362,7 +362,31 @@ def main() -> None:
 
     import webview  # noqa: PLC0415  (optional dep; import late so tests skip it)
 
-    webview.create_window("Racetag", url, width=1280, height=800)
+    # JS-callable API: lets the frontend trigger native OS dialogs that WKWebView
+    # otherwise can't. Today: a native save dialog for CSV exports, because
+    # blob + <a download> in WKWebView opens the CSV inside the app window
+    # instead of downloading it.
+    class _RacetagApi:
+        def save_csv(self, csv_text: str, default_filename: str = "racetag-export.csv") -> bool:
+            if not webview.windows:
+                return False
+            result = webview.windows[0].create_file_dialog(
+                webview.SAVE_DIALOG,
+                save_filename=default_filename or "racetag-export.csv",
+                file_types=("CSV files (*.csv)", "All files (*.*)"),
+            )
+            if not result:
+                return False  # user cancelled
+            path = result if isinstance(result, str) else result[0]
+            try:
+                with open(path, "w", encoding="utf-8", newline="") as f:
+                    f.write(csv_text)
+            except Exception as exc:  # noqa: BLE001
+                print(f"save_csv failed: {exc}", file=sys.stderr)
+                return False
+            return True
+
+    webview.create_window("Racetag", url, js_api=_RacetagApi(), width=1280, height=800)
     webview.start()  # blocks on main thread until the window is closed
 
     # Window closed — stop reader then signal uvicorn.
