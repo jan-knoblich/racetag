@@ -190,9 +190,14 @@ _unknown_tags_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 def _replay_event(ev: TagEventDTO) -> None:
-    """Apply a single event to in-memory state without writing to storage."""
+    """Apply a single event to in-memory state without writing to storage.
+
+    BUG-003 fix: mirrors the batch-ingest gating — only registered tags affect
+    the Race state. Unregistered events stay in tag_events for the audit trail
+    but don't reappear as phantom rows in standings after a restart.
+    """
     events.append(ev)
-    if ev.event_type == EventType.arrive:
+    if ev.event_type == EventType.arrive and ev.tag_id in rider_store:
         race.add_lap(ev.tag_id, ev.timestamp)
 
 
@@ -259,26 +264,40 @@ def post_events_batch(batch: TagEventBatchDTO):
         # Update race on ARRIVE (simple rule for MVP)
         if ev.event_type == EventType.arrive:
             # Persist BEFORE mutating in-memory state (W-050 durability policy).
-            # add_lap returns the unchanged participant if the event is suppressed
-            # by the cooldown; we persist regardless so the event is on record.
+            # All events go into tag_events regardless of registration status —
+            # this keeps the audit trail complete (diagnostics panel, BUG-003
+            # post-hoc analysis, replay etc.).
             storage.append_event(ev)
-            p = race.add_lap(ev.tag_id, ev.timestamp)
-            # Broadcast lap update (always, laps keep advancing)
-            lap_payload = {
-                "type": "lap",
-                "tag_id": p.tag_id,
-                "laps": p.laps,
-                "finished": p.finished,
-                "last_pass_time": p.last_pass_time,
-            }
-            _publish(lap_payload)
-            # Broadcast updated standings snapshot (enriched with rider info)
-            table = _build_standings_items()
-            standings_payload = {"type": "standings", "items": table}
-            _publish(standings_payload)
 
-            # W-011: if tag has no registered rider, fire unknown_tag SSE + add to ring buffer
-            if ev.tag_id not in rider_store:
+            # BUG-003 fix: only registered tags create / update Participant rows
+            # in standings. Unregistered tags (stray, bleed-through from other
+            # rooms, badge-style retail tags in someone's bag, …) would otherwise
+            # show up as phantom rows that the operator has to delete manually.
+            # The unknown_tag SSE + recent-reads ring buffer still fire so the
+            # "Couple tag → rider" modal can offer them for explicit registration;
+            # once coupled, the next pass shows up in standings normally.
+            is_registered = ev.tag_id in rider_store
+
+            if is_registered:
+                p = race.add_lap(ev.tag_id, ev.timestamp)
+                # Broadcast lap update (always, laps keep advancing)
+                lap_payload = {
+                    "type": "lap",
+                    "tag_id": p.tag_id,
+                    "laps": p.laps,
+                    "finished": p.finished,
+                    "last_pass_time": p.last_pass_time,
+                }
+                _publish(lap_payload)
+                # Broadcast updated standings snapshot (enriched with rider info)
+                table = _build_standings_items()
+                standings_payload = {"type": "standings", "items": table}
+                _publish(standings_payload)
+            else:
+                # W-011: fire unknown_tag SSE + add to ring buffer so the
+                # operator can register the tag via the "Couple tag → rider"
+                # modal. NO Participant row is created — that only happens
+                # once the rider is registered and the tag is read again.
                 unknown_payload: Dict[str, Any] = {
                     "type": "unknown_tag",
                     "tag_id": ev.tag_id,

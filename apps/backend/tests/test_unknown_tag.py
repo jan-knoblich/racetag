@@ -144,3 +144,72 @@ def test_recent_reads_ring_buffer_caps_at_50(app_state):
     body = resp.json()
     assert body["count"] == 50
     assert len(body["items"]) == 50
+
+
+# ---------------------------------------------------------------------------
+# BUG-003 fix: unregistered tags do NOT create participant rows in standings.
+# They still fire unknown_tag SSE + recent-reads, and are persisted to
+# tag_events for the diagnostics audit trail — but they don't appear in
+# /classification until coupled to a rider.
+# ---------------------------------------------------------------------------
+
+def test_unregistered_tag_does_not_create_participant_row(app_state):
+    """A tag with no registered rider must NOT show up in /classification."""
+    client, app_module = app_state
+
+    # Start race so add_lap would otherwise count laps for registered tags
+    from domain.race import parse_iso as _parse_iso
+    app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
+
+    # Post an arrive for an unregistered tag
+    resp = client.post("/events/tag/batch", json={"events": [{
+        "source": "test", "reader_ip": "127.0.0.1",
+        "timestamp": "2026-04-15T12:00:00.000Z",
+        "event_type": "arrive", "tag_id": "STRAY-TAG",
+    }]})
+    assert resp.status_code == 200
+
+    body = client.get("/classification").json()
+    assert body["count"] == 0, (
+        f"Unregistered STRAY-TAG should NOT appear in standings. Got: {body}"
+    )
+
+    # But the event was persisted (audit trail / diagnostics) AND a recent-read
+    # entry exists for the operator to couple via the modal.
+    assert app_module.storage.count_events() == 1
+    recent = client.get("/riders/recent-reads?limit=10").json()
+    assert any(it["tag_id"] == "STRAY-TAG" for it in recent["items"])
+
+
+def test_tag_appears_in_standings_only_after_coupling(app_state):
+    """Pass 1 of an unregistered tag → no row. Then couple it. Pass 2 → row."""
+    client, app_module = app_state
+
+    from domain.race import parse_iso as _parse_iso
+    app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
+
+    # Pass 1: unregistered → no row
+    client.post("/events/tag/batch", json={"events": [{
+        "source": "test", "reader_ip": "127.0.0.1",
+        "timestamp": "2026-04-15T12:00:00.000Z",
+        "event_type": "arrive", "tag_id": "LATE-COUPLE",
+    }]})
+    assert client.get("/classification").json()["count"] == 0
+
+    # Now couple the tag to a rider
+    resp = client.post("/riders", json={
+        "tag_id": "LATE-COUPLE", "bib": "42", "name": "Late",
+    })
+    assert resp.status_code == 201
+
+    # Pass 2: now registered → row appears
+    client.post("/events/tag/batch", json={"events": [{
+        "source": "test", "reader_ip": "127.0.0.1",
+        "timestamp": "2026-04-15T12:00:30.000Z",  # 30 s later — past cooldown
+        "event_type": "arrive", "tag_id": "LATE-COUPLE",
+    }]})
+    body = client.get("/classification").json()
+    assert body["count"] == 1
+    assert body["standings"][0]["tag_id"] == "LATE-COUPLE"
+    assert body["standings"][0]["laps"] == 1
+    assert body["standings"][0]["name"] == "Late"

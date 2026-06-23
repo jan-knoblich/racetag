@@ -34,8 +34,17 @@ def fresh_app():
 
 
 def test_sse_multiple_subscribers_get_all_events(fresh_app):
-    """Two list-based subscribers receive all 10 events in order via the _publish fan-out."""
+    """Two list-based subscribers receive all events in order via the _publish fan-out."""
     client, app_module = fresh_app
+
+    # Start race and register all 10 tags as riders so they count as laps
+    # (BUG-003 fix: unregistered tags only emit unknown_tag, no lap/standings).
+    from domain.race import parse_iso as _parse_iso
+    app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
+    for i in range(10):
+        client.post("/riders", json={
+            "tag_id": f"MULTI{i:02d}", "bib": str(i), "name": f"R{i}",
+        })
 
     # Register two legacy list-based subscriber buffers (backward-compat shim)
     buf_a: list = []
@@ -46,7 +55,7 @@ def test_sse_multiple_subscribers_get_all_events(fresh_app):
         app_module.subscribers.append(buf_b)
 
     try:
-        # Post 10 unique tags so each generates a lap + standings + unknown_tag = 3 frames
+        # Post 10 unique tags so each generates a lap + standings = 2 frames
         for i in range(10):
             tag_id = f"MULTI{i:02d}"
             resp = client.post(
@@ -55,10 +64,10 @@ def test_sse_multiple_subscribers_get_all_events(fresh_app):
             )
             assert resp.status_code == 200
 
-        # Each of the 10 events is unknown (no rider registered), so we expect
-        # 3 frames per event (lap, standings, unknown_tag) = 30 frames total.
-        assert len(buf_a) == 30, f"Expected 30 frames in buf_a, got {len(buf_a)}"
-        assert len(buf_b) == 30, f"Expected 30 frames in buf_b, got {len(buf_b)}"
+        # Each of the 10 events is now from a registered rider, so each fires
+        # lap + standings (2 frames). 10 * 2 = 20 frames per subscriber.
+        assert len(buf_a) == 20, f"Expected 20 frames in buf_a, got {len(buf_a)}"
+        assert len(buf_b) == 20, f"Expected 20 frames in buf_b, got {len(buf_b)}"
 
         # Both buffers should have identical content
         assert buf_a == buf_b

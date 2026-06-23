@@ -111,6 +111,10 @@ def test_restart_preserves_standings(tmp_path, monkeypatch):
     app_module.race.start(now=_parse_iso(started_at_iso))
     app_module.storage.set_meta("race_started_at", started_at_iso)
     with TestClient(app_module.app) as client:
+        # BUG-003 fix: tags must be registered as riders before they count.
+        for tag, bib in (("TAGA", "1"), ("TAGB", "2"), ("TAGC", "3")):
+            client.post("/riders", json={"tag_id": tag, "bib": bib, "name": tag})
+
         # TAG-A: 3 laps
         for lap in range(3):
             ts = f"2026-04-15T12:{lap:02d}:00.000Z"

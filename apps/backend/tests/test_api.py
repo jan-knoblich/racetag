@@ -169,6 +169,10 @@ def test_classification_reflects_posted_events(fresh_app):
     from domain.race import parse_iso as _parse_iso
     app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
 
+    # BUG-003 fix: tags must be registered before they appear in standings.
+    client.post("/riders", json={"tag_id": "CLSA0001", "bib": "1", "name": "A"})
+    client.post("/riders", json={"tag_id": "CLSB0001", "bib": "2", "name": "B"})
+
     # Two arrives for tag A separated by 12 s (past the 8 s min_pass_interval default)
     client.post("/events/tag/batch", json=_batch([
         _arrive("CLSA0001", "2026-04-15T12:00:00.000Z"),

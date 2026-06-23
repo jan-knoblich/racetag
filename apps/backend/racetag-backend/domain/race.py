@@ -158,7 +158,13 @@ class RaceState:
             p.finish_time = pass_time_iso
         t = parse_iso(p.finish_time or p.last_pass_time) if (p.finish_time or p.last_pass_time) else None
         if t is not None:
-            p.total_time_ms = int((t - self.start_time).total_seconds() * 1000)
+            # BUG-005 fix: anchor total time at the "Start race" moment
+            # (started_at), not the RaceState construction time (start_time).
+            # Otherwise every total_time_ms is offset by however long the app
+            # was up before the operator hit Start. started_at is guaranteed
+            # to be set here because add_lap() is a no-op pre-start (gate above).
+            anchor = self.started_at or self.start_time
+            p.total_time_ms = int((t - anchor).total_seconds() * 1000)
         return p
 
     def standings(self) -> List[Participant]:

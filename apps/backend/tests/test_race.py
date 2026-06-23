@@ -121,7 +121,10 @@ def test_add_lap_z_suffix_timestamps():
 # ---------------------------------------------------------------------------
 
 def test_add_lap_replaces_year_1999_timestamp_with_server_now():
-    """A year-1999 pass_time gets rewritten to ~now; total_time_ms stays positive."""
+    """A year-1999 pass_time gets rewritten to ~now; total_time_ms stays
+    positive. total_time_ms is now anchored to started_at (BUG-005 fix), so
+    its absolute size depends on (now - started_at) — what we really test is
+    that it's not negative or garbage from a 1999 substitution leaking through."""
     race = _started_race(total_laps=5, min_pass_interval_s=0.0)
 
     race.add_lap("OLDREADER", "1999-11-29T23:03:20.000Z")
@@ -129,12 +132,12 @@ def test_add_lap_replaces_year_1999_timestamp_with_server_now():
     p = race.participants["OLDREADER"]
     assert p.laps == 1
     assert p.last_pass_time is not None
+    # The 1999 timestamp must NOT have leaked through verbatim.
     assert not p.last_pass_time.startswith("1999")
     assert p.total_time_ms is not None
+    # Positive (would be huge negative if a 1999 timestamp were used as-is
+    # against a 2026 started_at).
     assert p.total_time_ms >= 0
-    # total_time_ms is "synthetic-now minus race.start_time" — both very close to now,
-    # within a second.
-    assert p.total_time_ms < 5_000
 
 
 def test_add_lap_keeps_realistic_timestamp_unmodified():
@@ -227,3 +230,30 @@ def test_start_returns_started_at():
 
     assert returned == t
     assert race.started_at == t
+
+
+# ---------------------------------------------------------------------------
+# BUG-005: total_time_ms must be measured from started_at (race start),
+# not from self.start_time (app boot / RaceState construction).
+# ---------------------------------------------------------------------------
+
+def test_total_time_ms_is_anchored_to_started_at_not_app_boot():
+    """If the app has been up for 1 h before "Start race" is clicked, a pass
+    20 s after start must report total_time_ms ~= 20_000, not ~= 3_620_000."""
+    race = RaceState(total_laps=5, min_pass_interval_s=0.0)
+    # Simulate: app booted at noon (self.start_time was assigned ~now in
+    # __init__), operator clicks "Start race" 1 h later.
+    start_at = "2026-04-15T13:00:00.000Z"
+    race.start(now=parse_iso(start_at))
+
+    # Pass arrives 20 s after race start
+    race.add_lap("RIDER1", iso(20, base=start_at))
+
+    p = race.participants["RIDER1"]
+    assert p.total_time_ms is not None
+    # 20 s after start_at → 20_000 ms (give or take a millisecond for parsing)
+    assert 19_900 <= p.total_time_ms <= 20_100, (
+        f"total_time_ms should be ~20_000 (since race start), got {p.total_time_ms}. "
+        f"If this is in the millions, the bug is back — likely anchored to "
+        f"self.start_time (app boot) instead of self.started_at (race start)."
+    )

@@ -169,6 +169,9 @@ def test_race_end_freezes_standings(fresh_app):
     from domain.race import parse_iso as _parse_iso
     app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
 
+    # BUG-003 fix: register tag before it appears in standings.
+    client.post("/riders", json={"tag_id": "ENDTEST", "bib": "1", "name": "T"})
+
     client.post("/events/tag/batch", json={"events": [{
         "source": "test", "reader_ip": "127.0.0.1",
         "timestamp": "2026-04-15T12:00:00.000Z",

@@ -57,6 +57,13 @@ def test_reset_clears_participants_and_events(tmp_path, monkeypatch):
     app_module = _fresh_app(str(tmp_path), monkeypatch)
 
     with TestClient(app_module.app) as client:
+        # BUG-003 fix: register tags as riders so they appear in standings.
+        # Also start the race so add_lap actually counts.
+        from domain.race import parse_iso as _parse_iso
+        app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
+        for tag, bib in (("T001", "1"), ("T002", "2"), ("T003", "3")):
+            client.post("/riders", json={"tag_id": tag, "bib": bib, "name": tag})
+
         # Ingest one lap each for three different tags.
         for tag in ("T001", "T002", "T003"):
             resp = client.post(
