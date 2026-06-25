@@ -298,10 +298,45 @@ async function openSettingsModal() {
     const ipInput = $('#settingsReaderIp');
     const minLapInput = $('#settingsMinLap');
     const totalLapsInput = $('#settingsTotalLaps');
+    const snapInput = $('#settingsSnapshotInterval');
 
     if (ipInput) ipInput.value = cfg.reader_ip ?? '';
     if (minLapInput) minLapInput.value = cfg.min_lap_interval_s ?? '';
     if (totalLapsInput) totalLapsInput.value = cfg.total_laps ?? '';
+
+    // Auto-snapshot interval is per-race — fetch it from the active race.
+    // Disable the input + warn the operator if there's no active race or the
+    // detail fetch fails, instead of silently dropping the field on submit
+    // (review #19).
+    if (snapInput) {
+      snapInput.value = '';
+      snapInput.disabled = false;
+      _settingsOriginal.active_race_id = null;
+      _settingsOriginal.snapshot_interval_s = null;
+      try {
+        const r = await fetch(`${state.backend}/race`, { headers: getApiHeaders() });
+        const raceData = r.ok ? await r.json() : null;
+        const activeId = raceData ? raceData.id : null;
+        if (!activeId) {
+          snapInput.disabled = true;
+          snapInput.placeholder = 'No active race';
+        } else {
+          const r2 = await fetch(`${state.backend}/races/${activeId}`, { headers: getApiHeaders() });
+          if (r2.ok) {
+            const raceRow = await r2.json();
+            _settingsOriginal.snapshot_interval_s = raceRow.snapshot_interval_s ?? null;
+            _settingsOriginal.active_race_id = activeId;
+            snapInput.value = raceRow.snapshot_interval_s ?? '';
+          } else {
+            snapInput.disabled = true;
+            snapInput.placeholder = 'Could not load race';
+          }
+        }
+      } catch (_e) {
+        snapInput.disabled = true;
+        snapInput.placeholder = 'Network error';
+      }
+    }
   } catch (err) {
     _settingsOriginal = {};
     if (errBanner) {
@@ -343,25 +378,53 @@ async function submitSettingsModal() {
   const newTotal = totalLapsVal !== '' && totalLapsVal != null ? parseInt(totalLapsVal, 10) : null;
   if (newTotal !== originalTotal) patch.total_laps = newTotal;
 
-  if (Object.keys(patch).length === 0) {
+  // Snapshot interval is per-race; PATCH the active race separately. Tracked
+  // here so we can short-circuit if nothing else changed. If the modal opened
+  // without an active race (input is disabled), skip snapshot handling.
+  const snapInput = $('#settingsSnapshotInterval');
+  const snapVal = snapInput?.value;
+  const snapDisabled = !!snapInput?.disabled;
+  const originalSnap = _settingsOriginal.snapshot_interval_s ?? null;
+  const newSnap = (snapVal !== '' && snapVal != null) ? Math.max(0, parseInt(snapVal, 10) || 0) : null;
+  const activeRaceId = _settingsOriginal.active_race_id || null;
+  const snapChanged = !snapDisabled && activeRaceId != null && newSnap !== originalSnap;
+
+  if (Object.keys(patch).length === 0 && !snapChanged) {
     closeSettingsModal();
     return;
   }
 
   try {
-    const res = await fetch(`${state.backend}/config`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
-      body: JSON.stringify(patch),
-    });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => `HTTP ${res.status}`);
-      if (errBanner) {
-        errBanner.textContent = `Save failed (${res.status}): ${body}`;
-        errBanner.hidden = false;
+    if (Object.keys(patch).length > 0) {
+      const res = await fetch(`${state.backend}/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => `HTTP ${res.status}`);
+        if (errBanner) {
+          errBanner.textContent = `Save failed (${res.status}): ${body}`;
+          errBanner.hidden = false;
+        }
+        return;
       }
-      return;
+    }
+
+    if (snapChanged && activeRaceId) {
+      const r2 = await fetch(`${state.backend}/races/${activeRaceId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+        body: JSON.stringify({ snapshot_interval_s: newSnap }),
+      });
+      if (!r2.ok) {
+        const body = await r2.text().catch(() => `HTTP ${r2.status}`);
+        if (errBanner) {
+          errBanner.textContent = `Snapshot interval save failed (${r2.status}): ${body}`;
+          errBanner.hidden = false;
+        }
+        return;
+      }
     }
 
     closeSettingsModal();
@@ -409,6 +472,21 @@ function applyTagColumnVisibility() {
   });
 }
 
+// HTML-escape helper for values that flow through innerHTML. Used for any
+// server-supplied string that ends up between tags OR inside a "-quoted
+// attribute. (Review #20: tag_id was interpolated raw into data-tag-id and
+// span text; an EPC starting with `" onerror=...` would have escaped the
+// attribute.)
+function htmlEscape(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function renderStandings(items) {
   state.lastStandings = items;
   const tbody = $('#standingsTable tbody');
@@ -416,14 +494,30 @@ function renderStandings(items) {
   items.forEach((p, idx) => {
     const gap = typeof p.gap_ms === 'number' ? formatMs(p.gap_ms) : '';
     // W-012: prefer bib/name from server standings; fall back to 'N/A'/'Unknown'
-    const bib = p.bib || 'N/A';
-    const name = p.name || 'Unknown';
+    const bibRaw = p.bib;
+    const bib = (bibRaw != null && bibRaw !== '') ? htmlEscape(bibRaw) : 'N/A';
+    const name = p.name ? htmlEscape(p.name) : 'Unknown';
+    const tagId = htmlEscape(p.tag_id);
     const tr = document.createElement('tr');
     const total = typeof p.total_time_ms === 'number' ? secondsWithMs(p.total_time_ms) : '';
+    // Manual-lap-correction buttons. Disabled when the row has NO registered
+    // rider (bib null/undefined). An empty string OR the literal '0' is still
+    // a valid bib — the explicit null-check guards bib zero. (Review #22.)
+    const noRider = (bibRaw == null);
+    const disabledAttr = noRider ? 'disabled' : '';
+    const lapActions = `
+      <div class="lap-actions">
+        <button class="lap-plus" data-tag-id="${tagId}" data-action="add"
+                title="Credit one lap (server timestamp)" ${disabledAttr}>+1</button>
+        <button class="lap-minus" data-tag-id="${tagId}" data-action="remove"
+                title="Revoke the most recent lap" ${disabledAttr}>&minus;1</button>
+        <button class="lap-edit" data-tag-id="${tagId}" data-action="edit"
+                title="Edit lap with custom timestamp" ${disabledAttr}>&#9998;</button>
+      </div>`;
     // W-030: route last_pass_time through formatTimestampForDisplay
     tr.innerHTML = `
       <td>${idx + 1}</td>
-      <td class="tag-col">${p.tag_id}</td>
+      <td class="tag-col"><span class="tag-id-copyable" data-tag-id="${tagId}" title="Click to copy tag ID">${tagId}</span></td>
       <td>${bib}</td>
       <td>${name}</td>
       <td>${p.laps}</td>
@@ -431,10 +525,126 @@ function renderStandings(items) {
       <td>${formatTimestampForDisplay(p.last_pass_time)}</td>
       <td>${gap}</td>
       <td>${total}</td>
+      <td>${lapActions}</td>
     `;
     tbody.appendChild(tr);
   });
   applyTagColumnVisibility();
+}
+
+// ---------------------------------------------------------------------------
+// Manual lap correction (per-row +1 / -1 / edit). Delegated handler in
+// wireUp() so we don't bind a listener per row.
+// ---------------------------------------------------------------------------
+
+async function manualLapAdd(tag_id, timestamp = null) {
+  const body = timestamp ? { timestamp } : {};
+  try {
+    const res = await fetch(`${state.backend}/riders/${encodeURIComponent(tag_id)}/laps`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      showToast(`Add-lap failed (${res.status}): ${txt}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    showToast(`Add-lap network error: ${err.message}`);
+    return null;
+  }
+}
+
+async function manualLapRemove(tag_id) {
+  try {
+    const res = await fetch(`${state.backend}/riders/${encodeURIComponent(tag_id)}/laps`, {
+      method: 'DELETE',
+      headers: getApiHeaders(),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      showToast(`Remove-lap failed (${res.status}): ${txt}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    showToast(`Remove-lap network error: ${err.message}`);
+    return null;
+  }
+}
+
+// Lap-edit modal (with custom-timestamp option).
+function openLapEditModal(tag_id) {
+  const modal = $('#lapEditModal');
+  if (!modal) return;
+  const p = (state.lastStandings || []).find((r) => r.tag_id === tag_id);
+  const bib = p && p.bib ? p.bib : '—';
+  const name = p && p.name ? p.name : '—';
+  $('#lapEditRider').value = `${bib} – ${name}`;
+  $('#lapEditCurrentLaps').value = p ? String(p.laps) : '0';
+  $('#lapEditTimestamp').value = '';
+  $('#lapEditError').hidden = true;
+  modal.dataset.tagId = tag_id;
+  modal.hidden = false;
+  $('#lapEditTimestamp').focus();
+}
+
+function closeLapEditModal() {
+  const modal = $('#lapEditModal');
+  if (modal) modal.hidden = true;
+}
+
+async function submitLapEditAdd() {
+  const modal = $('#lapEditModal');
+  const errBanner = $('#lapEditError');
+  if (!modal || !modal.dataset.tagId) return;
+  const ts = $('#lapEditTimestamp').value.trim();
+  const result = await manualLapAdd(modal.dataset.tagId, ts || null);
+  if (result) {
+    showToast(`Lap added — now ${result.laps} laps`);
+    if (errBanner) errBanner.hidden = true;
+    closeLapEditModal();
+  }
+}
+
+async function submitLapEditRemove() {
+  const modal = $('#lapEditModal');
+  const errBanner = $('#lapEditError');
+  if (!modal || !modal.dataset.tagId) return;
+  if (!confirm('Remove the most recent lap for this rider?')) return;
+  const result = await manualLapRemove(modal.dataset.tagId);
+  if (result) {
+    showToast(`Lap removed — now ${result.laps} laps`);
+    if (errBanner) errBanner.hidden = true;
+    closeLapEditModal();
+  }
+}
+
+function _bibLabelFor(tag_id) {
+  const p = (state.lastStandings || []).find((r) => r.tag_id === tag_id);
+  if (p && p.bib != null && p.bib !== '') return `bib ${p.bib}`;
+  return tag_id.length > 12 ? `${tag_id.slice(0, 12)}…` : tag_id;
+}
+
+async function onStandingsTableClick(e) {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const tag_id = btn.dataset.tagId;
+  if (!tag_id) return;
+  const action = btn.dataset.action;
+  const label = _bibLabelFor(tag_id);
+  if (action === 'add') {
+    const result = await manualLapAdd(tag_id);
+    if (result) showToast(`Lap added — ${label} now ${result.laps} laps`);
+  } else if (action === 'remove') {
+    if (!confirm(`Remove the most recent lap for ${label}?`)) return;
+    const result = await manualLapRemove(tag_id);
+    if (result) showToast(`Lap removed — ${label} now ${result.laps} laps`);
+  } else if (action === 'edit') {
+    openLapEditModal(tag_id);
+  }
 }
 
 function formatMs(ms) {
@@ -692,6 +902,33 @@ function init() {
     applyTagColumnVisibility();
   });
 
+  // Click-to-copy for any tag-id rendered with .tag-id-copyable. Event
+  // delegation on document so it works for rows added later via SSE updates.
+  document.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest && e.target.closest('.tag-id-copyable');
+    if (!el) return;
+    const tagId = el.dataset.tagId || el.textContent.trim();
+    if (!tagId) return;
+    const ok = (val) => showToast(`Tag ID copied: ${val.slice(0, 12)}…`);
+    const fail = () => showToast('Copy failed');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(tagId).then(() => ok(tagId), fail);
+    } else {
+      // execCommand fallback for old WebViews
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = tagId;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        ok(tagId);
+      } catch { fail(); }
+    }
+  });
+
   $('#connectBtn').addEventListener('click', async () => {
     saveBackend(input.value);
     setStatus('Connecting\u2026');
@@ -732,6 +969,8 @@ function init() {
       if (sched) sched.value = '';
       const laps = $('#newRaceTotalLaps');
       if (laps) laps.value = state.totalLaps || 5;
+      const snap = $('#newRaceSnapshotInterval');
+      if (snap) snap.value = 120;
       const act = $('#newRaceActivate');
       if (act) act.checked = true;
     });
@@ -751,6 +990,8 @@ function init() {
       const name = ($('#newRaceName')?.value || '').trim();
       const schedRaw = ($('#newRaceScheduled')?.value || '').trim();
       const totalLaps = parseInt($('#newRaceTotalLaps')?.value || '5', 10) || 5;
+      const snapRaw = ($('#newRaceSnapshotInterval')?.value || '').trim();
+      const snapshot_interval_s = snapRaw === '' ? null : Math.max(0, parseInt(snapRaw, 10) || 0);
       const activate = !!$('#newRaceActivate')?.checked;
       const errBox = $('#newRaceError');
       if (!name) {
@@ -766,7 +1007,10 @@ function init() {
         const res = await fetch(`${state.backend}/races`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
-          body: JSON.stringify({ name, scheduled_at, total_laps: totalLaps }),
+          body: JSON.stringify({
+            name, scheduled_at, total_laps: totalLaps,
+            snapshot_interval_s,
+          }),
         });
         if (!res.ok) {
           const txt = await res.text();
@@ -1040,7 +1284,7 @@ function init() {
   }
 
   // Submit settings on Enter in modal inputs
-  ['#settingsReaderIp', '#settingsMinLap', '#settingsTotalLaps'].forEach((sel) => {
+  ['#settingsReaderIp', '#settingsMinLap', '#settingsTotalLaps', '#settingsSnapshotInterval'].forEach((sel) => {
     const el = $(sel);
     if (el) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitSettingsModal(); });
   });
@@ -1068,6 +1312,28 @@ function init() {
       if (e.target === modal) closeRegisterModal();
     });
   }
+
+  // Manual lap correction: delegated handler on the standings table body.
+  const standingsTable = $('#standingsTable');
+  if (standingsTable) standingsTable.addEventListener('click', onStandingsTableClick);
+
+  // Lap-edit modal
+  const lapEditAdd = $('#lapEditAddBtn');
+  if (lapEditAdd) lapEditAdd.addEventListener('click', submitLapEditAdd);
+  const lapEditRemove = $('#lapEditRemoveBtn');
+  if (lapEditRemove) lapEditRemove.addEventListener('click', submitLapEditRemove);
+  const lapEditCancel = $('#lapEditCancelBtn');
+  if (lapEditCancel) lapEditCancel.addEventListener('click', closeLapEditModal);
+  const lapEditModal = $('#lapEditModal');
+  if (lapEditModal) {
+    lapEditModal.addEventListener('click', (e) => {
+      if (e.target === lapEditModal) closeLapEditModal();
+    });
+  }
+  const lapEditTs = $('#lapEditTimestamp');
+  if (lapEditTs) lapEditTs.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitLapEditAdd();
+  });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {

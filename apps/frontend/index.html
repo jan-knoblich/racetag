@@ -70,6 +70,7 @@
               <th>Last pass</th>
               <th>Gap</th>
               <th>Total time (s)</th>
+              <th>Laps&nbsp;±</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -158,6 +159,13 @@
           <input id="newRaceTotalLaps" type="number" min="1" max="999" value="5" />
         </div>
 
+        <div class="modal-field">
+          <label for="newRaceSnapshotInterval">
+            Auto-snapshot interval (seconds) &mdash; 0 disables
+          </label>
+          <input id="newRaceSnapshotInterval" type="number" min="0" max="3600" value="120" />
+        </div>
+
         <div class="modal-checkbox-row">
           <input id="newRaceActivate" type="checkbox" checked />
           <label for="newRaceActivate">Activate this race after creating</label>
@@ -196,11 +204,52 @@
           <input id="settingsTotalLaps" type="number" min="1" max="999" step="1" placeholder="5" />
         </div>
 
+        <div class="modal-field">
+          <label for="settingsSnapshotInterval">
+            Auto-snapshot interval (s) &mdash; active race; 0 disables
+          </label>
+          <input id="settingsSnapshotInterval" type="number" min="0" max="3600" step="1" placeholder="120" />
+        </div>
+
         <div id="settingsError" class="modal-error" hidden></div>
 
         <div class="modal-actions">
           <button id="settingsSaveBtn" class="btn-primary">Save</button>
           <button id="settingsCancelBtn">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual lap correction modal — opened by ✎ button per standings row. -->
+    <div id="lapEditModal" class="modal-backdrop" role="dialog" aria-modal="true"
+         aria-labelledby="lapEditModalTitle" hidden>
+      <div class="modal-box">
+        <h2 id="lapEditModalTitle" class="modal-title">Edit lap</h2>
+
+        <div class="modal-field">
+          <label>Rider</label>
+          <input id="lapEditRider" type="text" readonly />
+        </div>
+
+        <div class="modal-field">
+          <label>Current laps</label>
+          <input id="lapEditCurrentLaps" type="text" readonly />
+        </div>
+
+        <div class="modal-field">
+          <label for="lapEditTimestamp">
+            Timestamp (UTC, leave empty for server now)
+          </label>
+          <input id="lapEditTimestamp" type="text"
+                 placeholder="2026-06-25T18:30:00.000Z" />
+        </div>
+
+        <div id="lapEditError" class="modal-error" hidden></div>
+
+        <div class="modal-actions">
+          <button id="lapEditAddBtn" class="btn-primary">Add lap (+1)</button>
+          <button id="lapEditRemoveBtn" class="btn-warn">Remove last lap (&minus;1)</button>
+          <button id="lapEditCancelBtn">Close</button>
         </div>
       </div>
     </div>
