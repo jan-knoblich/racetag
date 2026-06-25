@@ -104,6 +104,7 @@ class RaceSummaryDTO(BaseModel):
     ended_at: Optional[str] = None
     created_at: Optional[str] = None
     is_active: bool = False
+    snapshot_interval_s: Optional[int] = None
 
 
 class RaceListDTO(BaseModel):
@@ -118,6 +119,13 @@ class RaceCreateDTO(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     scheduled_at: Optional[str] = None  # ISO 8601 datetime; nullable
     total_laps: int = Field(default=5, ge=1, le=999)
+    snapshot_interval_s: Optional[int] = Field(
+        default=None, ge=0, le=3600,
+        description=(
+            "Seconds between automatic snapshots (CSV + DB) for this race. "
+            "None or 0 disables snapshots. Capped at 3600 (1 h)."
+        ),
+    )
 
 
 class RaceUpdateDTO(BaseModel):
@@ -126,6 +134,7 @@ class RaceUpdateDTO(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     scheduled_at: Optional[str] = None
     total_laps: Optional[int] = Field(default=None, ge=1, le=999)
+    snapshot_interval_s: Optional[int] = Field(default=None, ge=0, le=3600)
 
 
 # ---------------------------------------------------------------------------
@@ -171,3 +180,36 @@ class RecentReadsListDTO(BaseModel):
 
     count: int
     items: List[RecentReadDTO]
+
+
+# ---------------------------------------------------------------------------
+# Manual lap correction (Feature: +1/-1 lap for a rider, optional manual ts).
+# Triggered by the operator when the reader miscounts (mis-read, sleeper tag,
+# weak antenna). The synthetic lap is persisted to tag_events with
+# reader_serial="MANUAL" so it can be distinguished from real reader events
+# in audits / replay.
+# ---------------------------------------------------------------------------
+
+class ManualLapAddDTO(BaseModel):
+    """Payload for POST /riders/{tag_id}/laps."""
+
+    timestamp: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO-8601 UTC timestamp for the synthetic lap pass. If omitted, "
+            "the server uses its current UTC time. Operator can supply a past "
+            "timestamp (e.g. the moment the rider crossed the line) when the "
+            "click happens later than the actual pass."
+        ),
+    )
+
+
+class ManualLapResultDTO(BaseModel):
+    """Response for manual lap add/remove."""
+
+    tag_id: str
+    laps: int
+    last_pass_time: Optional[str] = None
+    finished: bool = False
+    finish_time: Optional[str] = None
+    total_time_ms: Optional[int] = None

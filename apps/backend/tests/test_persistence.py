@@ -188,3 +188,159 @@ def test_durability_autocommit(tmp_path, monkeypatch):
         assert count == 1, f"Expected 1 event after drop-without-close, got {count}"
     finally:
         db2.close()
+
+
+# ---------------------------------------------------------------------------
+# BUG-004 regression: ended race rehydrates with non-empty standings
+# ---------------------------------------------------------------------------
+
+def test_ended_race_rehydrates_standings_after_restart(tmp_path, monkeypatch):
+    """BUG-004: starting an ended race, posting events, ending it, then restarting
+    the app must NOT leave the standings at zero laps.
+
+    The bug was that _load_active_race_state called rs.end() BEFORE replaying
+    persisted events. Since add_lap() is a no-op post-end, every replayed event
+    was silently dropped and the standings rehydrated empty.
+    """
+    data_dir = str(tmp_path / "endeddata")
+    monkeypatch.setenv("RACETAG_DATA_DIR", data_dir)
+    monkeypatch.setenv("RACE_MIN_PASS_INTERVAL_S", "0")
+
+    # Phase 1: start race, register 2 riders, post 3 laps for one + 2 for the other, end race.
+    app_module = _load_fresh_app(data_dir)
+    # Start the race at a fixed past timestamp so the fixed event timestamps
+    # land safely after started_at (otherwise the first-pass-after-start
+    # cooldown would suppress them). Persist BOTH the meta key (for reload
+    # compat) and the race row's started_at/started so the rehydrated race
+    # has consistent state.
+    from domain.race import parse_iso as _parse_iso
+    started_at_iso = "2026-04-15T11:00:00.000Z"
+    started_at_dt = _parse_iso(started_at_iso)
+    app_module.race.start(now=started_at_dt)
+    app_module.storage.set_meta("race_started_at", started_at_iso)
+    if app_module.race.race_id:
+        app_module.storage.update_race(
+            app_module.race.race_id, started=True, started_at=started_at_dt
+        )
+
+    with TestClient(app_module.app) as client:
+        for tag, bib in (("ENDED_A", "1"), ("ENDED_B", "2")):
+            assert client.post(
+                "/riders", json={"tag_id": tag, "bib": bib, "name": tag}
+            ).status_code == 201
+
+        # ENDED_A: 3 laps
+        for lap in range(3):
+            ts = f"2026-04-15T12:{lap:02d}:00.000Z"
+            assert client.post(
+                "/events/tag/batch", json=_batch([_tag_event("ENDED_A", ts)])
+            ).status_code == 200
+        # ENDED_B: 2 laps
+        for lap in range(2):
+            ts = f"2026-04-15T12:{lap:02d}:01.000Z"
+            assert client.post(
+                "/events/tag/batch", json=_batch([_tag_event("ENDED_B", ts)])
+            ).status_code == 200
+
+        baseline = {
+            s["tag_id"]: s["laps"]
+            for s in client.get("/classification").json()["standings"]
+        }
+        assert baseline == {"ENDED_A": 3, "ENDED_B": 2}
+
+        # End the race so the race row is persisted as ended.
+        assert client.post("/race/end").status_code in (200, 204)
+        # Sanity: race row really is marked ended.
+        race_resp = client.get("/race").json()
+        assert race_resp["ended"] is True
+
+    # Phase 2: reload app with the same data dir — the BUG-004 fix means the
+    # replay rebuilds standings BEFORE the ended state is applied, so laps
+    # survive.
+    app_module2 = _load_fresh_app(data_dir)
+    with TestClient(app_module2.app) as client2:
+        after = {
+            s["tag_id"]: s["laps"]
+            for s in client2.get("/classification").json()["standings"]
+        }
+        assert after == baseline, (
+            f"BUG-004 regression: ended race rehydrated with wrong standings: "
+            f"{after} != {baseline}"
+        )
+        # The race must STILL be marked ended after restart (cosmetic but
+        # important — operator should see "ended" not "live").
+        race_resp = client2.get("/race").json()
+        assert race_resp["ended"] is True, (
+            "Race lost its ended state after restart"
+        )
+
+
+def test_post_end_events_do_not_count_on_replay(tmp_path, monkeypatch):
+    """Adversarial-review finding (HIGH #1): the BUG-004 fix moved rs.end()
+    after replay, but storage.append_event still persists post-end arrives
+    for the audit trail. On the next restart, _replay_event used to run with
+    race.ended=False and silently count those audit-only events as laps. The
+    ended_cutoff fix in _replay_event filters them out.
+
+    Repro: 2 pre-end laps, race ends, 3 more arrive events flow in (the
+    reader has no knowledge that the race ended). Then reload. Standings
+    must still be {tag: 2}, NOT {tag: 5}.
+    """
+    data_dir = str(tmp_path / "postenddata")
+    monkeypatch.setenv("RACETAG_DATA_DIR", data_dir)
+    monkeypatch.setenv("RACE_MIN_PASS_INTERVAL_S", "0")
+
+    app_module = _load_fresh_app(data_dir)
+    from domain.race import parse_iso as _parse_iso
+    started_at_iso = "2026-04-15T11:00:00.000Z"
+    started_at_dt = _parse_iso(started_at_iso)
+    app_module.race.start(now=started_at_dt)
+    app_module.storage.set_meta("race_started_at", started_at_iso)
+    if app_module.race.race_id:
+        app_module.storage.update_race(
+            app_module.race.race_id, started=True, started_at=started_at_dt
+        )
+
+    with TestClient(app_module.app) as client:
+        assert client.post(
+            "/riders", json={"tag_id": "PE_A", "bib": "1", "name": "PE_A"}
+        ).status_code == 201
+
+        # 2 pre-end laps
+        for lap in range(2):
+            ts = f"2026-04-15T12:{lap:02d}:00.000Z"
+            assert client.post(
+                "/events/tag/batch", json=_batch([_tag_event("PE_A", ts)])
+            ).status_code == 200
+
+        # End the race so the race row is persisted as ended.
+        assert client.post("/race/end").status_code in (200, 204)
+        # The end timestamp comes from server-now (real "now") — the test
+        # timestamps below are intentionally in the past so they're "before"
+        # in wall-clock order but the relevant comparison is against the
+        # persisted ended_at. To exercise the replay cutoff properly we need
+        # post-end events whose timestamps are AFTER the persisted ended_at.
+        # ended_at is now ~2026-06-25T... (server time). Pick a stamp later
+        # than that.
+        post_end_ts = "2030-01-01T00:00:00.000Z"
+        for i in range(3):
+            ts = f"2030-01-01T00:{i:02d}:00.000Z"
+            # In-session: add_lap is a no-op (race.ended=True), but
+            # storage.append_event still persists for the audit trail.
+            assert client.post(
+                "/events/tag/batch", json=_batch([_tag_event("PE_A", ts)])
+            ).status_code == 200
+
+        baseline = client.get("/classification").json()["standings"]
+        baseline_laps = {s["tag_id"]: s["laps"] for s in baseline}
+        assert baseline_laps == {"PE_A": 2}
+
+    # Reload — the cutoff filter must drop the 3 post-end events.
+    app_module2 = _load_fresh_app(data_dir)
+    with TestClient(app_module2.app) as client2:
+        after = client2.get("/classification").json()["standings"]
+        after_laps = {s["tag_id"]: s["laps"] for s in after}
+        assert after_laps == {"PE_A": 2}, (
+            f"HIGH #1 regression: post-end events counted as laps on replay. "
+            f"Expected {{'PE_A': 2}} after restart, got {after_laps}"
+        )

@@ -35,6 +35,8 @@ from models_api import (
     RidersListDTO,
     RecentReadDTO,
     RecentReadsListDTO,
+    ManualLapAddDTO,
+    ManualLapResultDTO,
 )
 from storage import Storage
 
@@ -141,12 +143,60 @@ def _load_active_race_state() -> "tuple[RaceState, RiderStore]":
     if started_at is not None:
         rs.start(now=started_at)
 
-    # ended state — only from Race row
-    if race_row.ended and race_row.ended_at is not None:
-        rs.end(now=race_row.ended_at)
+    # ended state — DEFERRED. We deliberately don't call rs.end() here:
+    # add_lap() is a no-op post-end, so applying ended BEFORE the event replay
+    # below would make every replayed pass a no-op and the standings of an
+    # already-ended race would rehydrate empty (BUG-004). Callers must invoke
+    # `_apply_ended_state_after_replay(rs)` after replaying persisted events.
 
     rstore = RiderStore(storage=storage, race_id=active_id)
     return rs, rstore
+
+
+def _apply_ended_state_after_replay(rs: "RaceState") -> None:
+    """Apply the persisted ended state to `rs` after the event replay loop.
+
+    Split out from `_load_active_race_state` so the replay can mutate the
+    in-memory standings BEFORE the race becomes a no-op. See BUG-004.
+    """
+    if rs.race_id is None:
+        return
+    race_row = storage.get_race(rs.race_id)
+    if race_row is None:
+        return
+    if race_row.ended and race_row.ended_at is not None:
+        rs.end(now=race_row.ended_at)
+
+
+def _rebuild_active_race_state_in_place() -> None:
+    """Rebuild the in-memory RaceState for the active race by replaying
+    persisted events from scratch.
+
+    Used after a write that invalidates the current participants/laps view —
+    e.g. the manual-lap-remove endpoint deletes a tag_events row, so we can't
+    cheaply decrement; we drop everything and replay.
+
+    Mutates the module-level `race` in place (clears participants, resets
+    started/ended flags, re-applies them from the race row, replays events,
+    re-applies ended). Does NOT touch the SSE subscribers / unknown-tag ring.
+    """
+    race.participants.clear()
+    events.clear()
+    race.started = False
+    race.started_at = None
+    race.ended = False
+    race.ended_at = None
+
+    if race.race_id is not None:
+        race_row = storage.get_race(race.race_id)
+        if race_row is not None and race_row.started and race_row.started_at is not None:
+            race.start(now=race_row.started_at)
+
+    ended_cutoff = _ended_cutoff_iso_for_active_race()
+    for ev in storage.iter_events():
+        _replay_event(ev, ended_cutoff_iso=ended_cutoff)
+
+    _apply_ended_state_after_replay(race)
 
 
 race, rider_store = _load_active_race_state()
@@ -189,20 +239,118 @@ _unknown_tags_lock = threading.Lock()
 # This is idempotent: events already in the DB are not duplicated.
 # ---------------------------------------------------------------------------
 
-def _replay_event(ev: TagEventDTO) -> None:
+def _replay_event(ev: TagEventDTO, ended_cutoff_iso: Optional[str] = None) -> None:
     """Apply a single event to in-memory state without writing to storage.
 
     BUG-003 fix: mirrors the batch-ingest gating — only registered tags affect
     the Race state. Unregistered events stay in tag_events for the audit trail
     but don't reappear as phantom rows in standings after a restart.
+
+    Post-end cutoff: when *ended_cutoff_iso* is set (i.e. the persisted race
+    row is ended), events whose timestamp is strictly after the cutoff are
+    appended to the audit `events` list but NOT fed into race.add_lap. This
+    prevents the BUG-004 fix from inadvertently counting post-end arrives
+    (which storage.append_event persists for the audit trail) as real laps on
+    every subsequent restart / state rebuild.
     """
     events.append(ev)
-    if ev.event_type == EventType.arrive and ev.tag_id in rider_store:
-        race.add_lap(ev.tag_id, ev.timestamp)
+    if ev.event_type != EventType.arrive:
+        return
+    if ev.tag_id not in rider_store:
+        return
+    if ended_cutoff_iso is not None and ev.timestamp > ended_cutoff_iso:
+        # Post-end stray read — already in tag_events for audit, but does not
+        # change standings.
+        return
+    race.add_lap(ev.tag_id, ev.timestamp)
 
 
+def _ended_cutoff_iso_for_active_race() -> Optional[str]:
+    """Return the ISO timestamp at which the active race ended, or None.
+
+    Looked up from the persisted race row (which is the source of truth for
+    the ended state). Compared lexically against tag_events.timestamp (also
+    ISO 8601 UTC) — both formats are byte-comparable.
+    """
+    if race.race_id is None:
+        return None
+    race_row = storage.get_race(race.race_id)
+    if race_row is None or not race_row.ended or race_row.ended_at is None:
+        return None
+    # _iso_or_none equivalent (inlined since this helper is called at module
+    # load time, before _iso_or_none is defined further down the file).
+    dt = race_row.ended_at
+    return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+_ended_cutoff = _ended_cutoff_iso_for_active_race()
 for _ev in storage.iter_events():
-    _replay_event(_ev)
+    _replay_event(_ev, ended_cutoff_iso=_ended_cutoff)
+
+# BUG-004 fix: apply the persisted ended state only AFTER the replay has
+# rebuilt the standings. See _apply_ended_state_after_replay docstring.
+_apply_ended_state_after_replay(race)
+
+
+# ---------------------------------------------------------------------------
+# Auto-snapshots (per-race configurable interval). The Snapshotter thread
+# pulls the latest state on each tick via _snapshot_state_provider so we don't
+# have to deal with re-registration when the active race switches.
+# ---------------------------------------------------------------------------
+
+from snapshots import Snapshotter  # noqa: E402  (deferred to use existing globals)
+
+
+def _snapshot_state_provider():
+    """Return the snapshot input tuple for the active race, or None to skip.
+
+    Returns (race_id, interval_s, csv_provider, backup_fn). csv_provider is a
+    zero-arg callable that returns the up-to-date CSV string — invoked by the
+    Snapshotter only when it actually decides to write (avoids rebuilding the
+    CSV on every 5 s poll tick when no snapshot is due).
+    """
+    if race.race_id is None:
+        return None
+    race_row = storage.get_race(race.race_id)
+    if race_row is None:
+        return None
+    interval = race_row.snapshot_interval_s
+    if interval is None or interval <= 0:
+        return None
+    # Snapshot is only useful AFTER the race has started — otherwise the CSV
+    # contains zero laps for everyone. Skip until start.
+    if not race.started:
+        return None
+
+    def csv_provider() -> str:
+        text, _filename = _build_classification_csv()
+        return text
+
+    return (race.race_id, interval, csv_provider, storage.backup_to)
+
+
+_snapshotter: "Snapshotter | None" = None
+
+
+@app.on_event("startup")
+def _start_snapshotter() -> None:
+    """Create a fresh Snapshotter on every FastAPI startup.
+
+    Threads can only be .start()-ed once, so we replace the instance on each
+    startup. Tests that re-enter TestClient (which retriggers startup/shutdown)
+    rely on this.
+    """
+    global _snapshotter
+    _snapshotter = Snapshotter(_data_dir, _snapshot_state_provider)
+    _snapshotter.start()
+
+
+@app.on_event("shutdown")
+def _stop_snapshotter() -> None:
+    global _snapshotter
+    if _snapshotter is not None:
+        _snapshotter.stop()
+        _snapshotter = None
 
 
 def _now_iso() -> str:
@@ -594,6 +742,7 @@ def _race_row_to_summary(row, *, active_id: Optional[str]) -> dict:
         "ended_at": _iso_or_none(row.ended_at),
         "created_at": _iso_or_none(row.created_at),
         "is_active": row.id == active_id,
+        "snapshot_interval_s": row.snapshot_interval_s,
     }
 
 
@@ -612,8 +761,11 @@ def _switch_active_race(new_race_id: str) -> None:
     storage.set_meta("total_laps", "")
     race, rider_store = _load_active_race_state()
     events.clear()
+    ended_cutoff = _ended_cutoff_iso_for_active_race()
     for ev in storage.iter_events():
-        _replay_event(ev)
+        _replay_event(ev, ended_cutoff_iso=ended_cutoff)
+    # BUG-004 fix: apply ended state only after replay (see helper docstring).
+    _apply_ended_state_after_replay(race)
     with _unknown_tags_lock:
         recent_unknown_tags.clear()
 
@@ -641,7 +793,12 @@ def post_race(body: RaceCreateDTO):
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="scheduled_at must be ISO 8601")
 
-    new_race = Race(name=body.name, scheduled_at=sched, total_laps=body.total_laps)
+    new_race = Race(
+        name=body.name,
+        scheduled_at=sched,
+        total_laps=body.total_laps,
+        snapshot_interval_s=body.snapshot_interval_s,
+    )
     storage.create_race(new_race)
     active_id = storage.get_active_race_id()
     return _race_row_to_summary(new_race, active_id=active_id)
@@ -676,6 +833,10 @@ def patch_race_by_id(race_id: str, body: RaceUpdateDTO):
                 raise HTTPException(status_code=400, detail="scheduled_at must be ISO 8601")
         else:
             fields_to_update["scheduled_at"] = None
+    if body.snapshot_interval_s is not None:
+        # 0 is a valid "disabled" value distinct from null (the field is set
+        # explicitly to 0 by the operator); store it as-is.
+        fields_to_update["snapshot_interval_s"] = body.snapshot_interval_s
 
     if fields_to_update:
         storage.update_race(race_id, **fields_to_update)
@@ -709,6 +870,61 @@ def post_race_activate(race_id: str):
     _publish({"type": "active_race_changed", "race_id": race_id})
     active_id = storage.get_active_race_id()
     return _race_row_to_summary(storage.get_race(race_id), active_id=active_id)
+
+
+# ---------------------------------------------------------------------------
+# Auto-snapshot management — list snapshots for a race, force one immediately.
+# Operator UI uses these to confirm "yes, snapshots ARE being written" and to
+# get a recovery point without waiting for the next interval tick.
+# ---------------------------------------------------------------------------
+
+@app.get("/races/{race_id}/snapshots")
+def get_race_snapshots(race_id: str):
+    """List on-disk snapshots for *race_id*.
+
+    Returns ``{count, items: [{stem, csv, db}]}`` sorted oldest-first.
+    """
+    from snapshots import list_snapshots
+    if storage.get_race(race_id) is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    raw = list_snapshots(_data_dir, race_id)
+    items = [
+        {
+            "stem": s["stem"],
+            "csv": s["csv_path"].name,
+            "db": s["db_path"].name,
+        }
+        for s in raw if s["csv_exists"] and s["db_exists"]
+    ]
+    return {"count": len(items), "items": items}
+
+
+@app.post("/races/{race_id}/snapshots", status_code=201)
+def post_race_snapshot_now(race_id: str):
+    """Force a snapshot for *race_id* right now, bypassing the interval timer.
+
+    Only works for the active race (we'd need a per-race classification
+    builder for non-active races; not built yet — operator can switch the
+    active race if they want a snapshot of an inactive one).
+    """
+    from snapshots import write_snapshot, record_manual_snapshot
+    from datetime import datetime, timezone
+    if storage.get_race(race_id) is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    if race.race_id != race_id:
+        raise HTTPException(
+            status_code=400,
+            detail="manual snapshot only supported for the active race",
+        )
+    csv_text, _filename = _build_classification_csv()
+    now = datetime.now(timezone.utc)
+    csv_path, db_path = write_snapshot(
+        _data_dir, race_id, csv_text, storage.backup_to, now=now,
+    )
+    # Tell the periodic snapshotter we just wrote one, so the next tick
+    # doesn't immediately write a redundant snapshot.
+    record_manual_snapshot(_snapshotter, race_id, now)
+    return {"csv": csv_path.name, "db": db_path.name}
 
 
 # ---------------------------------------------------------------------------
@@ -895,3 +1111,170 @@ def delete_rider(tag_id: str):
     removed = rider_store.delete(tag_id)
     if not removed:
         raise HTTPException(status_code=404, detail=f"No rider registered for tag '{tag_id}'")
+
+
+# ---------------------------------------------------------------------------
+# Manual lap correction (operator can credit / revoke a lap when the reader
+# miscounts). Synthetic events are tagged with reader_serial="MANUAL" so they
+# stay distinguishable in the tag_events audit trail.
+#
+# Add (+1): inserts a synthetic arrive event for *tag_id* at the supplied
+#   timestamp (defaults to server-now). Goes through the same add_lap pipeline
+#   as a real reader pass — including cooldown gating (operator clicking +1
+#   twice within min_pass_interval_s is correctly debounced).
+# Remove (-1): deletes the most-recent tag_event row for *tag_id* and replays
+#   the race state to recompute laps. Slower but correct: the most recent
+#   event is not always the most recent COUNTED lap (cooldown could have
+#   skipped it), and replaying is the same code path as restart so we know it
+#   produces the correct standings.
+# ---------------------------------------------------------------------------
+
+_MANUAL_READER_SERIAL = "MANUAL"
+
+
+@app.post(
+    "/riders/{tag_id}/laps",
+    response_model=ManualLapResultDTO,
+    status_code=201,
+)
+def post_manual_lap(tag_id: str, body: ManualLapAddDTO):
+    """Credit a manual lap for *tag_id* in the active race.
+
+    Refuses:
+    - 404 if the tag isn't registered as a rider in the active race.
+    - 409 if the race hasn't been started yet, or has already ended.
+    - 409 if add_lap would be debounced by the cooldown (operator double-click)
+      — in that case the event is NOT persisted, so a future restart can't
+      surface a phantom lap. Operator gets a clear "no change" signal.
+    """
+    if rider_store.get(tag_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No rider registered for tag '{tag_id}' in the active race",
+        )
+    if not race.started:
+        raise HTTPException(
+            status_code=409,
+            detail="Race has not started — start the race before crediting laps",
+        )
+    if race.ended:
+        raise HTTPException(
+            status_code=409,
+            detail="Race has ended — manual lap changes are not allowed",
+        )
+
+    timestamp = body.timestamp or _now_iso()
+
+    # Try the in-memory add_lap FIRST. If add_lap is a no-op (cooldown debounce,
+    # or post-end if ended state was applied), we MUST NOT persist a synthetic
+    # MANUAL event — otherwise a future replay would re-process it with the
+    # race not yet in the ended state and count it as a real lap.
+    prev_laps = race.participants.get(tag_id).laps if race.participants.get(tag_id) else 0
+    p = race.add_lap(tag_id, timestamp)
+    if p.laps == prev_laps:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Lap not credited (cooldown is {race.min_pass_interval_s:.1f}s "
+                f"and the previous pass was too recent, or timestamp predates race start)"
+            ),
+        )
+
+    ev = TagEventDTO(
+        source="manual",
+        reader_ip="0.0.0.0",
+        reader_serial=_MANUAL_READER_SERIAL,
+        timestamp=timestamp,
+        event_type=EventType.arrive,
+        tag_id=tag_id,
+    )
+    storage.append_event(ev)
+    events.append(ev)
+
+    lap_payload = {
+        "type": "lap",
+        "tag_id": p.tag_id,
+        "laps": p.laps,
+        "finished": p.finished,
+        "last_pass_time": p.last_pass_time,
+        "manual": True,
+    }
+    _publish(lap_payload)
+    _publish({"type": "standings", "items": _build_standings_items()})
+
+    return ManualLapResultDTO(
+        tag_id=p.tag_id,
+        laps=p.laps,
+        last_pass_time=p.last_pass_time,
+        finished=p.finished,
+        finish_time=p.finish_time,
+        total_time_ms=p.total_time_ms,
+    )
+
+
+@app.delete(
+    "/riders/{tag_id}/laps",
+    response_model=ManualLapResultDTO,
+    status_code=200,
+)
+def delete_manual_lap(tag_id: str):
+    """Revoke the most-recent lap for *tag_id* in the active race.
+
+    Removes the most-recent ARRIVE tag_event for *tag_id* and replays the
+    race state to recompute standings.
+
+    Refuses:
+    - 404 if the rider isn't registered for the active race.
+    - 400 if there are no arrive events to remove.
+    - 409 if the race has ended (post-end deletions would interact poorly
+      with the replay-cutoff: an ended race is meant to be frozen).
+    """
+    if rider_store.get(tag_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No rider registered for tag '{tag_id}' in the active race",
+        )
+    if race.ended:
+        raise HTTPException(
+            status_code=409,
+            detail="Race has ended — manual lap changes are not allowed",
+        )
+
+    last_id = storage.find_last_event_id_for_tag(
+        tag_id, event_type=EventType.arrive.value
+    )
+    if last_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No lap events to remove for tag '{tag_id}'",
+        )
+
+    storage.delete_event_by_id(last_id)
+    _rebuild_active_race_state_in_place()
+
+    p = race.participants.get(tag_id)
+    laps = p.laps if p else 0
+    last_pass_time = p.last_pass_time if p else None
+    finished = p.finished if p else False
+    finish_time = p.finish_time if p else None
+    total_time_ms = p.total_time_ms if p else None
+
+    lap_payload = {
+        "type": "lap",
+        "tag_id": tag_id,
+        "laps": laps,
+        "finished": finished,
+        "last_pass_time": last_pass_time,
+        "manual": True,
+    }
+    _publish(lap_payload)
+    _publish({"type": "standings", "items": _build_standings_items()})
+
+    return ManualLapResultDTO(
+        tag_id=tag_id,
+        laps=laps,
+        last_pass_time=last_pass_time,
+        finished=finished,
+        finish_time=finish_time,
+        total_time_ms=total_time_ms,
+    )

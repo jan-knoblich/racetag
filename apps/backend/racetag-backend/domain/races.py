@@ -43,6 +43,11 @@ class Race(BaseModel):
     ended: bool = False
     ended_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=_now_utc)
+    # Auto-snapshot interval in seconds. None or 0 disables snapshots for
+    # this race. A background snapshotter writes CSV + SQLite copies into
+    # <data_dir>/snapshots/<race_id>/, keeping the most recent N (rolling
+    # window).
+    snapshot_interval_s: Optional[int] = None
 
 
 __all__ = ["Race", "new_race_id"]

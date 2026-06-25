@@ -41,15 +41,16 @@ if TYPE_CHECKING:
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS races (
-    id            TEXT PRIMARY KEY,
-    name          TEXT NOT NULL,
-    scheduled_at  TEXT,
-    total_laps    INTEGER NOT NULL DEFAULT 5,
-    started       INTEGER NOT NULL DEFAULT 0,
-    started_at    TEXT,
-    ended         INTEGER NOT NULL DEFAULT 0,
-    ended_at      TEXT,
-    created_at    TEXT NOT NULL
+    id                   TEXT PRIMARY KEY,
+    name                 TEXT NOT NULL,
+    scheduled_at         TEXT,
+    total_laps           INTEGER NOT NULL DEFAULT 5,
+    started              INTEGER NOT NULL DEFAULT 0,
+    started_at           TEXT,
+    ended                INTEGER NOT NULL DEFAULT 0,
+    ended_at             TEXT,
+    created_at           TEXT NOT NULL,
+    snapshot_interval_s  INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS riders (
@@ -133,6 +134,8 @@ class Storage:
         # Migrate pre-multi-race rows to the new schema, then make sure there
         # is at least one race + an active id set.
         self._migrate_legacy()
+        # Add columns introduced after the initial multi-race migration.
+        self._ensure_races_snapshot_interval_column()
         self._ensure_default_race()
         # Create the race index now that tag_events.race_id is guaranteed to exist.
         with self._lock:
@@ -166,6 +169,22 @@ class Storage:
         return row is not None
 
     # ---- Bootstrap / migration -----------------------------------------
+
+    def _ensure_races_snapshot_interval_column(self) -> None:
+        """Add the `snapshot_interval_s` column to a pre-existing races table.
+
+        Idempotent: if the column already exists (e.g. fresh DB created from
+        the current DDL above), this is a no-op. Old DBs from before the
+        auto-snapshot feature need the column added so the rest of the code
+        can SELECT/UPDATE it.
+        """
+        cols = self._table_columns("races")
+        if "snapshot_interval_s" in cols:
+            return
+        with self._lock:
+            self._conn.execute(
+                "ALTER TABLE races ADD COLUMN snapshot_interval_s INTEGER;"
+            )
 
     def _migrate_legacy(self) -> None:
         """Migrate pre-multi-race ``riders`` / ``tag_events`` rows into the new
@@ -264,8 +283,8 @@ class Storage:
         self._conn.execute(
             """
             INSERT INTO races
-                (id, name, scheduled_at, total_laps, started, started_at, ended, ended_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                (id, name, scheduled_at, total_laps, started, started_at, ended, ended_at, created_at, snapshot_interval_s)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             (
                 race.id,
@@ -277,6 +296,7 @@ class Storage:
                 1 if race.ended else 0,
                 _iso(race.ended_at),
                 _iso(race.created_at),
+                race.snapshot_interval_s,
             ),
         )
 
@@ -285,8 +305,8 @@ class Storage:
         self._execute(
             """
             INSERT INTO races
-                (id, name, scheduled_at, total_laps, started, started_at, ended, ended_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                (id, name, scheduled_at, total_laps, started, started_at, ended, ended_at, created_at, snapshot_interval_s)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             (
                 race.id,
@@ -298,6 +318,7 @@ class Storage:
                 1 if race.ended else 0,
                 _iso(race.ended_at),
                 _iso(race.created_at),
+                race.snapshot_interval_s,
             ),
         )
         return race
@@ -326,7 +347,7 @@ class Storage:
         if not fields:
             return self.get_race(race_id)
         allowed = {"name", "scheduled_at", "total_laps", "started", "started_at",
-                   "ended", "ended_at"}
+                   "ended", "ended_at", "snapshot_interval_s"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"unknown race fields: {sorted(unknown)}")
@@ -354,6 +375,14 @@ class Storage:
     @staticmethod
     def _row_to_race(row: sqlite3.Row) -> "Race":
         from domain.races import Race
+        # snapshot_interval_s was added in a later migration; legacy rows
+        # written before the migration may not have the key in the row dict.
+        snap = None
+        try:
+            snap_raw = row["snapshot_interval_s"]
+            snap = int(snap_raw) if snap_raw is not None else None
+        except (KeyError, IndexError):
+            snap = None
         return Race(
             id=row["id"],
             name=row["name"],
@@ -364,6 +393,7 @@ class Storage:
             ended=bool(row["ended"]),
             ended_at=_parse_iso(row["ended_at"]),
             created_at=_parse_iso(row["created_at"]) or datetime.now(timezone.utc),
+            snapshot_interval_s=snap,
         )
 
     # ---- Active race ----------------------------------------------------
@@ -514,6 +544,49 @@ class Storage:
         rid = self._require_race_id(race_id)
         self._execute("DELETE FROM tag_events WHERE race_id = ?;", (rid,))
 
+    def find_last_event_id_for_tag(
+        self,
+        tag_id: str,
+        race_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+    ) -> Optional[int]:
+        """Return the id (PK) of the most-recently-inserted event for *tag_id*
+        in the given race, or None if no event exists.
+
+        Used by the manual-lap-correction endpoint: an operator can delete the
+        most-recent lap when the reader miscounted or recorded a phantom.
+
+        If event_type is given, only events of that type are considered (e.g.
+        only 'arrive' events count as laps).
+        """
+        rid = self._require_race_id(race_id)
+        if event_type is not None:
+            row = self._conn.execute(
+                "SELECT id FROM tag_events "
+                "WHERE race_id = ? AND tag_id = ? AND event_type = ? "
+                "ORDER BY id DESC LIMIT 1;",
+                (rid, tag_id, event_type),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT id FROM tag_events "
+                "WHERE race_id = ? AND tag_id = ? "
+                "ORDER BY id DESC LIMIT 1;",
+                (rid, tag_id),
+            ).fetchone()
+        return row["id"] if row else None
+
+    def delete_event_by_id(self, event_id: int) -> bool:
+        """Delete the tag_events row with the given primary key.
+
+        Returns True if a row was deleted, False if no row matched. Used by
+        the manual-lap-correction endpoint to drop a single mis-read.
+        """
+        cur = self._execute(
+            "DELETE FROM tag_events WHERE id = ?;", (event_id,)
+        )
+        return cur.rowcount > 0
+
     def count_events_by_antenna(
         self, window_s: int, race_id: Optional[str] = None
     ) -> dict:
@@ -557,3 +630,20 @@ class Storage:
 
     def close(self) -> None:
         self._conn.close()
+
+    # ---- Snapshots / online backup -------------------------------------
+
+    def backup_to(self, dst_path: "str | Path") -> None:
+        """Write an online SQLite backup of the live DB to *dst_path*.
+
+        Uses sqlite3's online backup API: the source connection stays usable,
+        WAL is reconciled, and the target file is a consistent, point-in-time
+        snapshot. Holds the write lock during the call to keep the source
+        stable.
+        """
+        target = sqlite3.connect(str(dst_path))
+        try:
+            with self._lock:
+                self._conn.backup(target)
+        finally:
+            target.close()
