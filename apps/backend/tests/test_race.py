@@ -257,3 +257,67 @@ def test_total_time_ms_is_anchored_to_started_at_not_app_boot():
         f"If this is in the millions, the bug is back — likely anchored to "
         f"self.start_time (app boot) instead of self.started_at (race start)."
     )
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 H3: signed-delta cooldown — out-of-order / duplicate events
+# must never rewind last_pass_time or over-count laps.
+# ---------------------------------------------------------------------------
+
+def test_add_lap_out_of_order_old_event_is_suppressed():
+    """t0, t1=t0+20s, then a re-delivered t0 duplicate: with the old abs()
+    cooldown the stale t0 counted as lap 3 and rewound last_pass_time.
+    Signed delta must keep laps at 2 and last_pass_time at t1."""
+    race = _started_race(total_laps=10, min_pass_interval_s=8.0)
+
+    race.add_lap("TAG001", iso(0))
+    race.add_lap("TAG001", iso(20))
+    race.add_lap("TAG001", iso(0))  # duplicate of the first pass, re-POSTed
+
+    p = race.participants["TAG001"]
+    assert p.laps == 2, f"stale duplicate counted as a lap: laps={p.laps}"
+    assert p.last_pass_time == iso(20), (
+        f"last_pass_time was rewound to the stale timestamp: {p.last_pass_time}"
+    )
+
+
+def test_add_lap_exact_duplicate_timestamp_is_suppressed():
+    """The same event delivered twice (crash-during-commit re-POST)."""
+    race = _started_race(total_laps=10, min_pass_interval_s=8.0)
+
+    race.add_lap("TAG001", iso(0))
+    race.add_lap("TAG001", iso(0))
+
+    assert race.participants["TAG001"].laps == 1
+
+
+def test_add_lap_older_event_between_passes_is_suppressed():
+    """An out-of-order event that lands BETWEEN two counted passes (e.g. a
+    spool drain delivering the outage window late) must not count."""
+    race = _started_race(total_laps=10, min_pass_interval_s=8.0)
+
+    race.add_lap("TAG001", iso(0))
+    race.add_lap("TAG001", iso(40))
+    race.add_lap("TAG001", iso(15))  # late-arriving mid-window event
+
+    p = race.participants["TAG001"]
+    assert p.laps == 2
+    assert p.last_pass_time == iso(40)
+
+
+def test_add_lap_total_time_never_negative_from_stale_timestamp():
+    """With abs(), a stale pre-start-adjacent event could rewind
+    total_time_ms below zero. Signed delta suppresses the event entirely."""
+    started_at = "2026-04-15T12:00:00.000Z"
+    race = RaceState(total_laps=10, min_pass_interval_s=8.0)
+    race.start(now=parse_iso(started_at))
+
+    race.add_lap("TAG001", iso(30, base=started_at))
+    race.add_lap("TAG001", iso(60, base=started_at))
+    # Stale duplicate from before the first pass
+    race.add_lap("TAG001", iso(30, base=started_at))
+
+    p = race.participants["TAG001"]
+    assert p.laps == 2
+    assert p.total_time_ms is not None and p.total_time_ms >= 0
+    assert p.total_time_ms == 60_000

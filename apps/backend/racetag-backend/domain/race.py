@@ -143,12 +143,23 @@ class RaceState:
             if delta_s < self.min_pass_interval_s:
                 return p
 
-        # Cooldown check: suppress passes that arrive too soon after the last one.
+        # Cooldown check: suppress passes that arrive too soon after — or at
+        # any time BEFORE — the last counted pass. The delta is deliberately
+        # signed (AUDIT-2026-07 H3): with the old abs() a duplicate or
+        # out-of-order event 20 s OLDER than the last pass counted as a new
+        # lap and rewound last_pass_time (recomputing total_time_ms from the
+        # stale timestamp, possibly negative). Out-of-order delivery is a
+        # normal operating mode: spool drains after an outage arrive behind
+        # newer live events, and re-POSTs after a crash-during-commit repeat
+        # old batches. Monotonic-only counting makes all of those no-ops.
         if p.last_pass_time is not None:
-            delta_s = abs(
-                (parse_iso(pass_time_iso) - parse_iso(p.last_pass_time)).total_seconds()
-            )
-            if delta_s < self.min_pass_interval_s:
+            delta_s = (
+                parse_iso(pass_time_iso) - parse_iso(p.last_pass_time)
+            ).total_seconds()
+            # delta_s <= 0 is checked separately from the cooldown: an event
+            # AT or BEFORE the last counted pass is never a new pass, even
+            # with min_pass_interval_s == 0 (exact duplicates from re-POSTs).
+            if delta_s <= 0 or delta_s < self.min_pass_interval_s:
                 return p
 
         p.laps += 1

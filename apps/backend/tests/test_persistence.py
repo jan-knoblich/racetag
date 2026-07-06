@@ -344,3 +344,93 @@ def test_post_end_events_do_not_count_on_replay(tmp_path, monkeypatch):
             f"HIGH #1 regression: post-end events counted as laps on replay. "
             f"Expected {{'PE_A': 2}} after restart, got {after_laps}"
         )
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 H3+H4 end-to-end: re-POSTed batches and out-of-order spool
+# recovery must not change standings — live or after restart.
+# ---------------------------------------------------------------------------
+
+def test_reposted_batch_does_not_double_count(tmp_path, monkeypatch):
+    """The reader-service re-POSTs a batch when the backend committed but died
+    before responding. Same batch twice → one lap, one audit row."""
+    data_dir = str(tmp_path / "repost")
+    monkeypatch.setenv("RACETAG_DATA_DIR", data_dir)
+    monkeypatch.setenv("RACE_MIN_PASS_INTERVAL_S", "0")
+
+    app_module = _load_fresh_app(data_dir)
+    from domain.race import parse_iso as _parse_iso
+    started_iso = "2026-04-15T11:00:00.000Z"
+    app_module.race.start(now=_parse_iso(started_iso))
+    app_module.storage.set_meta("race_started_at", started_iso)
+    if app_module.race.race_id:
+        app_module.storage.update_race(
+            app_module.race.race_id, started=True, started_at=_parse_iso(started_iso)
+        )
+
+    with TestClient(app_module.app) as client:
+        client.post("/riders", json={"tag_id": "RP_A", "bib": "1", "name": "RP_A"})
+        batch = _batch([_tag_event("RP_A", "2026-04-15T12:00:00.000Z")])
+        assert client.post("/events/tag/batch", json=batch).status_code == 200
+        assert client.post("/events/tag/batch", json=batch).status_code == 200  # re-POST
+
+        laps = {s["tag_id"]: s["laps"] for s in client.get("/classification").json()["standings"]}
+        assert laps == {"RP_A": 1}, f"re-POST double-counted: {laps}"
+        assert app_module.storage.count_events() == 1
+
+    # And after restart (replay must agree)
+    app_module2 = _load_fresh_app(data_dir)
+    with TestClient(app_module2.app) as client2:
+        laps2 = {s["tag_id"]: s["laps"] for s in client2.get("/classification").json()["standings"]}
+        assert laps2 == {"RP_A": 1}
+
+
+def test_out_of_order_spool_recovery_replays_correctly(tmp_path, monkeypatch):
+    """Spool drain delivers an outage window AFTER newer live events. Live
+    state suppresses the stale events (signed-delta cooldown); after restart
+    the chronological replay must reach the same standings."""
+    data_dir = str(tmp_path / "outoforder")
+    monkeypatch.setenv("RACETAG_DATA_DIR", data_dir)
+    monkeypatch.setenv("RACE_MIN_PASS_INTERVAL_S", "8.0")
+
+    app_module = _load_fresh_app(data_dir)
+    from domain.race import parse_iso as _parse_iso
+    started_iso = "2026-04-15T11:00:00.000Z"
+    app_module.race.start(now=_parse_iso(started_iso))
+    app_module.storage.set_meta("race_started_at", started_iso)
+    if app_module.race.race_id:
+        app_module.storage.update_race(
+            app_module.race.race_id, started=True, started_at=_parse_iso(started_iso)
+        )
+
+    with TestClient(app_module.app) as client:
+        client.post("/riders", json={"tag_id": "OO_A", "bib": "1", "name": "OO_A"})
+
+        # Live events: laps at 12:00:00 and 12:01:00
+        for ts in ("2026-04-15T12:00:00.000Z", "2026-04-15T12:01:00.000Z"):
+            assert client.post(
+                "/events/tag/batch", json=_batch([_tag_event("OO_A", ts)])
+            ).status_code == 200
+
+        # Late spool drain: an event from 12:00:30 (mid-window, distinct) —
+        # arrives AFTER the 12:01:00 live event. It is within 8 s of nothing
+        # (30 s gaps), but it is OLDER than last_pass_time → suppressed live.
+        assert client.post(
+            "/events/tag/batch",
+            json=_batch([_tag_event("OO_A", "2026-04-15T12:00:30.000Z")]),
+        ).status_code == 200
+
+        live = {s["tag_id"]: s["laps"] for s in client.get("/classification").json()["standings"]}
+        assert live == {"OO_A": 2}, f"stale spool event counted live: {live}"
+
+    # After restart, chronological replay sees 12:00:00, 12:00:30, 12:01:00 —
+    # all >8 s apart, so THREE laps is the chronologically-correct count.
+    # (The mid-window pass was a real pass the reader captured during the
+    # outage; the replay is allowed to know better than the live view.)
+    app_module2 = _load_fresh_app(data_dir)
+    with TestClient(app_module2.app) as client2:
+        after = {s["tag_id"]: s["laps"] for s in client2.get("/classification").json()["standings"]}
+        assert after == {"OO_A": 3}, (
+            f"chronological replay wrong: {after} (expected 3 laps: "
+            f"12:00:00 / 12:00:30 / 12:01:00 all beyond the 8 s cooldown)"
+        )

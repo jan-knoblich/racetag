@@ -142,6 +142,39 @@ class Storage:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tag_events_race ON tag_events(race_id);"
             )
+        self._ensure_tag_events_unique_index()
+
+    def _ensure_tag_events_unique_index(self) -> None:
+        """Create the idempotency index for tag_events (AUDIT-2026-07 H4).
+
+        Duplicate audit rows (same race/tag/type/timestamp) come from
+        re-POSTed batches after a crash-during-commit or repeated spool
+        drains; on replay each duplicate used to count as a real lap.
+
+        Pre-existing DBs may already CONTAIN duplicates, which would make
+        CREATE UNIQUE INDEX fail — so on first migration we delete exact
+        duplicates (keeping the lowest id). Guarded by an index-exists check
+        so the dedupe scan doesn't run on every startup.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_tag_events_unique';"
+            ).fetchone()
+            if row is not None:
+                return
+            self._conn.execute(
+                """
+                DELETE FROM tag_events WHERE id NOT IN (
+                    SELECT MIN(id) FROM tag_events
+                    GROUP BY race_id, tag_id, event_type, timestamp
+                );
+                """
+            )
+            self._conn.execute(
+                "CREATE UNIQUE INDEX idx_tag_events_unique "
+                "ON tag_events(race_id, tag_id, event_type, timestamp);"
+            )
 
     # ---- internal helpers -----------------------------------------------
 
@@ -493,10 +526,17 @@ class Storage:
     # ---- Tag-event persistence (race-scoped) ---------------------------
 
     def append_event(self, event: "TagEventDTO", race_id: Optional[str] = None) -> None:
+        """Persist one event. Idempotent (AUDIT-2026-07 H4): re-delivery of an
+        identical event — reader-service re-POST after a crash-during-commit,
+        spool drain replaying a partially delivered outage window — must not
+        create a duplicate audit row, otherwise replay-on-restart would count
+        the duplicate as a real lap. Enforced by the unique index on
+        (race_id, tag_id, event_type, timestamp) + INSERT OR IGNORE.
+        """
         rid = self._require_race_id(race_id)
         self._execute(
             """
-            INSERT INTO tag_events
+            INSERT OR IGNORE INTO tag_events
                 (race_id, tag_id, event_type, timestamp, antenna, rssi, reader_serial)
             VALUES (?, ?, ?, ?, ?, ?, ?);
             """,
@@ -512,13 +552,21 @@ class Storage:
         )
 
     def iter_events(self, race_id: Optional[str] = None) -> Iterator["TagEventDTO"]:
-        """Yield TagEventDTOs for the given race in insertion order (replay)."""
+        """Yield TagEventDTOs for the given race in CHRONOLOGICAL order (replay).
+
+        Ordered by timestamp (id as tiebreaker), not insertion order
+        (AUDIT-2026-07 H3): spool-recovered events are inserted AFTER newer
+        live events, so insertion order is not chronological whenever a spool
+        drain happened. Replaying out of order used to rewind last_pass_time
+        and over-count laps. timestamps are uniform ISO-8601 UTC "Z" strings,
+        so lexicographic ordering == chronological ordering.
+        """
         from models_api import EventType, TagEventDTO
 
         rid = self._require_race_id(race_id)
         rows = self._conn.execute(
             "SELECT tag_id, event_type, timestamp, antenna, rssi, reader_serial "
-            "FROM tag_events WHERE race_id = ? ORDER BY id;",
+            "FROM tag_events WHERE race_id = ? ORDER BY timestamp, id;",
             (rid,),
         ).fetchall()
         for row in rows:
