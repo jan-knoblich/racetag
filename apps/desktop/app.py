@@ -188,6 +188,16 @@ def _bootstrap_env() -> None:
     )
     Path(os.environ["RACETAG_DATA_DIR"]).mkdir(parents=True, exist_ok=True)
 
+    # Reader-service disk artefacts (crash-recovery spool, debug log) used to
+    # be CWD-relative and silently landed nowhere when the .app was launched
+    # from Finder (CWD "/", read-only). Pin them next to the data dir so the
+    # location is deterministic regardless of launch method (AUDIT-2026-07 H1).
+    os.environ.setdefault(
+        "RACETAG_LOG_DIR",
+        str(Path.home() / ".racetag" / "logs"),
+    )
+    Path(os.environ["RACETAG_LOG_DIR"]).mkdir(parents=True, exist_ok=True)
+
 
 # ---------------------------------------------------------------------------
 # Free-port helper

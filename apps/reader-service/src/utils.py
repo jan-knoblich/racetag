@@ -27,6 +27,31 @@ def _color(s: str, col: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Writable log/spool directory (AUDIT-2026-07 H1)
+# ---------------------------------------------------------------------------
+
+def resolve_log_dir() -> str:
+    """Absolute, writable directory for the reader-service's disk artefacts
+    (spool file, debug log).
+
+    Previously these paths were CWD-relative ("logs/..."), which meant the
+    crash-recovery spool silently vanished depending on how the app was
+    launched: a Finder-launched .app has CWD "/" (read-only APFS system
+    volume), so the spool write failed and the batch was DROPPED.
+
+    Resolution order:
+    1. RACETAG_LOG_DIR env var (set by the desktop shell so parent and any
+       future tooling agree on the location),
+    2. ~/.racetag/logs — same root as the backend's RACETAG_DATA_DIR default,
+       guaranteed writable for the current user.
+    """
+    d = os.environ.get("RACETAG_LOG_DIR")
+    if not d:
+        d = os.path.join(os.path.expanduser("~"), ".racetag", "logs")
+    return d
+
+
+# ---------------------------------------------------------------------------
 # W-060: structured logging helper
 # ---------------------------------------------------------------------------
 
@@ -83,9 +108,10 @@ def get_logger(name: str) -> logging.Logger:
     # --- file handler (debug only) ---
     if debug_mode:
         try:
-            os.makedirs("logs", exist_ok=True)
+            log_dir = resolve_log_dir()
+            os.makedirs(log_dir, exist_ok=True)
             fh = logging.handlers.RotatingFileHandler(
-                "logs/reader.log",
+                os.path.join(log_dir, "reader.log"),
                 maxBytes=5 * 1024 * 1024,
                 backupCount=3,
                 encoding="utf-8",
