@@ -143,16 +143,30 @@ def _spawn_reader_service(backend_url: str) -> "subprocess.Popen | None":
         print(f"Failed to spawn reader-service: {exc}", file=sys.stderr)
         _reader_proc = None
 
+    # PID file so the NEXT launch can reap this process if we die hard and
+    # the atexit/finally cleanup never runs (AUDIT-2026-07 H6).
+    if _reader_proc is not None:
+        try:
+            _READER_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _READER_PID_FILE.write_text(str(_reader_proc.pid))
+        except OSError as exc:
+            print(f"Could not write reader-service PID file: {exc}", file=sys.stderr)
+
     return _reader_proc
 
 
 def _stop_reader_service() -> None:
-    """Terminate the reader-service subprocess with a 5 s grace period."""
+    """Terminate the reader-service subprocess with a 5 s grace period.
+
+    Idempotent — registered with atexit AND called from main()'s finally, so
+    double invocation must be harmless (AUDIT-2026-07 H6).
+    """
     global _reader_proc
     proc = _reader_proc
     if proc is None:
         return
     _reader_proc = None
+    _READER_PID_FILE.unlink(missing_ok=True)
 
     if proc.poll() is not None:
         return  # already exited
@@ -168,6 +182,123 @@ def _stop_reader_service() -> None:
         print("reader-service did not stop in 5 s — killing", file=sys.stderr)
         proc.kill()
         proc.wait()
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 H6/H7: process-lifecycle guards.
+#
+# H6: a hard shell death (SIGKILL, WKWebView crash) used to orphan the
+#     reader-service; belt-and-braces here are the PID file + stale-kill on
+#     the next launch (the reader-service additionally self-terminates via a
+#     parent-liveness check in sirit_client.run_forever).
+# H7: no single-instance guard meant a double-launch ran two backends on the
+#     same SQLite DB and two reader-services against the same reader.
+# ---------------------------------------------------------------------------
+
+_READER_PID_FILE = Path.home() / ".racetag" / "reader-service.pid"
+
+# Module-level reference keeps the locked file handle (and thus the flock)
+# alive for the process lifetime; released automatically on ANY exit.
+_instance_lock_fh = None
+
+
+def _try_lock_file(path: Path):
+    """Return an open, exclusively-locked file handle, or None if the lock is
+    held by another process. POSIX flock / Windows msvcrt.locking."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "a+")
+    try:
+        if sys.platform == "win32":
+            import msvcrt  # noqa: PLC0415
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl  # noqa: PLC0415
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def _acquire_single_instance_lock() -> bool:
+    """Take the app-wide instance lock. Keeps the handle in a module global so
+    the flock lives exactly as long as the process (incl. crash release)."""
+    global _instance_lock_fh
+    _instance_lock_fh = _try_lock_file(Path.home() / ".racetag" / "racetag.lock")
+    if _instance_lock_fh is None:
+        return False
+    try:
+        _instance_lock_fh.truncate(0)
+        _instance_lock_fh.write(str(os.getpid()))
+        _instance_lock_fh.flush()
+    except OSError:
+        pass  # informational content only
+    return True
+
+
+def _show_already_running_dialog() -> None:
+    """Native alert so a Finder double-click doesn't fail silently."""
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(
+            [
+                "osascript", "-e",
+                'display alert "Racetag läuft bereits" message '
+                '"Es ist schon eine Racetag-Instanz geöffnet. '
+                'Bitte das vorhandene Fenster verwenden."',
+            ],
+            timeout=30,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _kill_stale_reader_service() -> None:
+    """Kill a reader-service left over from a crashed previous run (H6).
+
+    Verifies via `ps` that the PID actually still is a reader-service before
+    killing — PIDs get reused, and we must never kill an innocent process.
+    """
+    try:
+        pid = int(_READER_PID_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return
+    if sys.platform == "win32":
+        _READER_PID_FILE.unlink(missing_ok=True)
+        return
+    try:
+        os.kill(pid, 0)  # existence probe, no signal delivered
+    except (ProcessLookupError, PermissionError):
+        _READER_PID_FILE.unlink(missing_ok=True)
+        return
+    try:
+        cmd = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except Exception:  # noqa: BLE001
+        return
+    if "--reader-service" not in cmd and "racetag_reader_service" not in cmd:
+        # PID was reused by something else — just drop the stale file.
+        _READER_PID_FILE.unlink(missing_ok=True)
+        return
+    print(f"Killing stale reader-service from a previous run (pid {pid})", flush=True)
+    try:
+        os.kill(pid, 15)  # SIGTERM
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)  # SIGKILL
+    except (ProcessLookupError, PermissionError):
+        pass
+    _READER_PID_FILE.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +477,19 @@ def main() -> None:
 
     _bootstrap_env()
 
+    # H7: refuse to run a second instance — two backends on the same SQLite
+    # plus two reader-services on the same reader corrupt each other.
+    if not _acquire_single_instance_lock():
+        print(
+            "Racetag is already running — refusing to start a second instance.",
+            file=sys.stderr,
+        )
+        _show_already_running_dialog()
+        sys.exit(1)
+
+    # H6: reap a reader-service orphaned by a hard crash of a previous run.
+    _kill_stale_reader_service()
+
     app = _build_combined_app()
     port = _pick_free_port()
 
@@ -369,6 +513,12 @@ def main() -> None:
 
     # Spawn the reader-service subprocess (W-073).
     _spawn_reader_service(backend_url=url)
+
+    # H6: cover exit paths that skip the finally below (sys.exit from a
+    # nested call, unraisable teardown orderings). _stop_reader_service is
+    # idempotent, so double invocation via atexit + finally is harmless.
+    import atexit  # noqa: PLC0415
+    atexit.register(_stop_reader_service)
 
     import webview  # noqa: PLC0415  (optional dep; import late so tests skip it)
 
@@ -396,13 +546,18 @@ def main() -> None:
                 return False
             return True
 
-    webview.create_window("Racetag", url, js_api=_RacetagApi(), width=1280, height=800)
-    webview.start()  # blocks on main thread until the window is closed
-
-    # Window closed — stop reader then signal uvicorn.
-    _stop_reader_service()
-    handle.stop()
-    done.wait(timeout=3)
+    # H6: try/finally so ANY exception between spawn and clean close (webview
+    # import/window failures included, which historically raised here) still
+    # terminates the reader-service and stops uvicorn — previously an
+    # exception in this stretch orphaned the subprocess.
+    try:
+        webview.create_window("Racetag", url, js_api=_RacetagApi(), width=1280, height=800)
+        webview.start()  # blocks on main thread until the window is closed
+    finally:
+        # Window closed (or startup raised) — stop reader then signal uvicorn.
+        _stop_reader_service()
+        handle.stop()
+        done.wait(timeout=3)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import socket
 import sys
@@ -75,9 +76,27 @@ class SiritClient:
         threading.Thread(target=self._recv_loop, args=("EVENT", self.event_sock), daemon=True).start()
 
     def run_forever(self):
+        # Parent-liveness tie (AUDIT-2026-07 H6): when the desktop shell dies
+        # HARD (SIGKILL, force-quit, WKWebView crash) its atexit/finally
+        # cleanup never runs and this process would keep the reader session
+        # alive forever, POSTing to a dead backend URL and spooling every
+        # pass. On POSIX, parent death reparents us (getppid changes, to
+        # launchd/init) — detect that in the tick and shut down cleanly,
+        # which also flushes/spools the backend queue. No-op on Windows
+        # (ppid stays stable there). A dev shell counts as parent too, which
+        # is desirable: closing the terminal stops the service.
+        parent_pid = os.getppid()
         try:
             while not self._stop_event.is_set():
                 time.sleep(0.5)
+                current_ppid = os.getppid()
+                if current_ppid != parent_pid:
+                    logger.warning(
+                        "Parent process %d gone (reparented to %d) — "
+                        "shutting down to avoid an orphaned reader-service",
+                        parent_pid, current_ppid,
+                    )
+                    break
         except KeyboardInterrupt:
             logger.info("Interrupted by user.")
         finally:
