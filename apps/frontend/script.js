@@ -66,9 +66,31 @@ const state = {
 // Handles: UTF-8 BOM, quoted fields with embedded commas, CRLF, "" → ",
 // trailing blank lines. Zero external dependencies.
 // ---------------------------------------------------------------------------
-function parseCSVRobust(text) {
+// Detect the field delimiter from the header line (AUDIT-2026-07 M8).
+// German Excel saves "CSV" with semicolons; tab-separated exports also occur.
+// We count occurrences OUTSIDE quotes on the first line and pick the winner,
+// defaulting to comma. Without this, a semicolon file parsed as one field per
+// line and every row was silently skipped ("Imported 0/57").
+function detectDelimiter(text) {
+  const firstLine = text.split(/\r?\n/, 1)[0] || '';
+  const counts = { ',': 0, ';': 0, '\t': 0 };
+  let inQuotes = false;
+  for (const ch of firstLine) {
+    if (ch === '"') inQuotes = !inQuotes;
+    else if (!inQuotes && ch in counts) counts[ch]++;
+  }
+  let best = ',';
+  for (const d of [';', '\t']) {
+    if (counts[d] > counts[best]) best = d;
+  }
+  return best;
+}
+
+function parseCSVRobust(text, delimiter) {
   // Strip UTF-8 BOM if present
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+
+  const delim = delimiter || detectDelimiter(text);
 
   const rows = [];
   let i = 0;
@@ -99,16 +121,16 @@ function parseCSVRobust(text) {
         }
         row.push(field);
       } else {
-        // Unquoted field — read until comma or end of line
+        // Unquoted field — read until delimiter or end of line
         let field = '';
-        while (i < len && text[i] !== ',' && text[i] !== '\n' && text[i] !== '\r') {
+        while (i < len && text[i] !== delim && text[i] !== '\n' && text[i] !== '\r') {
           field += text[i++];
         }
         row.push(field.trim());
       }
 
-      // After a field: consume comma (continue row) or newline/end (end row)
-      if (i < len && text[i] === ',') {
+      // After a field: consume the delimiter (continue row) or newline/end (end row)
+      if (i < len && text[i] === delim) {
         i++; // next field in same row
         continue;
       }
@@ -143,11 +165,13 @@ function formatTimestampForDisplay(isoUtc) {
 // Replaces the old browser-only tagData map approach.
 // ---------------------------------------------------------------------------
 async function importCSVToBackend(csvText) {
-  const rows = parseCSVRobust(csvText);
+  const delimiter = detectDelimiter(csvText);
+  const rows = parseCSVRobust(csvText, delimiter);
   if (rows.length < 2) {
     setStatus('CSV file is empty or has no data rows');
     return;
   }
+  const delimName = delimiter === ';' ? 'semicolon' : delimiter === '\t' ? 'tab' : 'comma';
 
   // First row is header — skip it
   const dataRows = rows.slice(1).filter(r => r.some(cell => cell !== ''));
@@ -168,9 +192,21 @@ async function importCSVToBackend(csvText) {
 
   for (let i = 0; i < total; i++) {
     const row = dataRows[i];
-    if (row.length < 3) continue;
+    // M8: never skip a data row silently — record why it was rejected so the
+    // operator sees it (a semicolon file parsed with the wrong delimiter used
+    // to produce "Imported 0/57" with no explanation).
+    if (row.length < 3) {
+      errors.push({
+        tag_id: (row[0] || `(row ${i + 2})`).slice(0, 40),
+        reason: `only ${row.length} column(s) — expected tag_id,bib,name (detected ${delimName} delimiter)`,
+      });
+      continue;
+    }
     const [tag_id, bib, name] = row;
-    if (!tag_id) continue;
+    if (!tag_id) {
+      errors.push({ tag_id: `(row ${i + 2})`, reason: 'empty tag_id' });
+      continue;
+    }
 
     setStatus(`Importing ${i + 1}/${total} riders (${errors.length} errors)\u2026`);
 
@@ -472,6 +508,17 @@ function applyTagColumnVisibility() {
   });
 }
 
+// Create-race modal: show laps OR duration+final-laps depending on format.
+function applyRaceFormatVisibility() {
+  const isTime = $('#newRaceFormat')?.value === 'time';
+  const lapsField = $('#newRaceLapsField');
+  const durationField = $('#newRaceDurationField');
+  const finalLapsField = $('#newRaceFinalLapsField');
+  if (lapsField) lapsField.hidden = isTime;
+  if (durationField) durationField.hidden = !isTime;
+  if (finalLapsField) finalLapsField.hidden = !isTime;
+}
+
 // HTML-escape helper for values that flow through innerHTML. Used for any
 // server-supplied string that ends up between tags OR inside a "-quoted
 // attribute. (Review #20: tag_id was interpolated raw into data-tag-id and
@@ -492,7 +539,17 @@ function renderStandings(items) {
   const tbody = $('#standingsTable tbody');
   tbody.innerHTML = '';
   items.forEach((p, idx) => {
-    const gap = typeof p.gap_ms === 'number' ? formatMs(p.gap_ms) : '';
+    // F7: show the standard cycling representation of a deficit — "+N Rd."
+    // (Runden) for lapped riders — instead of a bare smaller lap count or an
+    // empty gap cell. Same-lap riders keep the time gap to the leader.
+    let gap;
+    if (typeof p.laps_behind === 'number' && p.laps_behind > 0) {
+      gap = `+${p.laps_behind} Rd.`;
+    } else if (typeof p.gap_ms === 'number') {
+      gap = formatMs(p.gap_ms);
+    } else {
+      gap = '';
+    }
     // W-012: prefer bib/name from server standings; fall back to 'N/A'/'Unknown'
     const bibRaw = p.bib;
     const bib = (bibRaw != null && bibRaw !== '') ? htmlEscape(bibRaw) : 'N/A';
@@ -636,6 +693,21 @@ async function onStandingsTableClick(e) {
   const action = btn.dataset.action;
   const label = _bibLabelFor(tag_id);
   if (action === 'add') {
+    // F6: the +1 button credits a lap at server-now, which is correct for the
+    // common case (the rider is crossing right now and the reader missed
+    // them). But if the rider's last pass was a long time ago, crediting
+    // server-now would inflate their race time — so route those through the
+    // timestamp modal instead of silently stamping "now".
+    const p = (state.lastStandings || []).find((r) => r.tag_id === tag_id);
+    const STALE_MS = 120_000; // 2 min — longer than any realistic circuit lap
+    if (p && p.last_pass_time) {
+      const age = Date.now() - new Date(p.last_pass_time).getTime();
+      if (isFinite(age) && age > STALE_MS) {
+        showToast('Last pass was a while ago — set the timestamp');
+        openLapEditModal(tag_id);
+        return;
+      }
+    }
     const result = await manualLapAdd(tag_id);
     if (result) showToast(`Lap added — ${label} now ${result.laps} laps`);
   } else if (action === 'remove') {
@@ -688,6 +760,10 @@ async function loadRaceConfig() {
     state.activeRaceId = data.id || null;
     state.activeRaceName = data.name || null;
     state.activeRaceScheduledAt = data.scheduled_at || null;
+    // F1/F2: finishing phase + laps-to-go (bell).
+    state.finishMode = data.finish_mode || 'leader';
+    state.finishing = !!data.finishing;
+    state.lapsToGo = (typeof data.laps_to_go === 'number') ? data.laps_to_go : null;
     renderRaceStatus();
   } catch {
     // silently ignore — config sync is best-effort
@@ -703,6 +779,15 @@ function renderRaceStatus() {
     ? `${state.activeRaceName} — `
     : '';
 
+  // F8: bell / laps-to-go suffix for the leader while the race is live.
+  let ltgSuffix = '';
+  if (state.finishing) {
+    ltgSuffix = ' — 🏁 LAST LAP / finishing';
+  } else if (typeof state.lapsToGo === 'number') {
+    if (state.lapsToGo === 1) ltgSuffix = ' — 🔔 1 lap to go';
+    else if (state.lapsToGo > 0) ltgSuffix = ` — ${state.lapsToGo} laps to go`;
+  }
+
   if (state.raceEnded && state.raceEndedAt) {
     const t = formatTimestampForDisplay(state.raceEndedAt);
     if (banner) banner.textContent = `${racePrefix}Ended at ${t}`;
@@ -710,7 +795,7 @@ function renderRaceStatus() {
     if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'Ended'; }
   } else if (state.raceStarted && state.raceStartedAt) {
     const t = formatTimestampForDisplay(state.raceStartedAt);
-    if (banner) banner.textContent = `${racePrefix}Running since ${t}`;
+    if (banner) banner.textContent = `${racePrefix}Running since ${t}${ltgSuffix}`;
     if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Race started'; }
     if (endBtn) { endBtn.disabled = false; endBtn.textContent = 'End race'; }
   } else {
@@ -823,7 +908,17 @@ function connectSSE() {
   const url = `${state.backend}/stream`;
   if (state.es) state.es.close();
   state.es = connectSSEWithHeaders(url, getApiHeaders(), {
-    onOpen: () => setStatus('Live'),
+    // M7: on every (re)connect, re-pull the full state. The backend /stream
+    // sends no initial snapshot, so any lap / race_started / race_ended
+    // broadcast during an outage window would otherwise be missed and the UI
+    // would show stale standings under a green "Live" badge until the next
+    // lap. Re-fetching heals both the standings and the race lifecycle state.
+    onOpen: () => {
+      setStatus('Live');
+      loadRaces();
+      loadRaceConfig();
+      loadSnapshot().catch(() => {});
+    },
     onError: () => {}, // status handled by onStatusChange
     onStatusChange: (msg) => setStatus(msg),
     onMessage: (ev) => {
@@ -832,6 +927,12 @@ function connectSSE() {
 
         if (data?.type === 'standings') {
           renderStandings(data.items || []);
+          // F8: keep the bell / laps-to-go banner live on every lap.
+          if ('laps_to_go' in data || 'finishing' in data) {
+            state.finishing = !!data.finishing;
+            state.lapsToGo = (typeof data.laps_to_go === 'number') ? data.laps_to_go : null;
+            renderRaceStatus();
+          }
         }
 
         // W-012: handle unknown_tag SSE event
@@ -973,8 +1074,17 @@ function init() {
       if (snap) snap.value = 120;
       const act = $('#newRaceActivate');
       if (act) act.checked = true;
+      // Reset race-format controls to fixed-laps default.
+      const fmt = $('#newRaceFormat');
+      if (fmt) { fmt.value = 'laps'; applyRaceFormatVisibility(); }
+      const perRider = $('#newRacePerRider');
+      if (perRider) perRider.checked = false;
     });
   }
+
+  // Toggle laps vs duration+final-laps fields based on the format selector.
+  const fmtSel = $('#newRaceFormat');
+  if (fmtSel) fmtSel.addEventListener('change', applyRaceFormatVisibility);
 
   const newRaceCancel = $('#newRaceCancelBtn');
   if (newRaceCancel) {
@@ -998,19 +1108,35 @@ function init() {
         if (errBox) { errBox.textContent = 'Race name is required'; errBox.hidden = false; }
         return;
       }
+
+      // Race format (F1/F2).
+      const finish_mode = $('#newRacePerRider')?.checked ? 'per_rider' : 'leader';
+      const isTimeBased = $('#newRaceFormat')?.value === 'time';
+      const body = { name, total_laps: totalLaps, snapshot_interval_s, finish_mode };
+      if (isTimeBased) {
+        const mins = parseInt($('#newRaceDurationMin')?.value || '0', 10) || 0;
+        const finalLaps = Math.max(0, parseInt($('#newRaceFinalLaps')?.value || '0', 10) || 0);
+        if (mins <= 0) {
+          if (errBox) { errBox.textContent = 'Duration must be at least 1 minute'; errBox.hidden = false; }
+          return;
+        }
+        body.duration_s = mins * 60;
+        body.final_laps = finalLaps;
+        // total_laps is unused in a time race, but the backend field is
+        // required (ge=1); a large value keeps it out of the way.
+        body.total_laps = 999;
+      }
+
       // datetime-local gives "YYYY-MM-DDTHH:MM" \u2014 treat as UTC for simplicity
       // (operators on race day enter the local time of the event; we keep it
       // as-is and tag with Z so the backend parses it; race-day timezone
       // policy can be refined later).
-      const scheduled_at = schedRaw ? `${schedRaw}:00.000Z` : null;
+      body.scheduled_at = schedRaw ? `${schedRaw}:00.000Z` : null;
       try {
         const res = await fetch(`${state.backend}/races`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
-          body: JSON.stringify({
-            name, scheduled_at, total_laps: totalLaps,
-            snapshot_interval_s,
-          }),
+          body: JSON.stringify(body),
         });
         if (!res.ok) {
           const txt = await res.text();

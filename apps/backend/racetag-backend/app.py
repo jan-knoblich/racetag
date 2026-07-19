@@ -456,7 +456,9 @@ def post_events_batch(batch: TagEventBatchDTO):
                 _publish(lap_payload)
                 # Broadcast updated standings snapshot (enriched with rider info)
                 table = _build_standings_items()
-                standings_payload = {"type": "standings", "items": table}
+                standings_payload = {
+                    "type": "standings", "items": table, **_race_live_status()
+                }
                 _publish(standings_payload)
             else:
                 # W-011: fire unknown_tag SSE + add to ring buffer so the
@@ -497,6 +499,13 @@ def _build_standings_items() -> List[Dict[str, Any]]:
         d["name"] = rider.name if rider else None
         result.append(d)
     return result
+
+
+def _race_live_status() -> Dict[str, Any]:
+    """Live finishing/bell state attached to standings broadcasts so the UI
+    can update the 'laps to go' banner on every lap without a second fetch
+    (F8)."""
+    return {"finishing": race.finishing, "laps_to_go": race.laps_to_go()}
 
 
 @app.get("/classification", response_model=ClassificationDTO)
@@ -550,7 +559,7 @@ def _build_classification_csv() -> tuple[str, str]:
 
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(
-        ["position", "bib", "name", "tag_id", "laps", "finished",
+        ["position", "bib", "name", "tag_id", "laps", "laps_behind", "finished",
          "finish_time", "total_time_ms", "last_pass_time"]
     )
     for idx, item in enumerate(items, start=1):
@@ -560,6 +569,7 @@ def _build_classification_csv() -> tuple[str, str]:
             item.get("name") or "",
             item.get("tag_id") or "",
             item.get("laps", 0),
+            item.get("laps_behind") if item.get("laps_behind") is not None else "",
             "true" if item.get("finished") else "false",
             item.get("finish_time") or "",
             item.get("total_time_ms") if item.get("total_time_ms") is not None else "",

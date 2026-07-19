@@ -307,3 +307,21 @@ def test_get_race_exposes_format_and_finishing_state(fresh_app):
     assert body["finish_mode"] == "leader"
     assert body["finishing"] is False
     assert "laps_to_go" in body
+
+
+def test_classification_csv_has_laps_behind_column(fresh_app):
+    """AUDIT-2026-07 F7: the CSV export carries a laps_behind column."""
+    client, app_module = fresh_app
+    from domain.race import parse_iso as _parse_iso
+
+    client.post("/riders", json={"tag_id": "LB1", "bib": "1", "name": "Leader"})
+    app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
+    client.post("/events/tag/batch", json={"events": [{
+        "source": "test", "reader_ip": "127.0.0.1",
+        "timestamp": "2026-04-15T12:00:00.000Z",
+        "event_type": "arrive", "tag_id": "LB1",
+    }]})
+
+    body = client.get("/classification.csv").text
+    header = [ln for ln in body.splitlines() if ln.startswith("position,")][0]
+    assert "laps_behind" in header.split(",")
