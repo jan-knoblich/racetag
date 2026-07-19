@@ -40,12 +40,26 @@ class Participant(BaseModel):
     laps_behind: Optional[int] = None
 
 
+# Finish models (AUDIT-2026-07 F1).
+# - "leader": criterium model — the FIRST rider to reach the target lap count
+#   wins and triggers the finishing phase; every other rider is flagged off at
+#   their NEXT pass, in whatever lap they are on. This is the correct model for
+#   circuit / criterium races and is the default.
+# - "per_rider": each rider finishes independently when they personally reach
+#   the target (time-trial / training semantics).
+FINISH_MODE_LEADER = "leader"
+FINISH_MODE_PER_RIDER = "per_rider"
+
+
 class RaceState:
     def __init__(
         self,
         total_laps: int = 20,
         min_pass_interval_s: float = 8.0,
         race_id: Optional[str] = None,
+        finish_mode: str = "leader",
+        duration_s: Optional[int] = None,
+        final_laps: Optional[int] = None,
     ) -> None:
         # Which persisted race this runtime state belongs to. Optional so
         # in-memory-only tests can construct a RaceState without storage.
@@ -69,6 +83,46 @@ class RaceState:
         self.ended: bool = False
         self.ended_at: Optional[datetime] = None
         self.participants: Dict[str, Participant] = {}
+
+        # F1 — finish model + finishing phase.
+        self.finish_mode = finish_mode
+        # Set once the leader crosses the finish line (leader mode). While
+        # True, every other rider is flagged off at their next pass.
+        self.finishing: bool = False
+        self.finishing_at: Optional[datetime] = None
+
+        # F2 — time-based race ("duration_s + final_laps"). When duration_s is
+        # set the race runs on the clock; when the elapsed time reaches
+        # duration_s, the leader's next pass locks a final lap target
+        # (leader_laps + final_laps) and the race counts down those laps.
+        self.duration_s = duration_s
+        self.final_laps = final_laps
+        # Locked absolute lap target once the timer expires; None until then.
+        self.time_target_laps: Optional[int] = None
+
+    def effective_total_laps(self) -> int:
+        """The lap count that currently defines 'finished'.
+
+        For a time-based race this is the locked target once the timer
+        expired (leader_laps + final_laps); otherwise the fixed total_laps.
+        """
+        if self.time_target_laps is not None:
+            return self.time_target_laps
+        return self.total_laps
+
+    def laps_to_go(self) -> Optional[int]:
+        """Laps remaining for the leader (F8 — bell / 'laps to go' display).
+
+        None when it can't be stated: race not started, already ended, or a
+        time-based race whose timer hasn't expired yet (no target locked, so
+        the number of remaining laps is genuinely unknown).
+        """
+        if not self.started or self.ended:
+            return None
+        if self.duration_s is not None and self.time_target_laps is None:
+            return None
+        leader_laps = max((p.laps for p in self.participants.values()), default=0)
+        return max(self.effective_total_laps() - leader_laps, 0)
 
     def start(self, now: Optional[datetime] = None) -> datetime:
         """Mark the race as started. Idempotent: returns the existing started_at
@@ -164,9 +218,47 @@ class RaceState:
 
         p.laps += 1
         p.last_pass_time = pass_time_iso
-        if not p.finished and p.laps >= self.total_laps:
-            p.finished = True
-            p.finish_time = pass_time_iso
+
+        # F2 — time-based race: when the elapsed time reaches duration_s, the
+        # first pass by the current lap-leader locks the final target
+        # (their lap count + final_laps). Until locked, no fixed threshold
+        # applies, so a duration race never "finishes" on total_laps alone.
+        if (
+            self.duration_s is not None
+            and self.final_laps is not None
+            and self.time_target_laps is None
+            and self.started_at is not None
+        ):
+            elapsed_s = (parse_iso(pass_time_iso) - self.started_at).total_seconds()
+            if elapsed_s >= self.duration_s:
+                max_laps = max((q.laps for q in self.participants.values()), default=0)
+                if p.laps >= max_laps:
+                    # This rider is (tied for) the leader crossing after the
+                    # timer expired — lock the bell target.
+                    self.time_target_laps = p.laps + self.final_laps
+
+        target = self.effective_total_laps()
+
+        # F1 — finish logic.
+        if not p.finished:
+            if self.finish_mode == FINISH_MODE_LEADER and self.finishing:
+                # Finishing phase: the leader already crossed the target, so
+                # every rider is flagged off at their next pass in their
+                # current lap — no need to reach the target themselves.
+                p.finished = True
+                p.finish_time = pass_time_iso
+            elif self.time_target_laps is None and self.duration_s is not None:
+                # Time-based race, timer not yet expired → no finish threshold.
+                pass
+            elif p.laps >= target:
+                p.finished = True
+                p.finish_time = pass_time_iso
+                if self.finish_mode == FINISH_MODE_LEADER and not self.finishing:
+                    # First rider to reach the target — the winner triggers
+                    # the finishing phase for everyone else.
+                    self.finishing = True
+                    self.finishing_at = parse_iso(pass_time_iso)
+
         t = parse_iso(p.finish_time or p.last_pass_time) if (p.finish_time or p.last_pass_time) else None
         if t is not None:
             # BUG-005 fix: anchor total time at the "Start race" moment
@@ -179,8 +271,10 @@ class RaceState:
         return p
 
     def standings(self) -> List[Participant]:
+        target = self.effective_total_laps()
+
         def _cap_laps(p: Participant) -> int:
-            return min(p.laps, self.total_laps)
+            return min(p.laps, target)
 
         # Sentinel for participants with no pass yet (pre-start, or zero-lap
         # rows created by the unknown-tag SSE flow). float('inf') would

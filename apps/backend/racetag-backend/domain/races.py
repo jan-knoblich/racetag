@@ -48,6 +48,15 @@ class Race(BaseModel):
     # <data_dir>/snapshots/<race_id>/, keeping the most recent N (rolling
     # window).
     snapshot_interval_s: Optional[int] = None
+    # Finish model (AUDIT-2026-07 F1): "leader" (criterium — leader crossing
+    # the line finishes the race, others flagged off at their next pass) or
+    # "per_rider" (each finishes on reaching total_laps independently).
+    finish_mode: str = "leader"
+    # Time-based race format (F2): if duration_s is set the race runs on the
+    # clock; when the timer expires the leader's next pass locks a final lap
+    # target of leader_laps + final_laps. Both None → fixed-distance race.
+    duration_s: Optional[int] = None
+    final_laps: Optional[int] = None
 
 
 __all__ = ["Race", "new_race_id"]

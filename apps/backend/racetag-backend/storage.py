@@ -50,7 +50,10 @@ CREATE TABLE IF NOT EXISTS races (
     ended                INTEGER NOT NULL DEFAULT 0,
     ended_at             TEXT,
     created_at           TEXT NOT NULL,
-    snapshot_interval_s  INTEGER
+    snapshot_interval_s  INTEGER,
+    finish_mode          TEXT NOT NULL DEFAULT 'leader',
+    duration_s           INTEGER,
+    final_laps           INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS riders (
@@ -136,6 +139,7 @@ class Storage:
         self._migrate_legacy()
         # Add columns introduced after the initial multi-race migration.
         self._ensure_races_snapshot_interval_column()
+        self._ensure_races_race_format_columns()
         self._ensure_default_race()
         # Create the race index now that tag_events.race_id is guaranteed to exist.
         with self._lock:
@@ -218,6 +222,24 @@ class Storage:
             self._conn.execute(
                 "ALTER TABLE races ADD COLUMN snapshot_interval_s INTEGER;"
             )
+
+    def _ensure_races_race_format_columns(self) -> None:
+        """Add the finish_mode / duration_s / final_laps columns to a
+        pre-existing races table (AUDIT-2026-07 F1+F2). Idempotent."""
+        cols = self._table_columns("races")
+        with self._lock:
+            if "finish_mode" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE races ADD COLUMN finish_mode TEXT NOT NULL DEFAULT 'leader';"
+                )
+            if "duration_s" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE races ADD COLUMN duration_s INTEGER;"
+                )
+            if "final_laps" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE races ADD COLUMN final_laps INTEGER;"
+                )
 
     def _migrate_legacy(self) -> None:
         """Migrate pre-multi-race ``riders`` / ``tag_events`` rows into the new
@@ -311,49 +333,39 @@ class Storage:
 
     # ---- Race CRUD ------------------------------------------------------
 
+    _RACE_INSERT_SQL = """
+        INSERT INTO races
+            (id, name, scheduled_at, total_laps, started, started_at, ended,
+             ended_at, created_at, snapshot_interval_s, finish_mode,
+             duration_s, final_laps)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    """
+
+    @staticmethod
+    def _race_insert_params(race: "Race") -> tuple:
+        return (
+            race.id,
+            race.name,
+            _iso(race.scheduled_at),
+            race.total_laps,
+            1 if race.started else 0,
+            _iso(race.started_at),
+            1 if race.ended else 0,
+            _iso(race.ended_at),
+            _iso(race.created_at),
+            race.snapshot_interval_s,
+            race.finish_mode,
+            race.duration_s,
+            race.final_laps,
+        )
+
     def _insert_race(self, race: "Race") -> None:
         """Insert without locking (used inside migration which already holds the lock)."""
-        self._conn.execute(
-            """
-            INSERT INTO races
-                (id, name, scheduled_at, total_laps, started, started_at, ended, ended_at, created_at, snapshot_interval_s)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                race.id,
-                race.name,
-                _iso(race.scheduled_at),
-                race.total_laps,
-                1 if race.started else 0,
-                _iso(race.started_at),
-                1 if race.ended else 0,
-                _iso(race.ended_at),
-                _iso(race.created_at),
-                race.snapshot_interval_s,
-            ),
-        )
+        self._conn.execute(self._RACE_INSERT_SQL, self._race_insert_params(race))
 
     def create_race(self, race: "Race") -> "Race":
         """Insert a new race row and return the (persisted) Race."""
-        self._execute(
-            """
-            INSERT INTO races
-                (id, name, scheduled_at, total_laps, started, started_at, ended, ended_at, created_at, snapshot_interval_s)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                race.id,
-                race.name,
-                _iso(race.scheduled_at),
-                race.total_laps,
-                1 if race.started else 0,
-                _iso(race.started_at),
-                1 if race.ended else 0,
-                _iso(race.ended_at),
-                _iso(race.created_at),
-                race.snapshot_interval_s,
-            ),
-        )
+        self._execute(self._RACE_INSERT_SQL, self._race_insert_params(race))
         return race
 
     def get_race(self, race_id: str) -> Optional["Race"]:
@@ -380,7 +392,8 @@ class Storage:
         if not fields:
             return self.get_race(race_id)
         allowed = {"name", "scheduled_at", "total_laps", "started", "started_at",
-                   "ended", "ended_at", "snapshot_interval_s"}
+                   "ended", "ended_at", "snapshot_interval_s", "finish_mode",
+                   "duration_s", "final_laps"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"unknown race fields: {sorted(unknown)}")
@@ -408,14 +421,20 @@ class Storage:
     @staticmethod
     def _row_to_race(row: sqlite3.Row) -> "Race":
         from domain.races import Race
-        # snapshot_interval_s was added in a later migration; legacy rows
-        # written before the migration may not have the key in the row dict.
-        snap = None
+
+        def _opt_int(col: str) -> Optional[int]:
+            # Columns added by later migrations may be absent on very old rows.
+            try:
+                raw = row[col]
+            except (KeyError, IndexError):
+                return None
+            return int(raw) if raw is not None else None
+
         try:
-            snap_raw = row["snapshot_interval_s"]
-            snap = int(snap_raw) if snap_raw is not None else None
+            finish_mode = row["finish_mode"] or "leader"
         except (KeyError, IndexError):
-            snap = None
+            finish_mode = "leader"
+
         return Race(
             id=row["id"],
             name=row["name"],
@@ -426,7 +445,10 @@ class Storage:
             ended=bool(row["ended"]),
             ended_at=_parse_iso(row["ended_at"]),
             created_at=_parse_iso(row["created_at"]) or datetime.now(timezone.utc),
-            snapshot_interval_s=snap,
+            snapshot_interval_s=_opt_int("snapshot_interval_s"),
+            finish_mode=finish_mode,
+            duration_s=_opt_int("duration_s"),
+            final_laps=_opt_int("final_laps"),
         )
 
     # ---- Active race ----------------------------------------------------

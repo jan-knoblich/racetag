@@ -321,3 +321,120 @@ def test_add_lap_total_time_never_negative_from_stale_timestamp():
     assert p.laps == 2
     assert p.total_time_ms is not None and p.total_time_ms >= 0
     assert p.total_time_ms == 60_000
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 F1: leader-finishes-race (criterium / Abwink model).
+# ---------------------------------------------------------------------------
+
+def _leader_race(total_laps=3, min_pass_interval_s=0.0,
+                 started_at="2026-04-15T11:58:20.000Z"):
+    r = RaceState(total_laps=total_laps, min_pass_interval_s=min_pass_interval_s,
+                  finish_mode="leader")
+    r.start(now=parse_iso(started_at))
+    return r
+
+
+def test_leader_reaching_target_triggers_finishing_phase():
+    r = _leader_race(total_laps=3)
+    # LEAD does 3 laps, others fewer
+    for i in range(3):
+        r.add_lap("LEAD", iso(i * 20))
+    assert r.participants["LEAD"].finished is True
+    assert r.finishing is True
+    assert r.finishing_at is not None
+
+
+def test_other_riders_finished_at_next_pass_after_leader():
+    r = _leader_race(total_laps=3)
+    # CHASER is on lap 2 when leader finishes
+    r.add_lap("CHASER", iso(0))
+    r.add_lap("CHASER", iso(20))
+    for i in range(3):
+        r.add_lap("LEAD", iso(i * 20 + 5))
+    assert r.finishing is True
+    assert r.participants["CHASER"].finished is False  # not yet — no pass since
+
+    # CHASER's next pass flags them off in their current lap (3, not total)
+    r.add_lap("CHASER", iso(80))
+    c = r.participants["CHASER"]
+    assert c.finished is True
+    assert c.laps == 3  # they were on lap 2, this pass makes 3 — flagged in lap 3
+    assert c.finish_time == iso(80)
+
+
+def test_leader_mode_lapped_rider_finished_with_laps_behind():
+    r = _leader_race(total_laps=5)
+    # Leader completes 5, lapped rider only managed 3 by then
+    for i in range(3):
+        r.add_lap("SLOW", iso(i * 30))
+    for i in range(5):
+        r.add_lap("LEAD", iso(i * 10 + 1))
+    assert r.finishing
+    # SLOW crosses once more → finished on lap 4
+    r.add_lap("SLOW", iso(200))
+    standings = r.standings()
+    slow = next(p for p in standings if p.tag_id == "SLOW")
+    lead = next(p for p in standings if p.tag_id == "LEAD")
+    assert lead.laps == 5 and lead.finished
+    assert slow.finished and slow.laps == 4
+    assert slow.laps_behind == 1  # one lap down on the 5-lap leader
+
+
+def test_per_rider_mode_each_finishes_independently():
+    r = RaceState(total_laps=3, min_pass_interval_s=0.0, finish_mode="per_rider")
+    r.start(now=parse_iso("2026-04-15T11:58:20.000Z"))
+    for i in range(3):
+        r.add_lap("A", iso(i * 20))
+    assert r.participants["A"].finished
+    assert r.finishing is False  # per_rider never triggers finishing phase
+    # B is still going and only finishes on its own 3rd lap
+    r.add_lap("B", iso(5))
+    assert r.participants["B"].finished is False
+
+
+def test_laps_to_go_reports_remaining_for_leader():
+    r = _leader_race(total_laps=5)
+    assert r.laps_to_go() == 5
+    r.add_lap("LEAD", iso(0))
+    assert r.laps_to_go() == 4
+    r.add_lap("LEAD", iso(20))
+    assert r.laps_to_go() == 3
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 F2: time-based race ("duration + final laps").
+# ---------------------------------------------------------------------------
+
+def test_time_based_race_locks_target_when_timer_expires():
+    started = "2026-04-15T12:00:00.000Z"
+    r = RaceState(total_laps=999, min_pass_interval_s=0.0,
+                  finish_mode="leader", duration_s=100, final_laps=2)
+    r.start(now=parse_iso(started))
+
+    # Before the timer expires, no target and nobody finishes even at high laps
+    for i in range(4):
+        r.add_lap("LEAD", iso(i * 20, base=started))  # passes at 0,20,40,60 s
+    assert r.time_target_laps is None
+    assert r.laps_to_go() is None  # timer hasn't rung yet
+    assert r.participants["LEAD"].finished is False
+
+    # A pass after 100 s locks target = leader_laps(4) + final_laps(2) = 6
+    r.add_lap("LEAD", iso(110, base=started))  # lap 5, timer expired
+    assert r.time_target_laps == 5 + 2  # leader now on lap 5, +2 to go
+    assert r.laps_to_go() == 2
+
+
+def test_time_based_race_leader_finishes_after_final_laps():
+    started = "2026-04-15T12:00:00.000Z"
+    r = RaceState(total_laps=999, min_pass_interval_s=0.0,
+                  finish_mode="leader", duration_s=50, final_laps=1)
+    r.start(now=parse_iso(started))
+
+    r.add_lap("LEAD", iso(20, base=started))   # lap 1, timer not expired
+    r.add_lap("LEAD", iso(60, base=started))   # lap 2, timer expired → target=2+1=3
+    assert r.time_target_laps == 3
+    assert not r.participants["LEAD"].finished
+    r.add_lap("LEAD", iso(90, base=started))   # lap 3 == target → finished
+    assert r.participants["LEAD"].finished
+    assert r.finishing

@@ -250,3 +250,60 @@ def test_classification_csv_for_non_active_race_returns_409(fresh_app):
     other = client.post("/races", json={"name": "Inactive"}).json()
     resp = client.get(f"/races/{other['id']}/classification.csv")
     assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 F1/F2: race format CRUD (finish_mode, duration_s, final_laps).
+# ---------------------------------------------------------------------------
+
+def test_create_race_defaults_to_leader_finish_mode(fresh_app):
+    client, _ = fresh_app
+    r = client.post("/races", json={"name": "Crit", "total_laps": 20})
+    assert r.status_code == 201
+    assert r.json()["finish_mode"] == "leader"
+    assert r.json()["duration_s"] is None
+    assert r.json()["final_laps"] is None
+
+
+def test_create_time_based_race_round_trips(fresh_app):
+    client, _ = fresh_app
+    r = client.post("/races", json={
+        "name": "30min+3", "total_laps": 999,
+        "duration_s": 1800, "final_laps": 3,
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["duration_s"] == 1800
+    assert body["final_laps"] == 3
+    # Round-trip via GET
+    got = client.get(f"/races/{body['id']}").json()
+    assert got["duration_s"] == 1800 and got["final_laps"] == 3
+
+
+def test_create_time_based_race_requires_both_fields(fresh_app):
+    client, _ = fresh_app
+    r = client.post("/races", json={"name": "Bad", "duration_s": 1800})
+    assert r.status_code == 422
+
+
+def test_create_race_rejects_invalid_finish_mode(fresh_app):
+    client, _ = fresh_app
+    r = client.post("/races", json={"name": "Bad", "finish_mode": "nonsense"})
+    assert r.status_code == 422
+
+
+def test_patch_finish_mode_applies_to_active_race(fresh_app):
+    client, app_module = fresh_app
+    active = client.get("/races").json()["active_race_id"]
+    r = client.patch(f"/races/{active}", json={"finish_mode": "per_rider"})
+    assert r.status_code == 200
+    assert r.json()["finish_mode"] == "per_rider"
+    assert app_module.race.finish_mode == "per_rider"
+
+
+def test_get_race_exposes_format_and_finishing_state(fresh_app):
+    client, _ = fresh_app
+    body = client.get("/race").json()
+    assert body["finish_mode"] == "leader"
+    assert body["finishing"] is False
+    assert "laps_to_go" in body

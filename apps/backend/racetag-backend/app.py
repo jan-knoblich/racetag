@@ -139,6 +139,9 @@ def _load_active_race_state() -> "tuple[RaceState, RiderStore]":
         total_laps=total_laps,
         min_pass_interval_s=min_pass_interval_s,
         race_id=active_id,
+        finish_mode=race_row.finish_mode,
+        duration_s=race_row.duration_s,
+        final_laps=race_row.final_laps,
     )
 
     # started state — Race row OR legacy meta key
@@ -195,6 +198,11 @@ def _rebuild_active_race_state_in_place() -> None:
     race.started_at = None
     race.ended = False
     race.ended_at = None
+    # F1/F2 runtime state is re-derived by the replay below — reset it first
+    # so a stale finishing/time-target from before the rebuild can't linger.
+    race.finishing = False
+    race.finishing_at = None
+    race.time_target_laps = None
 
     if race.race_id is not None:
         race_row = storage.get_race(race.race_id)
@@ -618,6 +626,11 @@ def get_race():
         "ended": race.ended,
         "ended_at": _iso_or_none(race.ended_at),
         "participants": _build_standings_items(),
+        "finish_mode": race.finish_mode,
+        "duration_s": race.duration_s,
+        "final_laps": race.final_laps,
+        "finishing": race.finishing,
+        "laps_to_go": race.laps_to_go(),
     }
 
 
@@ -752,6 +765,9 @@ def _race_row_to_summary(row, *, active_id: Optional[str]) -> dict:
         "created_at": _iso_or_none(row.created_at),
         "is_active": row.id == active_id,
         "snapshot_interval_s": row.snapshot_interval_s,
+        "finish_mode": row.finish_mode,
+        "duration_s": row.duration_s,
+        "final_laps": row.final_laps,
     }
 
 
@@ -802,11 +818,22 @@ def post_race(body: RaceCreateDTO):
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="scheduled_at must be ISO 8601")
 
+    # A time-based race needs BOTH duration_s and final_laps (final_laps may
+    # be 0 for "on the timer, no extra laps"). Reject a half-specified format.
+    if (body.duration_s is None) != (body.final_laps is None):
+        raise HTTPException(
+            status_code=422,
+            detail="duration_s and final_laps must be set together (time-based race)",
+        )
+
     new_race = Race(
         name=body.name,
         scheduled_at=sched,
         total_laps=body.total_laps,
         snapshot_interval_s=body.snapshot_interval_s,
+        finish_mode=body.finish_mode,
+        duration_s=body.duration_s,
+        final_laps=body.final_laps,
     )
     storage.create_race(new_race)
     active_id = storage.get_active_race_id()
@@ -846,14 +873,30 @@ def patch_race_by_id(race_id: str, body: RaceUpdateDTO):
         # 0 is a valid "disabled" value distinct from null (the field is set
         # explicitly to 0 by the operator); store it as-is.
         fields_to_update["snapshot_interval_s"] = body.snapshot_interval_s
+    if body.finish_mode is not None:
+        fields_to_update["finish_mode"] = body.finish_mode
+    if body.duration_s is not None:
+        # 0 disables the time format; treat it as clearing duration_s.
+        fields_to_update["duration_s"] = body.duration_s or None
+    if body.final_laps is not None:
+        fields_to_update["final_laps"] = body.final_laps
 
     if fields_to_update:
         storage.update_race(race_id, **fields_to_update)
 
-    # If we just patched the active race, mirror total_laps onto the in-memory race.
-    if race.race_id == race_id and "total_laps" in fields_to_update:
-        race.total_laps = fields_to_update["total_laps"]
-        storage.set_meta("total_laps", str(fields_to_update["total_laps"]))
+    # Mirror format changes onto the live in-memory race if it's the active one
+    # so they take effect without a restart. Changing race format mid-race is
+    # unusual, but total_laps/finish_mode are UI-exposed pre-start controls.
+    if race.race_id == race_id:
+        if "total_laps" in fields_to_update:
+            race.total_laps = fields_to_update["total_laps"]
+            storage.set_meta("total_laps", str(fields_to_update["total_laps"]))
+        if "finish_mode" in fields_to_update:
+            race.finish_mode = fields_to_update["finish_mode"]
+        if "duration_s" in fields_to_update:
+            race.duration_s = fields_to_update["duration_s"]
+        if "final_laps" in fields_to_update:
+            race.final_laps = fields_to_update["final_laps"]
 
     active_id = storage.get_active_race_id()
     return _race_row_to_summary(storage.get_race(race_id), active_id=active_id)

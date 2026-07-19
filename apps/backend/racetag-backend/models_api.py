@@ -89,6 +89,12 @@ class RaceDTO(BaseModel):
     started: bool = False
     started_at: Optional[str] = None
     participants: List[ParticipantDTO]
+    # F1/F2 (AUDIT-2026-07): race format + live finishing/bell state.
+    finish_mode: str = "leader"
+    duration_s: Optional[int] = None
+    final_laps: Optional[int] = None
+    finishing: bool = False
+    laps_to_go: Optional[int] = None
 
 
 class RaceSummaryDTO(BaseModel):
@@ -105,6 +111,9 @@ class RaceSummaryDTO(BaseModel):
     created_at: Optional[str] = None
     is_active: bool = False
     snapshot_interval_s: Optional[int] = None
+    finish_mode: str = "leader"
+    duration_s: Optional[int] = None
+    final_laps: Optional[int] = None
 
 
 class RaceListDTO(BaseModel):
@@ -126,6 +135,22 @@ class RaceCreateDTO(BaseModel):
             "None or 0 disables snapshots. Capped at 3600 (1 h)."
         ),
     )
+    finish_mode: str = Field(
+        default="leader",
+        pattern="^(leader|per_rider)$",
+        description=(
+            "'leader' (criterium: leader crossing the line finishes the race, "
+            "others flagged off at their next pass) or 'per_rider'."
+        ),
+    )
+    duration_s: Optional[int] = Field(
+        default=None, ge=1, le=86400,
+        description="Time-based race duration in seconds. Requires final_laps.",
+    )
+    final_laps: Optional[int] = Field(
+        default=None, ge=0, le=99,
+        description="Laps to go once the timer expires (bell lap). Requires duration_s.",
+    )
 
 
 class RaceUpdateDTO(BaseModel):
@@ -135,6 +160,9 @@ class RaceUpdateDTO(BaseModel):
     scheduled_at: Optional[str] = None
     total_laps: Optional[int] = Field(default=None, ge=1, le=999)
     snapshot_interval_s: Optional[int] = Field(default=None, ge=0, le=3600)
+    finish_mode: Optional[str] = Field(default=None, pattern="^(leader|per_rider)$")
+    duration_s: Optional[int] = Field(default=None, ge=0, le=86400)
+    final_laps: Optional[int] = Field(default=None, ge=0, le=99)
 
 
 # ---------------------------------------------------------------------------
