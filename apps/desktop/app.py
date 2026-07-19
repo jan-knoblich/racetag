@@ -104,7 +104,11 @@ def _spawn_reader_service(backend_url: str) -> "subprocess.Popen | None":
         return None
 
     reader_ip = os.environ.get("READER_IP", "192.168.1.130")
-    min_lap = os.environ.get("MIN_LAP_INTERVAL_S", "10")
+    # Reader-side cooldown defaults to 0 (presence-union only): the backend is
+    # the single lap-cooldown authority now (AUDIT-2026-07 M6). Overridable via
+    # MIN_LAP_INTERVAL_S for debugging, but the default keeps the reader from
+    # silently suppressing passes the backend never sees.
+    min_lap = os.environ.get("MIN_LAP_INTERVAL_S", "0")
 
     # Resolve the init_commands file to an absolute path so the reader-service
     # finds it regardless of the cwd when the .app was launched. Without this,

@@ -17,6 +17,18 @@ class TagTracker:
     Minimum lap interval cooldown (W-002): even if per-antenna gating lets a new "arrive"
     through, we suppress it if less than `min_lap_interval_s` seconds have elapsed since
     the last emitted arrive for that tag.
+
+    AUDIT-2026-07 M6: the reader-side cooldown is now DISABLED by default
+    (min_lap_interval_s=0). Two independent cooldowns with different windows
+    (reader 10 s monotonic receive-time vs backend 8/15 s event-timestamp) made
+    the wider reader window the effective gate, so the operator-configured
+    backend cooldown was partly dead, AND a reader-suppressed pass left no
+    audit row anywhere. The backend is now the single lap-cooldown authority
+    (config-driven, persists every received event to tag_events). With
+    min_lap_interval_s=0 this tracker does pure presence-union: it still
+    collapses the same physical pass seen on multiple overlapping antennas
+    into one arrive (the was_empty transition below), but does not apply any
+    time-based suppression — that is the backend's job.
     """
 
     # tag_id (upper) -> set of antenna ids currently seeing the tag
@@ -28,8 +40,9 @@ class TagTracker:
     # Per-tag monotonic timestamp of last emitted arrive
     last_emitted_at: Dict[str, float] = field(default_factory=dict)
 
-    # Minimum seconds between two emitted arrives for the same tag
-    min_lap_interval_s: float = 10.0
+    # Minimum seconds between two emitted arrives for the same tag.
+    # 0 = presence-union only (the backend owns the lap cooldown — M6).
+    min_lap_interval_s: float = 0.0
 
     # Injectable clock (defaults to time.monotonic; override in tests)
     clock: Callable[[], float] = field(default_factory=lambda: time.monotonic)
@@ -65,12 +78,15 @@ class TagTracker:
             return False
 
         # Tag just became visible (set went from empty to non-empty).
-        # Apply the cooldown check.
+        # Apply the cooldown check. With min_lap_interval_s == 0 (the M6
+        # default) this is a no-op and every presence-union transition is
+        # emitted; the backend applies the real lap cooldown.
         now = self.clock()
-        last = self.last_emitted_at.get(key, -math.inf)
-        if now - last < self.min_lap_interval_s:
-            # Within cooldown window — suppress.
-            return False
+        if self.min_lap_interval_s > 0:
+            last = self.last_emitted_at.get(key, -math.inf)
+            if now - last < self.min_lap_interval_s:
+                # Within cooldown window — suppress.
+                return False
 
         # Genuine new lap: record emission time and signal the caller.
         self.last_emitted_at[key] = now

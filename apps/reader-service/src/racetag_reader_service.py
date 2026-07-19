@@ -44,8 +44,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--min-lap-interval",
         type=float,
-        default=float(os.getenv("MIN_LAP_INTERVAL_S", "10.0")),
-        help="Minimum seconds between two forwarded arrive events for the same tag (env: MIN_LAP_INTERVAL_S, default: 10.0)",
+        default=float(os.getenv("MIN_LAP_INTERVAL_S", "0")),
+        help=(
+            "Reader-side seconds between two forwarded arrive events for the "
+            "same tag. Default 0 = presence-union only; the backend is the "
+            "single lap-cooldown authority (AUDIT-2026-07 M6). "
+            "(env: MIN_LAP_INTERVAL_S)"
+        ),
     )
     parser.add_argument(
         "--debug",

@@ -111,3 +111,37 @@ def test_patch_config_updates_race_total_laps_live(tmp_path, monkeypatch):
     assert app_module.race.total_laps == 9, (
         f"Expected race.total_laps=9, got {app_module.race.total_laps}"
     )
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 H5: min_lap_interval_s is a single source of truth.
+# ---------------------------------------------------------------------------
+
+def test_patch_config_min_lap_applies_to_live_race(tmp_path, monkeypatch):
+    """PATCH /config min_lap_interval_s must change the LIVE race cooldown
+    immediately — previously it only wrote a dead meta key."""
+    app_module = _fresh_app(str(tmp_path), monkeypatch)
+
+    with TestClient(app_module.app) as client:
+        assert app_module.race.min_pass_interval_s != 25.0
+        resp = client.patch("/config", json={"min_lap_interval_s": 25.0})
+        assert resp.status_code == 200, resp.text
+        # Live race object updated in-process, no restart needed
+        assert app_module.race.min_pass_interval_s == 25.0
+
+
+def test_min_lap_interval_survives_restart(tmp_path, monkeypatch):
+    """PATCH min_lap_interval_s, reload — the live cooldown must rehydrate
+    from the persisted config, not fall back to the env default."""
+    data_dir = str(tmp_path / "minlap")
+
+    app_module = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module.app) as client:
+        assert client.patch("/config", json={"min_lap_interval_s": 17.0}).status_code == 200
+
+    app_module2 = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module2.app):
+        assert app_module2.race.min_pass_interval_s == 17.0, (
+            f"cooldown reverted to default after restart: "
+            f"{app_module2.race.min_pass_interval_s}"
+        )

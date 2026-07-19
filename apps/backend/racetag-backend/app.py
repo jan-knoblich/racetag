@@ -126,9 +126,18 @@ def _load_active_race_state() -> "tuple[RaceState, RiderStore]":
         except ValueError:
             pass
 
+    # min_pass_interval_s — the persisted config value is the single source of
+    # truth (AUDIT-2026-07 H5): previously PATCH /config wrote a meta key that
+    # nothing read back, so the operator-configured cooldown was dead and the
+    # live gate always used the env default. Fall back to the env default only
+    # when no value was ever persisted.
+    min_pass_interval_s = config_store.get_min_lap_interval_s()
+    if min_pass_interval_s is None:
+        min_pass_interval_s = _RACE_MIN_PASS_INTERVAL_S
+
     rs = RaceState(
         total_laps=total_laps,
-        min_pass_interval_s=_RACE_MIN_PASS_INTERVAL_S,
+        min_pass_interval_s=min_pass_interval_s,
         race_id=active_id,
     )
 
@@ -992,6 +1001,11 @@ def patch_config(body: PatchConfigBody):
 
     if body.min_lap_interval_s is not None:
         config_store.set_min_lap_interval_s(body.min_lap_interval_s)
+        # Apply to the live race immediately (AUDIT-2026-07 H5): the cooldown
+        # is now a single source of truth, so a change takes effect on the
+        # next pass without a restart.
+        race.min_pass_interval_s = body.min_lap_interval_s
+        _publish({"type": "race_updated", "min_lap_interval_s": body.min_lap_interval_s})
 
     if body.total_laps is not None:
         config_store.set_total_laps(body.total_laps)
