@@ -59,6 +59,12 @@ class ParticipantDTO(BaseModel):
     laps_behind: Optional[int] = Field(
         None, description='Number of laps behind the leader (null or 0 if on same lap)'
     )
+    # F3 — result status: null (classified/racing), "dnf", "dns", "dsq".
+    status: Optional[str] = None
+    # F5 — advisory: laps that look missed by the reader, and the midpoint
+    # timestamp of the first suspected gap (to pre-fill the manual-lap dialog).
+    suspected_missed_reads: int = 0
+    suspected_gap_midpoint: Optional[str] = None
     # Rider fields — populated from RiderStore at standings time (W-010)
     bib: Optional[str] = Field(None, description='Rider bib number (null if no rider registered for this tag)')
     name: Optional[str] = Field(None, description='Rider name (null if no rider registered for this tag)')
@@ -177,6 +183,7 @@ class RiderDTO(BaseModel):
     bib: str = Field(..., description='Bib number (stored as string to preserve leading zeros)')
     name: str = Field(..., description='Rider display name')
     created_at: datetime = Field(..., description='UTC timestamp when the rider was first registered')
+    status: Optional[str] = Field(None, description='Result status: null, "dnf", "dns", "dsq"')
 
 
 class RiderCreateDTO(BaseModel):
@@ -185,6 +192,15 @@ class RiderCreateDTO(BaseModel):
     tag_id: str = Field(..., description='RFID tag id (uppercase hex)')
     bib: str = Field(..., description='Bib number')
     name: str = Field(..., description='Rider display name')
+
+
+class RiderStatusDTO(BaseModel):
+    """Body of PATCH /riders/{tag_id}/status. status=null clears it (F3)."""
+
+    status: Optional[str] = Field(
+        default=None,
+        description='Result status: null (classified), "dnf", "dns", or "dsq"',
+    )
 
 
 class RidersListDTO(BaseModel):

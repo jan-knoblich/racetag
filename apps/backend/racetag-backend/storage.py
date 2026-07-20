@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS riders (
     bib        TEXT NOT NULL,
     name       TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    status     TEXT,
     PRIMARY KEY (race_id, tag_id),
     FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE
 );
@@ -140,6 +141,7 @@ class Storage:
         # Add columns introduced after the initial multi-race migration.
         self._ensure_races_snapshot_interval_column()
         self._ensure_races_race_format_columns()
+        self._ensure_riders_status_column()
         self._ensure_default_race()
         # Create the race index now that tag_events.race_id is guaranteed to exist.
         with self._lock:
@@ -222,6 +224,15 @@ class Storage:
             self._conn.execute(
                 "ALTER TABLE races ADD COLUMN snapshot_interval_s INTEGER;"
             )
+
+    def _ensure_riders_status_column(self) -> None:
+        """Add the riders.status column to a pre-existing riders table
+        (AUDIT-2026-07 F3). Idempotent."""
+        cols = self._table_columns("riders")
+        if "status" in cols:
+            return
+        with self._lock:
+            self._conn.execute("ALTER TABLE riders ADD COLUMN status TEXT;")
 
     def _ensure_races_race_format_columns(self) -> None:
         """Add the finish_mode / duration_s / final_laps columns to a
@@ -489,22 +500,37 @@ class Storage:
             if hasattr(rider.created_at, "isoformat")
             else str(rider.created_at)
         )
+        # status is deliberately NOT in the UPDATE clause: a CSV re-import or
+        # re-coupling must not wipe a DNF/DNS/DSQ the operator already set
+        # (F3). Status is managed through set_rider_status().
         self._execute(
             """
-            INSERT INTO riders (race_id, tag_id, bib, name, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO riders (race_id, tag_id, bib, name, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(race_id, tag_id) DO UPDATE SET
                 bib        = excluded.bib,
                 name       = excluded.name,
                 created_at = excluded.created_at;
             """,
-            (rid, rider.tag_id, rider.bib, rider.name, created_at_str),
+            (rid, rider.tag_id, rider.bib, rider.name, created_at_str, rider.status),
         )
+
+    def set_rider_status(
+        self, tag_id: str, status: Optional[str], race_id: Optional[str] = None
+    ) -> bool:
+        """Set (or clear with None) a rider's result status. Returns False if
+        no such rider exists in the race."""
+        rid = self._require_race_id(race_id)
+        cur = self._execute(
+            "UPDATE riders SET status = ? WHERE race_id = ? AND tag_id = ?;",
+            (status, rid, tag_id),
+        )
+        return cur.rowcount > 0
 
     def get_rider(self, tag_id: str, race_id: Optional[str] = None) -> Optional["Rider"]:
         rid = self._require_race_id(race_id)
         row = self._conn.execute(
-            "SELECT tag_id, bib, name, created_at FROM riders "
+            "SELECT tag_id, bib, name, created_at, status FROM riders "
             "WHERE race_id = ? AND tag_id = ?;",
             (rid, tag_id),
         ).fetchone()
@@ -513,7 +539,7 @@ class Storage:
     def list_riders(self, race_id: Optional[str] = None) -> List["Rider"]:
         rid = self._require_race_id(race_id)
         rows = self._conn.execute(
-            "SELECT tag_id, bib, name, created_at FROM riders "
+            "SELECT tag_id, bib, name, created_at, status FROM riders "
             "WHERE race_id = ? ORDER BY rowid;",
             (rid,),
         ).fetchall()
@@ -538,11 +564,16 @@ class Storage:
         created_at = datetime.fromisoformat(created_at_str)
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
+        try:
+            status = row["status"]
+        except (KeyError, IndexError):
+            status = None
         return Rider(
             tag_id=row["tag_id"],
             bib=row["bib"],
             name=row["name"],
             created_at=created_at,
+            status=status,
         )
 
     # ---- Tag-event persistence (race-scoped) ---------------------------

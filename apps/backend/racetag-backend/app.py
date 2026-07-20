@@ -32,6 +32,7 @@ from models_api import (
     TagEventBatchDTO,
     RiderDTO,
     RiderCreateDTO,
+    RiderStatusDTO,
     RidersListDTO,
     RecentReadDTO,
     RecentReadsListDTO,
@@ -162,6 +163,11 @@ def _load_active_race_state() -> "tuple[RaceState, RiderStore]":
     # `_apply_ended_state_after_replay(rs)` after replaying persisted events.
 
     rstore = RiderStore(storage=storage, race_id=active_id)
+    # F3 — mirror persisted rider statuses into the RaceState so standings()
+    # can sort DNF/DNS/DSQ correctly.
+    for _rider in rstore.list():
+        if _rider.status:
+            rs.status[_rider.tag_id] = _rider.status
     return rs, rstore
 
 
@@ -203,6 +209,8 @@ def _rebuild_active_race_state_in_place() -> None:
     race.finishing = False
     race.finishing_at = None
     race.time_target_laps = None
+    # F5 pass-time history is rebuilt by the replay too.
+    race.pass_times.clear()
 
     if race.race_id is not None:
         race_row = storage.get_race(race.race_id)
@@ -214,6 +222,12 @@ def _rebuild_active_race_state_in_place() -> None:
         _replay_event(ev, ended_cutoff_iso=ended_cutoff)
 
     _apply_ended_state_after_replay(race)
+    # F3 — statuses live in the RiderStore, not the event log, so re-sync them
+    # after the replay (they are not touched by the replay).
+    race.status.clear()
+    for _rider in rider_store.list():
+        if _rider.status:
+            race.status[_rider.tag_id] = _rider.status
 
 
 race, rider_store = _load_active_race_state()
@@ -380,6 +394,7 @@ def _rider_to_dto(rider: Rider) -> RiderDTO:
         bib=rider.bib,
         name=rider.name,
         created_at=rider.created_at,
+        status=rider.status,
     )
 
 
@@ -559,17 +574,21 @@ def _build_classification_csv() -> tuple[str, str]:
 
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(
-        ["position", "bib", "name", "tag_id", "laps", "laps_behind", "finished",
-         "finish_time", "total_time_ms", "last_pass_time"]
+        ["position", "bib", "name", "tag_id", "laps", "laps_behind", "status",
+         "finished", "finish_time", "total_time_ms", "last_pass_time"]
     )
     for idx, item in enumerate(items, start=1):
+        # F3: a non-classified rider (DNF/DNS/DSQ) has no finishing position —
+        # the status column carries the result and the position cell is blank.
+        status = (item.get("status") or "").upper()
         writer.writerow([
-            idx,
+            "" if status else idx,
             item.get("bib") or "",
             item.get("name") or "",
             item.get("tag_id") or "",
             item.get("laps", 0),
             item.get("laps_behind") if item.get("laps_behind") is not None else "",
+            status,
             "true" if item.get("finished") else "false",
             item.get("finish_time") or "",
             item.get("total_time_ms") if item.get("total_time_ms") is not None else "",
@@ -679,6 +698,11 @@ def post_race_reset():
     race.started_at = None
     race.ended = False
     race.ended_at = None
+    # F1/F5 runtime state is derived from the (now cleared) event log.
+    race.finishing = False
+    race.finishing_at = None
+    race.time_target_laps = None
+    race.pass_times.clear()
     storage.set_meta("race_started_at", "")
     storage.set_meta("race_ended_at", "")
     if race.race_id:
@@ -1178,6 +1202,39 @@ def delete_rider(tag_id: str):
     removed = rider_store.delete(tag_id)
     if not removed:
         raise HTTPException(status_code=404, detail=f"No rider registered for tag '{tag_id}'")
+
+
+@app.patch("/riders/{tag_id}/status", response_model=RiderDTO)
+def patch_rider_status(tag_id: str, body: RiderStatusDTO):
+    """Set or clear a rider's result status (F3): "dnf", "dns", "dsq", or null.
+
+    Persists to the RiderStore and mirrors into the live RaceState so
+    standings re-sort immediately (non-classified riders drop below all
+    finishers). Broadcasts a standings update.
+    """
+    from domain.race import _VALID_STATUSES  # noqa: PLC0415
+
+    rider = rider_store.get(tag_id)
+    if rider is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No rider registered for tag '{tag_id}' in the active race",
+        )
+
+    status = body.status
+    if status is not None:
+        status = status.lower()
+        if status not in _VALID_STATUSES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"status must be one of dnf/dns/dsq or null, got {body.status!r}",
+            )
+
+    rider_store.set_status(tag_id, status)
+    race.set_status(tag_id, status)
+
+    _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
+    return _rider_to_dto(rider_store.get(tag_id))
 
 
 # ---------------------------------------------------------------------------

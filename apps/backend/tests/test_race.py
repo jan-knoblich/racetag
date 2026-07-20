@@ -438,3 +438,132 @@ def test_time_based_race_leader_finishes_after_final_laps():
     r.add_lap("LEAD", iso(90, base=started))   # lap 3 == target → finished
     assert r.participants["LEAD"].finished
     assert r.finishing
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 F3: DNF/DNS/DSQ status model.
+# ---------------------------------------------------------------------------
+
+def test_status_riders_sort_below_all_finishers():
+    r = _leader_race(total_laps=5)
+    # Two racing riders + one who will be DNF
+    for i in range(3):
+        r.add_lap("A", iso(i * 20))
+    for i in range(2):
+        r.add_lap("B", iso(i * 20 + 5))
+    for i in range(4):
+        r.add_lap("DROP", iso(i * 15 + 2))  # DROP has the MOST laps
+    r.set_status("DROP", "dnf")
+
+    standings = r.standings()
+    order = [p.tag_id for p in standings]
+    # DROP led on laps but is DNF → must be last despite highest lap count
+    assert order[-1] == "DROP"
+    assert order[:2] == ["A", "B"] or order[:2] == ["A", "B"]
+    drop = next(p for p in standings if p.tag_id == "DROP")
+    assert drop.status == "dnf"
+
+
+def test_dnf_rider_does_not_anchor_gap_column():
+    r = _leader_race(total_laps=10)
+    # DROP has most laps but is DNF; A is the real leader
+    for i in range(5):
+        r.add_lap("DROP", iso(i * 10))
+    for i in range(3):
+        r.add_lap("A", iso(i * 10 + 3))
+    r.set_status("DROP", "dnf")
+    standings = r.standings()
+    a = next(p for p in standings if p.tag_id == "A")
+    # A is the top classified rider → laps_behind 0 (leader), gap 0
+    assert a.laps_behind == 0
+    assert a.gap_ms == 0
+
+
+def test_status_ordering_dnf_before_dsq_before_dns():
+    r = _leader_race(total_laps=5)
+    r.add_lap("FIN", iso(0))
+    for tag, st in (("X", "dns"), ("Y", "dsq"), ("Z", "dnf")):
+        r.add_lap(tag, iso(1))
+        r.set_status(tag, st)
+    order = [p.tag_id for p in r.standings()]
+    # FIN classified first, then dnf(Z), dsq(Y), dns(X)
+    assert order == ["FIN", "Z", "Y", "X"]
+
+
+def test_set_status_invalid_raises():
+    r = _leader_race()
+    r.add_lap("A", iso(0))
+    try:
+        r.set_status("A", "quit")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_clear_status_reclassifies_rider():
+    r = _leader_race(total_laps=5)
+    r.add_lap("A", iso(0))
+    r.set_status("A", "dnf")
+    assert r.standings()[0].status == "dnf"
+    r.set_status("A", None)
+    assert r.standings()[0].status is None
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 F5: missed-read detection (annotation only, never mutates laps).
+# ---------------------------------------------------------------------------
+
+def test_suspected_missed_read_flags_double_length_lap():
+    from domain.race import suspected_missed_reads
+    # Median lap ~30 s; one lap is ~60 s (a missed read).
+    base = "2026-04-15T12:00:00.000Z"
+    times = [iso(t, base=base) for t in (0, 30, 60, 90, 150, 180, 210)]
+    #                                              ^^^ 90→150 is a 60 s gap
+    missed, mid = suspected_missed_reads(times)
+    assert missed == 1
+    assert mid is not None  # midpoint of the 90→150 gap for the +1 dialog
+
+
+def test_suspected_missed_read_quiet_on_regular_laps():
+    from domain.race import suspected_missed_reads
+    base = "2026-04-15T12:00:00.000Z"
+    times = [iso(t, base=base) for t in (0, 30, 61, 89, 121, 150)]
+    missed, mid = suspected_missed_reads(times)
+    assert missed == 0
+    assert mid is None
+
+
+def test_suspected_missed_read_needs_enough_laps():
+    from domain.race import suspected_missed_reads
+    base = "2026-04-15T12:00:00.000Z"
+    # Only 2 intervals — not enough to trust a median.
+    times = [iso(t, base=base) for t in (0, 30, 200)]
+    missed, _ = suspected_missed_reads(times)
+    assert missed == 0
+
+
+def test_missed_read_annotation_does_not_change_laps():
+    r = _leader_race(total_laps=99, min_pass_interval_s=0.0)
+    base = "2026-04-15T12:00:00.000Z"
+    for t in (0, 30, 60, 90, 150, 180, 210):  # 90→150 is a missed read
+        r.add_lap("A", iso(t, base=base))
+    standings = r.standings()
+    a = next(p for p in standings if p.tag_id == "A")
+    assert a.laps == 7  # exactly the passes seen — NOT auto-corrected to 8
+    assert a.suspected_missed_reads == 1
+    assert a.suspected_gap_midpoint is not None
+
+
+def test_dns_rider_without_laps_still_appears_in_standings():
+    """A rider marked DNS who never crossed the line must still show in the
+    result (flagged, at the bottom) — not silently vanish."""
+    r = _leader_race(total_laps=5)
+    r.add_lap("RACER", iso(0))
+    r.set_status("GHOST", "dns")  # never had a lap
+    standings = r.standings()
+    tags = [p.tag_id for p in standings]
+    assert "GHOST" in tags
+    ghost = next(p for p in standings if p.tag_id == "GHOST")
+    assert ghost.status == "dns"
+    assert ghost.laps == 0
+    assert tags[-1] == "GHOST"  # sorts last

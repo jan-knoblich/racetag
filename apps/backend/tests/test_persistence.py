@@ -434,3 +434,31 @@ def test_out_of_order_spool_recovery_replays_correctly(tmp_path, monkeypatch):
             f"chronological replay wrong: {after} (expected 3 laps: "
             f"12:00:00 / 12:00:30 / 12:01:00 all beyond the 8 s cooldown)"
         )
+
+
+def test_rider_status_survives_restart(tmp_path, monkeypatch):
+    """F3: a DNF set before restart must rehydrate into the RaceState so
+    standings still sort it below finishers after a reload."""
+    data_dir = str(tmp_path / "statusdata")
+    monkeypatch.setenv("RACETAG_DATA_DIR", data_dir)
+    monkeypatch.setenv("RACE_MIN_PASS_INTERVAL_S", "0")
+
+    app_module = _load_fresh_app(data_dir)
+    from domain.race import parse_iso as _parse_iso
+    app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
+    app_module.storage.set_meta("race_started_at", "2026-04-15T11:00:00.000Z")
+    if app_module.race.race_id:
+        app_module.storage.update_race(
+            app_module.race.race_id, started=True,
+            started_at=_parse_iso("2026-04-15T11:00:00.000Z"),
+        )
+    with TestClient(app_module.app) as client:
+        client.post("/riders", json={"tag_id": "DNF1", "bib": "1", "name": "Q"})
+        client.patch("/riders/DNF1/status", json={"status": "dnf"})
+
+    app_module2 = _load_fresh_app(data_dir)
+    with TestClient(app_module2.app) as client2:
+        # Rider status rehydrated
+        assert client2.get("/riders/DNF1").json()["status"] == "dnf"
+        # And mirrored into RaceState
+        assert app_module2.race.status.get("DNF1") == "dnf"

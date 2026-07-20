@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import statistics
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -38,6 +39,76 @@ class Participant(BaseModel):
     gap_ms: Optional[int] = None
     # Computed: laps behind the leader (0 if same lap)
     laps_behind: Optional[int] = None
+    # F3 — operator-set result status: None/"" (classified), "dnf", "dns", "dsq".
+    status: Optional[str] = None
+    # F5 — computed annotation: how many laps look like they were missed by the
+    # reader (a lap interval far above this rider's median). Advisory only; the
+    # operator confirms with a manual +1. Never auto-applied.
+    suspected_missed_reads: int = 0
+    # F5 — the suspected midpoint timestamp for the FIRST detected gap, so the
+    # UI can pre-fill the manual-lap dialog. None when nothing is suspected.
+    suspected_gap_midpoint: Optional[str] = None
+
+
+# Rider result statuses (AUDIT-2026-07 F3). Empty/None = classified/racing.
+STATUS_DNF = "dnf"   # abandoned during the race
+STATUS_DNS = "dns"   # registered but never started
+STATUS_DSQ = "dsq"   # disqualified
+_VALID_STATUSES = {STATUS_DNF, STATUS_DNS, STATUS_DSQ}
+# Sort order for non-classified riders (after all classified finishers).
+_STATUS_RANK = {STATUS_DNF: 0, STATUS_DSQ: 1, STATUS_DNS: 2}
+
+
+# F5 — missed-read detection thresholds.
+# A lap interval above FACTOR × the rider's median lap counts as a suspected
+# missed read; we need at least MIN_INTERVALS clean laps to trust the median.
+_MISSED_READ_FACTOR = 1.7
+_MISSED_READ_MIN_INTERVALS = 4
+
+
+def _lap_intervals_s(pass_times: List[str]) -> List[float]:
+    """Seconds between consecutive counted passes."""
+    if len(pass_times) < 2:
+        return []
+    ts = [parse_iso(t) for t in pass_times]
+    return [(ts[i] - ts[i - 1]).total_seconds() for i in range(1, len(ts))]
+
+
+def suspected_missed_reads(
+    pass_times: List[str],
+    factor: float = _MISSED_READ_FACTOR,
+    min_intervals: int = _MISSED_READ_MIN_INTERVALS,
+) -> Tuple[int, Optional[str]]:
+    """Detect laps that look like the reader missed a pass.
+
+    Returns (count, first_gap_midpoint_iso). A rider whose lap interval is far
+    above their own median (robust to a few outliers) probably crossed the
+    line one or more times unseen. We report how many laps look missed and the
+    midpoint timestamp of the FIRST such gap so the UI can pre-fill the manual
+    +1 dialog. Purely advisory — the domain never adds the lap itself.
+    """
+    intervals = _lap_intervals_s(pass_times)
+    if len(intervals) < min_intervals:
+        return 0, None
+    med = statistics.median(intervals)
+    if med <= 0:
+        return 0, None
+
+    missed = 0
+    first_mid: Optional[str] = None
+    ts = [parse_iso(t) for t in pass_times]
+    for idx, iv in enumerate(intervals):
+        if iv > factor * med:
+            # round(iv/med) laps' worth of time elapsed → that many minus one
+            # were presumably missed.
+            n = max(round(iv / med) - 1, 1)
+            missed += n
+            if first_mid is None:
+                midpoint = ts[idx] + (ts[idx + 1] - ts[idx]) / 2
+                first_mid = midpoint.isoformat(timespec="milliseconds").replace(
+                    "+00:00", "Z"
+                )
+    return missed, first_mid
 
 
 # Finish models (AUDIT-2026-07 F1).
@@ -83,6 +154,13 @@ class RaceState:
         self.ended: bool = False
         self.ended_at: Optional[datetime] = None
         self.participants: Dict[str, Participant] = {}
+
+        # F3 — operator-set result status per tag ("dnf"/"dns"/"dsq"). Mirrors
+        # the persisted Rider.status; the app layer syncs it on load/rebuild.
+        self.status: Dict[str, str] = {}
+        # F5 — per-tag list of counted pass timestamps, for lap-time analysis
+        # (missed-read detection). Rebuilt on replay alongside participants.
+        self.pass_times: Dict[str, List[str]] = {}
 
         # F1 — finish model + finishing phase.
         self.finish_mode = finish_mode
@@ -140,6 +218,19 @@ class RaceState:
         self.ended_at = now or datetime.now(timezone.utc)
         self.ended = True
         return self.ended_at
+
+    def set_status(self, tag_id: str, status: Optional[str]) -> None:
+        """Set (or clear with None/"") a rider's result status (F3).
+
+        Raises ValueError for an unknown status string so the API can 422.
+        """
+        if status in (None, ""):
+            self.status.pop(tag_id, None)
+            return
+        st = status.lower()
+        if st not in _VALID_STATUSES:
+            raise ValueError(f"invalid status: {status!r}")
+        self.status[tag_id] = st
 
     def add_lap(self, tag_id: str, pass_time_iso: str) -> Participant:
         """Add a lap pass. Increments laps and updates last_pass_time.
@@ -218,6 +309,9 @@ class RaceState:
 
         p.laps += 1
         p.last_pass_time = pass_time_iso
+        # F5 — record the counted pass for lap-time analysis (missed-read
+        # detection in standings()).
+        self.pass_times.setdefault(tag_id, []).append(pass_time_iso)
 
         # F2 — time-based race: when the elapsed time reaches duration_s, the
         # first pass by the current lap-leader locks the final target
@@ -289,8 +383,31 @@ class RaceState:
             # Use capped laps for ordering to avoid post-finish extra passes affecting classification
             return (finished_flag, _cap_laps(p), -tt_i)
 
-        arr = list(self.participants.values())
-        arr.sort(key=key, reverse=True)
+        # F3 — stamp each participant's status + F5 missed-read annotation,
+        # then split classified from non-classified (DNF/DNS/DSQ).
+        all_p = list(self.participants.values())
+        # Include riders that have a status but never got a participant row —
+        # a DNS rider (registered, never crossed the line) must still show up
+        # in the result, flagged, at the bottom.
+        for tag in self.status:
+            if tag not in self.participants:
+                all_p.append(Participant(tag_id=tag))
+        for p in all_p:
+            p.status = self.status.get(p.tag_id)
+            missed, mid = suspected_missed_reads(self.pass_times.get(p.tag_id, []))
+            p.suspected_missed_reads = missed
+            p.suspected_gap_midpoint = mid
+
+        classified = [p for p in all_p if not p.status]
+        non_classified = [p for p in all_p if p.status]
+
+        classified.sort(key=key, reverse=True)
+        # Non-classified sort AFTER all finishers: DNF before DSQ before DNS,
+        # and within a status more laps rank higher.
+        non_classified.sort(
+            key=lambda p: (_STATUS_RANK.get(p.status or "", 9), -_cap_laps(p))
+        )
+        arr = classified + non_classified
 
         # Compute gap vs. leader using reference times
         def ref_ms(p: Participant) -> Optional[int]:
@@ -299,7 +416,9 @@ class RaceState:
                 return None
             return int(parse_iso(ref).timestamp() * 1000)
 
-        leader = arr[0] if arr else None
+        # The leader is the top CLASSIFIED rider — a DNF rider who led before
+        # abandoning must not anchor the gap column.
+        leader = classified[0] if classified else None
         leader_ref = ref_ms(leader) if leader else None
         leader_laps_capped = _cap_laps(leader) if leader else 0
         for p in arr:

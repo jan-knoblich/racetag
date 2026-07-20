@@ -557,6 +557,24 @@ function renderStandings(items) {
     const tagId = htmlEscape(p.tag_id);
     const tr = document.createElement('tr');
     const total = typeof p.total_time_ms === 'number' ? secondsWithMs(p.total_time_ms) : '';
+
+    // F3: DNF/DNS/DSQ. Non-classified riders get a status badge, a muted row,
+    // and a blank position cell (they have no finishing rank).
+    const status = (p.status || '').toLowerCase();
+    const isClassified = !status;
+    const posCell = isClassified ? (idx + 1) : '';
+    if (!isClassified) tr.classList.add('status-row');
+    const statusBadge = status
+      ? ` <span class="status-badge status-${status}">${status.toUpperCase()}</span>`
+      : '';
+
+    // F5: missed-read annotation. A warning marker on the row invites the
+    // operator to fix it with the (pre-filled) manual +1 — never automatic.
+    const missed = p.suspected_missed_reads || 0;
+    const missedMarker = missed > 0
+      ? ` <span class="missed-read" title="${missed} Runde(n) evtl. vom Reader verpasst — klick +1 zum Nachtragen">⚠︎${missed > 1 ? '×' + missed : ''}</span>`
+      : '';
+
     // Manual-lap-correction buttons. Disabled when the row has NO registered
     // rider (bib null/undefined). An empty string OR the literal '0' is still
     // a valid bib — the explicit null-check guards bib zero. (Review #22.)
@@ -569,15 +587,15 @@ function renderStandings(items) {
         <button class="lap-minus" data-tag-id="${tagId}" data-action="remove"
                 title="Revoke the most recent lap" ${disabledAttr}>&minus;1</button>
         <button class="lap-edit" data-tag-id="${tagId}" data-action="edit"
-                title="Edit lap with custom timestamp" ${disabledAttr}>&#9998;</button>
+                title="Edit lap / set status (DNF/DNS/DSQ)" ${disabledAttr}>&#9998;</button>
       </div>`;
     // W-030: route last_pass_time through formatTimestampForDisplay
     tr.innerHTML = `
-      <td>${idx + 1}</td>
+      <td>${posCell}</td>
       <td class="tag-col"><span class="tag-id-copyable" data-tag-id="${tagId}" title="Click to copy tag ID">${tagId}</span></td>
       <td>${bib}</td>
-      <td>${name}</td>
-      <td>${p.laps}</td>
+      <td>${name}${statusBadge}</td>
+      <td>${p.laps}${missedMarker}</td>
       <td class="${p.finished ? 'finished' : ''}">${p.finished ? 'Yes' : 'No'}</td>
       <td>${formatTimestampForDisplay(p.last_pass_time)}</td>
       <td>${gap}</td>
@@ -632,20 +650,47 @@ async function manualLapRemove(tag_id) {
   }
 }
 
-// Lap-edit modal (with custom-timestamp option).
-function openLapEditModal(tag_id) {
+// Lap-edit modal (with custom-timestamp option). When `prefillTs` is given
+// (e.g. the suspected missed-read midpoint) the timestamp field starts filled
+// so the operator only has to confirm.
+function openLapEditModal(tag_id, prefillTs) {
   const modal = $('#lapEditModal');
   if (!modal) return;
   const p = (state.lastStandings || []).find((r) => r.tag_id === tag_id);
   const bib = p && p.bib ? p.bib : '—';
   const name = p && p.name ? p.name : '—';
-  $('#lapEditRider').value = `${bib} – ${name}`;
+  const st = p && p.status ? ` [${String(p.status).toUpperCase()}]` : '';
+  $('#lapEditRider').value = `${bib} – ${name}${st}`;
   $('#lapEditCurrentLaps').value = p ? String(p.laps) : '0';
-  $('#lapEditTimestamp').value = '';
+  $('#lapEditTimestamp').value = prefillTs || '';
   $('#lapEditError').hidden = true;
+  // Highlight the currently-set status button.
+  const curStatus = (p && p.status) ? String(p.status).toLowerCase() : '';
+  document.querySelectorAll('#lapEditModal .status-btn').forEach((b) => {
+    b.classList.toggle('status-btn--active', (b.dataset.status || '') === curStatus);
+  });
   modal.dataset.tagId = tag_id;
   modal.hidden = false;
   $('#lapEditTimestamp').focus();
+}
+
+async function setRiderStatus(tag_id, status) {
+  try {
+    const res = await fetch(`${state.backend}/riders/${encodeURIComponent(tag_id)}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify({ status: status || null }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      showToast(`Status failed (${res.status}): ${txt}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    showToast(`Status network error: ${err.message}`);
+    return null;
+  }
 }
 
 function closeLapEditModal() {
@@ -693,12 +738,20 @@ async function onStandingsTableClick(e) {
   const action = btn.dataset.action;
   const label = _bibLabelFor(tag_id);
   if (action === 'add') {
+    const p = (state.lastStandings || []).find((r) => r.tag_id === tag_id);
+    // F5: if the detector suspects a missed read, credit the lap at the
+    // midpoint of the suspected gap — open the modal pre-filled so the
+    // operator confirms the (correct) time rather than stamping "now".
+    if (p && p.suspected_missed_reads > 0 && p.suspected_gap_midpoint) {
+      showToast('Vermutete verpasste Runde — Zeitstempel vorbelegt, bitte bestätigen');
+      openLapEditModal(tag_id, p.suspected_gap_midpoint);
+      return;
+    }
     // F6: the +1 button credits a lap at server-now, which is correct for the
     // common case (the rider is crossing right now and the reader missed
     // them). But if the rider's last pass was a long time ago, crediting
     // server-now would inflate their race time — so route those through the
     // timestamp modal instead of silently stamping "now".
-    const p = (state.lastStandings || []).find((r) => r.tag_id === tag_id);
     const STALE_MS = 120_000; // 2 min — longer than any realistic circuit lap
     if (p && p.last_pass_time) {
       const age = Date.now() - new Date(p.last_pass_time).getTime();
@@ -1459,6 +1512,22 @@ function init() {
   const lapEditTs = $('#lapEditTimestamp');
   if (lapEditTs) lapEditTs.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submitLapEditAdd();
+  });
+
+  // F3: status buttons inside the lap-edit modal (DNF/DNS/DSQ/Clear).
+  document.querySelectorAll('#lapEditModal .status-btn').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const modal = $('#lapEditModal');
+      if (!modal || !modal.dataset.tagId) return;
+      const status = b.dataset.status || '';
+      const result = await setRiderStatus(modal.dataset.tagId, status);
+      if (result) {
+        showToast(status
+          ? `Status gesetzt: ${status.toUpperCase()}`
+          : 'Status entfernt');
+        closeLapEditModal();
+      }
+    });
   });
 }
 

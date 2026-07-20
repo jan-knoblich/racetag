@@ -20,6 +20,8 @@ class Rider(BaseModel):
     bib: str
     name: str
     created_at: datetime
+    # F3 — result status: None (classified/racing), "dnf", "dns", "dsq".
+    status: Optional[str] = None
 
 
 class RiderStore:
@@ -59,11 +61,30 @@ class RiderStore:
         return self._race_id
 
     def upsert(self, rider: Rider) -> Rider:
-        """Insert or overwrite a rider keyed by tag_id, scoped to this race."""
+        """Insert or overwrite a rider keyed by tag_id, scoped to this race.
+
+        Preserves an existing result status when the incoming rider doesn't
+        carry one — mirrors the storage layer, which never clobbers status on
+        conflict, so a CSV re-import / re-coupling can't wipe an operator's
+        DNF/DNS/DSQ (F3)."""
+        existing = self._riders.get(rider.tag_id)
+        if rider.status is None and existing is not None and existing.status:
+            rider = rider.model_copy(update={"status": existing.status})
         if self._storage is not None:
             self._storage.upsert_rider(rider, race_id=self._race_id)
         self._riders[rider.tag_id] = rider
         return rider
+
+    def set_status(self, tag_id: str, status: Optional[str]) -> bool:
+        """Set/clear a rider's result status (F3), persisting + updating cache.
+        Returns False if the rider isn't in this race."""
+        rider = self._riders.get(tag_id)
+        if rider is None:
+            return False
+        if self._storage is not None:
+            self._storage.set_rider_status(tag_id, status, race_id=self._race_id)
+        self._riders[tag_id] = rider.model_copy(update={"status": status})
+        return True
 
     def get(self, tag_id: str) -> Optional[Rider]:
         return self._riders.get(tag_id)
