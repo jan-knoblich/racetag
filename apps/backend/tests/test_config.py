@@ -145,3 +145,32 @@ def test_min_lap_interval_survives_restart(tmp_path, monkeypatch):
             f"cooldown reverted to default after restart: "
             f"{app_module2.race.min_pass_interval_s}"
         )
+
+
+# ---------------------------------------------------------------------------
+# RECHECK-2026-07-25 #7: antenna_power settable via /config.
+# ---------------------------------------------------------------------------
+
+def test_patch_antenna_power_persists_and_round_trips(tmp_path, monkeypatch):
+    data_dir = str(tmp_path / "antpow")
+    app_module = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module.app) as client:
+        # Unset by default (desktop falls back to env/300)
+        assert client.get("/config").json()["antenna_power"] is None
+        r = client.patch("/config", json={"antenna_power": 250})
+        assert r.status_code == 200, r.text
+        assert r.json()["antenna_power"] == 250
+
+    # Survives restart
+    app_module2 = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module2.app) as client2:
+        assert client2.get("/config").json()["antenna_power"] == 250
+
+
+def test_patch_antenna_power_validates_range(tmp_path, monkeypatch):
+    app_module = _fresh_app(str(tmp_path), monkeypatch)
+    with TestClient(app_module.app) as client:
+        assert client.patch("/config", json={"antenna_power": 50}).status_code == 422
+        assert client.patch("/config", json={"antenna_power": 999}).status_code == 422
+        assert client.patch("/config", json={"antenna_power": 100}).status_code == 200
+        assert client.patch("/config", json={"antenna_power": 300}).status_code == 200

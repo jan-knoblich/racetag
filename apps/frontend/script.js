@@ -335,10 +335,12 @@ async function openSettingsModal() {
     const minLapInput = $('#settingsMinLap');
     const totalLapsInput = $('#settingsTotalLaps');
     const snapInput = $('#settingsSnapshotInterval');
+    const antPowerInput = $('#settingsAntennaPower');
 
     if (ipInput) ipInput.value = cfg.reader_ip ?? '';
     if (minLapInput) minLapInput.value = cfg.min_lap_interval_s ?? '';
     if (totalLapsInput) totalLapsInput.value = cfg.total_laps ?? '';
+    if (antPowerInput) antPowerInput.value = cfg.antenna_power ?? '';
 
     // Auto-snapshot interval is per-race — fetch it from the active race.
     // Disable the input + warn the operator if there's no active race or the
@@ -414,6 +416,11 @@ async function submitSettingsModal() {
   const newTotal = totalLapsVal !== '' && totalLapsVal != null ? parseInt(totalLapsVal, 10) : null;
   if (newTotal !== originalTotal) patch.total_laps = newTotal;
 
+  const antPowerVal = $('#settingsAntennaPower')?.value;
+  const originalAntPower = _settingsOriginal.antenna_power ?? null;
+  const newAntPower = (antPowerVal !== '' && antPowerVal != null) ? parseInt(antPowerVal, 10) : null;
+  if (newAntPower !== null && newAntPower !== originalAntPower) patch.antenna_power = newAntPower;
+
   // Snapshot interval is per-race; PATCH the active race separately. Tracked
   // here so we can short-circuit if nothing else changed. If the modal opened
   // without an active race (input is disabled), skip snapshot handling.
@@ -466,9 +473,11 @@ async function submitSettingsModal() {
     closeSettingsModal();
     showToast('Settings saved');
 
-    // If reader IP changed, show a non-blocking note via a second toast with delay
-    if ('reader_ip' in patch) {
-      setTimeout(() => showToast('Reader IP changes take effect on next app restart'), 3200);
+    // If reader IP / antenna power changed, show a non-blocking note via a
+    // second toast with delay — both are consumed by the reader-service at
+    // spawn time, so they take effect on the next app restart.
+    if ('reader_ip' in patch || 'antenna_power' in patch) {
+      setTimeout(() => showToast('Reader IP / antenna power changes take effect on next app restart'), 3200);
     }
   } catch (err) {
     if (errBanner) {
@@ -557,6 +566,9 @@ function renderStandings(items) {
     const tagId = htmlEscape(p.tag_id);
     const tr = document.createElement('tr');
     const total = typeof p.total_time_ms === 'number' ? secondsWithMs(p.total_time_ms) : '';
+    // Net time (TT): first pass → finish pass. The individual time for
+    // staggered-start formats; m:ss.mmm.
+    const net = typeof p.net_time_ms === 'number' ? formatMs(p.net_time_ms) : '';
 
     // F3: DNF/DNS/DSQ. Non-classified riders get a status badge, a muted row,
     // and a blank position cell (they have no finishing rank).
@@ -600,6 +612,7 @@ function renderStandings(items) {
       <td>${formatTimestampForDisplay(p.last_pass_time)}</td>
       <td>${gap}</td>
       <td>${total}</td>
+      <td>${net}</td>
       <td>${lapActions}</td>
     `;
     tbody.appendChild(tr);
@@ -841,20 +854,24 @@ function renderRaceStatus() {
     else if (state.lapsToGo > 0) ltgSuffix = ` — ${state.lapsToGo} laps to go`;
   }
 
+  const reopenBtn = $('#reopenRaceBtn');
   if (state.raceEnded && state.raceEndedAt) {
     const t = formatTimestampForDisplay(state.raceEndedAt);
     if (banner) banner.textContent = `${racePrefix}Ended at ${t}`;
     if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Race ended'; }
     if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'Ended'; }
+    if (reopenBtn) reopenBtn.hidden = false;
   } else if (state.raceStarted && state.raceStartedAt) {
     const t = formatTimestampForDisplay(state.raceStartedAt);
     if (banner) banner.textContent = `${racePrefix}Running since ${t}${ltgSuffix}`;
     if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Race started'; }
     if (endBtn) { endBtn.disabled = false; endBtn.textContent = 'End race'; }
+    if (reopenBtn) reopenBtn.hidden = true;
   } else {
     if (banner) banner.textContent = `${racePrefix}Not started — press Start to begin`;
     if (startBtn) { startBtn.disabled = false; startBtn.textContent = 'Start race'; }
     if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'End race'; }
+    if (reopenBtn) reopenBtn.hidden = true;
   }
 }
 
@@ -1025,6 +1042,14 @@ function connectSSE() {
           state.raceEnded = true;
           state.raceEndedAt = data.ended_at || null;
           renderRaceStatus();
+        }
+
+        // Race reopened (accidental End undone)
+        if (data?.type === 'race_reopened') {
+          state.raceEnded = false;
+          state.raceEndedAt = null;
+          renderRaceStatus();
+          loadSnapshot().catch(() => {});
         }
 
         // Multi-race: active race changed (someone activated a different race)
@@ -1232,6 +1257,33 @@ function init() {
         }
       } catch (e) {
         showToast(`End error: ${e.message}`);
+      }
+    });
+  }
+
+  // Reopen race — undo an accidental End click. Passes recorded while the
+  // race was wrongly ended are recovered (they were persisted all along).
+  const reopenRaceBtn = $('#reopenRaceBtn');
+  if (reopenRaceBtn) {
+    reopenRaceBtn.addEventListener('click', async () => {
+      if (!confirm('Reopen the race? Passes recorded while it was ended will be counted.')) return;
+      try {
+        const res = await fetch(`${state.backend}/race/reopen`, {
+          method: 'POST',
+          headers: getApiHeaders(),
+        });
+        if (res.ok) {
+          state.raceEnded = false;
+          state.raceEndedAt = null;
+          renderRaceStatus();
+          loadRaceConfig();
+          loadSnapshot().catch(() => {});
+          showToast('Race reopened');
+        } else {
+          showToast(`Reopen failed: HTTP ${res.status}`);
+        }
+      } catch (e) {
+        showToast(`Reopen error: ${e.message}`);
       }
     });
   }
@@ -1463,7 +1515,7 @@ function init() {
   }
 
   // Submit settings on Enter in modal inputs
-  ['#settingsReaderIp', '#settingsMinLap', '#settingsTotalLaps', '#settingsSnapshotInterval'].forEach((sel) => {
+  ['#settingsReaderIp', '#settingsMinLap', '#settingsTotalLaps', '#settingsSnapshotInterval', '#settingsAntennaPower'].forEach((sel) => {
     const el = $(sel);
     if (el) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitSettingsModal(); });
   });

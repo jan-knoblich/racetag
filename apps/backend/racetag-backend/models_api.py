@@ -65,6 +65,9 @@ class ParticipantDTO(BaseModel):
     # timestamp of the first suspected gap (to pre-fill the manual-lap dialog).
     suspected_missed_reads: int = 0
     suspected_gap_midpoint: Optional[str] = None
+    # TT/net time: first counted pass → finish (or latest) pass. The correct
+    # individual time for staggered-start formats. None until 2+ passes.
+    net_time_ms: Optional[int] = None
     # Rider fields — populated from RiderStore at standings time (W-010)
     bib: Optional[str] = Field(None, description='Rider bib number (null if no rider registered for this tag)')
     name: Optional[str] = Field(None, description='Rider name (null if no rider registered for this tag)')

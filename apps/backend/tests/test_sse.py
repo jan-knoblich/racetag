@@ -87,3 +87,47 @@ def test_sse_multiple_subscribers_get_all_events(fresh_app):
                     app_module.subscribers.remove(buf)
                 except ValueError:
                     pass
+
+
+def test_suppressed_flutter_pass_does_not_broadcast(fresh_app):
+    """RECHECK-2026-07-25 #1: a cooldown-suppressed arrive (tag fluttering in
+    the read zone, e.g. riders staging next to the line) must NOT trigger
+    lap/standings SSE frames — only real lap changes broadcast."""
+    client, app_module = fresh_app
+
+    from domain.race import parse_iso as _parse_iso
+    app_module.race.start(now=_parse_iso("2026-04-15T11:00:00.000Z"))
+    # Force a non-zero cooldown so the flutter pass is suppressed
+    app_module.race.min_pass_interval_s = 8.0
+    client.post("/riders", json={"tag_id": "FLUT01", "bib": "9", "name": "F"})
+
+    buf: list = []
+    with app_module._subscribers_lock:
+        app_module.subscribers.append(buf)
+    try:
+        # First pass: counted → new participant → lap + standings = 2 frames
+        client.post("/events/tag/batch", json=_batch([
+            _tag_event("FLUT01", ts="2026-04-15T12:00:00.000Z"),
+        ]))
+        assert len(buf) == 2, f"first pass should broadcast 2 frames, got {len(buf)}"
+
+        # Flutter: 3 s later, within the 8 s cooldown → suppressed → NO frames
+        client.post("/events/tag/batch", json=_batch([
+            _tag_event("FLUT01", ts="2026-04-15T12:00:03.000Z"),
+        ]))
+        assert len(buf) == 2, (
+            f"suppressed pass broadcast anyway: {len(buf)} frames "
+            f"(types: {[f.get('type') for f in buf]})"
+        )
+
+        # A real lap 12 s later → 2 more frames
+        client.post("/events/tag/batch", json=_batch([
+            _tag_event("FLUT01", ts="2026-04-15T12:00:15.000Z"),
+        ]))
+        assert len(buf) == 4
+    finally:
+        with app_module._subscribers_lock:
+            try:
+                app_module.subscribers.remove(buf)
+            except ValueError:
+                pass

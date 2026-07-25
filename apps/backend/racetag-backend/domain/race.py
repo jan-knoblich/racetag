@@ -41,6 +41,13 @@ class Participant(BaseModel):
     laps_behind: Optional[int] = None
     # F3 — operator-set result status: None/"" (classified), "dnf", "dns", "dsq".
     status: Optional[str] = None
+    # TT/net time (RECHECK-2026-07-25 #5): elapsed from the rider's FIRST
+    # counted pass to their finish pass (or latest pass while unfinished).
+    # This is the correct individual time for staggered-start formats, where
+    # riders roll across the line to start (read 1) and cross again at the
+    # finish. None until a second pass exists. Uses finish_time when finished,
+    # so post-finish cool-down crossings don't inflate it.
+    net_time_ms: Optional[int] = None
     # F5 — computed annotation: how many laps look like they were missed by the
     # reader (a lap interval far above this rider's median). Advisory only; the
     # operator confirms with a manual +1. Never auto-applied.
@@ -62,7 +69,13 @@ _STATUS_RANK = {STATUS_DNF: 0, STATUS_DSQ: 1, STATUS_DNS: 2}
 # F5 — missed-read detection thresholds.
 # A lap interval above FACTOR × the rider's median lap counts as a suspected
 # missed read; we need at least MIN_INTERVALS clean laps to trust the median.
+# Intervals above PAUSE_FACTOR × median are classified as breaks (rider stopped
+# at the pits / staging), NOT missed reads — otherwise every training pause
+# would flag "⚠×12" and pre-fill the +1 dialog with the midpoint of a coffee
+# break (RECHECK-2026-07-25 #3). A genuinely missed read produces ~2× median;
+# anything much longer is a stop.
 _MISSED_READ_FACTOR = 1.7
+_MISSED_READ_PAUSE_FACTOR = 3.5
 _MISSED_READ_MIN_INTERVALS = 4
 
 
@@ -78,6 +91,7 @@ def suspected_missed_reads(
     pass_times: List[str],
     factor: float = _MISSED_READ_FACTOR,
     min_intervals: int = _MISSED_READ_MIN_INTERVALS,
+    pause_factor: float = _MISSED_READ_PAUSE_FACTOR,
 ) -> Tuple[int, Optional[str]]:
     """Detect laps that look like the reader missed a pass.
 
@@ -86,6 +100,10 @@ def suspected_missed_reads(
     line one or more times unseen. We report how many laps look missed and the
     midpoint timestamp of the FIRST such gap so the UI can pre-fill the manual
     +1 dialog. Purely advisory — the domain never adds the lap itself.
+
+    Intervals above pause_factor × median are treated as BREAKS (rider stopped
+    riding) and produce no flag — a missed read shows up as ~2× median, not
+    ~10×.
     """
     intervals = _lap_intervals_s(pass_times)
     if len(intervals) < min_intervals:
@@ -99,6 +117,9 @@ def suspected_missed_reads(
     ts = [parse_iso(t) for t in pass_times]
     for idx, iv in enumerate(intervals):
         if iv > factor * med:
+            if iv > pause_factor * med:
+                # A stop/pause, not a missed read — skip without flagging.
+                continue
             # round(iv/med) laps' worth of time elapsed → that many minus one
             # were presumably missed.
             n = max(round(iv / med) - 1, 1)
@@ -394,9 +415,20 @@ class RaceState:
                 all_p.append(Participant(tag_id=tag))
         for p in all_p:
             p.status = self.status.get(p.tag_id)
-            missed, mid = suspected_missed_reads(self.pass_times.get(p.tag_id, []))
+            pts = self.pass_times.get(p.tag_id, [])
+            missed, mid = suspected_missed_reads(pts)
             p.suspected_missed_reads = missed
             p.suspected_gap_midpoint = mid
+            # Net time (first counted pass → finish/latest pass). finish_time
+            # is frozen at the finishing pass, so cool-down crossings after the
+            # finish don't stretch it.
+            end_ref = p.finish_time or p.last_pass_time
+            if len(pts) >= 2 and end_ref:
+                p.net_time_ms = int(
+                    (parse_iso(end_ref) - parse_iso(pts[0])).total_seconds() * 1000
+                )
+            else:
+                p.net_time_ms = None
 
         classified = [p for p in all_p if not p.status]
         non_classified = [p for p in all_p if p.status]

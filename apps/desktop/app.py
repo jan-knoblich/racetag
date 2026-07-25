@@ -111,9 +111,25 @@ def _spawn_reader_service(backend_url: str) -> "subprocess.Popen | None":
     min_lap = os.environ.get("MIN_LAP_INTERVAL_S", "0")
     # Antenna auto-config: the reader-service detects connected antenna ports
     # (antennas.detected) and applies mux_sequence + power on every connect, so
-    # the operator no longer SSHes in to set them. ANTENNA_PORTS is only the
-    # fallback when detection returns nothing.
-    antenna_power = os.environ.get("ANTENNA_POWER", "300")
+    # the operator no longer SSHes in to set them. ANTENNA_PORTS is the
+    # guaranteed-minimum port set (detection can only add ports).
+    #
+    # Power precedence: persisted config (Settings modal) > ANTENNA_POWER env
+    # > default 300. The backend is already up at this point, so we ask it for
+    # the persisted value — the UI setting wins over a stale env var.
+    antenna_power = None
+    try:
+        import json as _json  # noqa: PLC0415
+        import urllib.request  # noqa: PLC0415
+        with urllib.request.urlopen(f"{backend_url}/config", timeout=3) as resp:
+            cfg = _json.load(resp)
+            if cfg.get("antenna_power"):
+                antenna_power = str(int(cfg["antenna_power"]))
+                print(f"Antenna power from persisted config: {antenna_power}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Could not read persisted antenna power ({exc}); using env/default", flush=True)
+    if not antenna_power:
+        antenna_power = os.environ.get("ANTENNA_POWER", "300")
     antenna_ports = os.environ.get("ANTENNA_PORTS", "1 2")
 
     # Resolve the init_commands file to an absolute path so the reader-service

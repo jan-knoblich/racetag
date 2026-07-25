@@ -567,3 +567,69 @@ def test_dns_rider_without_laps_still_appears_in_standings():
     assert ghost.status == "dns"
     assert ghost.laps == 0
     assert tags[-1] == "GHOST"  # sorts last
+
+
+# ---------------------------------------------------------------------------
+# RECHECK-2026-07-25 #3: pauses are not missed reads.
+# ---------------------------------------------------------------------------
+
+def test_long_pause_is_not_flagged_as_missed_reads():
+    """A 10× median gap (rider stopped at the pits) must NOT flag — the old
+    behaviour reported '⚠×N' for every training break."""
+    from domain.race import suspected_missed_reads
+    base = "2026-04-15T12:00:00.000Z"
+    # Regular 30 s laps, then a 300 s pit stop, then more regular laps.
+    times = [iso(t, base=base) for t in (0, 30, 60, 90, 390, 420, 450)]
+    missed, mid = suspected_missed_reads(times)
+    assert missed == 0
+    assert mid is None
+
+
+def test_double_lap_still_flagged_next_to_pause():
+    """A genuine ~2× median missed read still flags even when a pause exists
+    elsewhere in the history."""
+    from domain.race import suspected_missed_reads
+    base = "2026-04-15T12:00:00.000Z"
+    # 30 s laps, one 60 s gap (missed read), one 400 s pause.
+    times = [iso(t, base=base) for t in (0, 30, 90, 120, 150, 550, 580, 610)]
+    missed, mid = suspected_missed_reads(times)
+    assert missed == 1  # only the 30→90 gap; the 150→550 pause is ignored
+    assert mid is not None
+
+
+# ---------------------------------------------------------------------------
+# RECHECK-2026-07-25 #5: net time (TT / staggered starts).
+# ---------------------------------------------------------------------------
+
+def test_net_time_is_first_to_finish_pass():
+    """TT setup: rider rolls over the line at start (read 1) and finish
+    (read 2, total_laps=2) — net time = read2 − read1."""
+    r = RaceState(total_laps=2, min_pass_interval_s=0.0, finish_mode="per_rider")
+    r.start(now=parse_iso("2026-04-15T07:50:00.000Z"))
+    start_ts = "2026-04-15T08:00:00.000Z"
+    finish_ts = "2026-04-15T08:09:30.000Z"
+    r.add_lap("TT1", start_ts)
+    r.add_lap("TT1", finish_ts)
+    p = r.standings()[0]
+    assert p.finished
+    assert p.net_time_ms == 9 * 60 * 1000 + 30 * 1000  # 9:30
+
+
+def test_net_time_ignores_cooldown_crossing_after_finish():
+    """A third crossing (rolling out) must not stretch net time — finish_time
+    is frozen."""
+    r = RaceState(total_laps=2, min_pass_interval_s=0.0, finish_mode="per_rider")
+    r.start(now=parse_iso("2026-04-15T07:50:00.000Z"))
+    r.add_lap("TT1", "2026-04-15T08:00:00.000Z")
+    r.add_lap("TT1", "2026-04-15T08:10:00.000Z")   # finish
+    r.add_lap("TT1", "2026-04-15T08:20:00.000Z")   # cool-down crossing
+    p = r.standings()[0]
+    assert p.net_time_ms == 10 * 60 * 1000  # still 10:00, not 20:00
+
+
+def test_net_time_none_with_single_pass():
+    race = RaceState(total_laps=5, min_pass_interval_s=0.0)
+    race.start(now=parse_iso("2026-04-15T07:50:00.000Z"))
+    race.add_lap("SOLO", "2026-04-15T08:00:00.000Z")
+    p = race.standings()[0]
+    assert p.net_time_ms is None

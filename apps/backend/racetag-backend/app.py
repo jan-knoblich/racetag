@@ -459,22 +459,31 @@ def post_events_batch(batch: TagEventBatchDTO):
             is_registered = ev.tag_id in rider_store
 
             if is_registered:
+                # RECHECK-2026-07-25 #1: broadcast only when the pass actually
+                # changed something. With the reader-side cooldown gone (M6),
+                # a tag fluttering in the read zone (riders STAGING next to
+                # the line) delivers arrive events continuously; each used to
+                # trigger a misleading "lap" event + a full standings
+                # re-render several times a second. We still broadcast when a
+                # NEW participant row appears (pre-start check-in behaviour).
+                was_present = ev.tag_id in race.participants
+                prev_laps = race.participants[ev.tag_id].laps if was_present else -1
                 p = race.add_lap(ev.tag_id, ev.timestamp)
-                # Broadcast lap update (always, laps keep advancing)
-                lap_payload = {
-                    "type": "lap",
-                    "tag_id": p.tag_id,
-                    "laps": p.laps,
-                    "finished": p.finished,
-                    "last_pass_time": p.last_pass_time,
-                }
-                _publish(lap_payload)
-                # Broadcast updated standings snapshot (enriched with rider info)
-                table = _build_standings_items()
-                standings_payload = {
-                    "type": "standings", "items": table, **_race_live_status()
-                }
-                _publish(standings_payload)
+                if not was_present or p.laps != prev_laps:
+                    lap_payload = {
+                        "type": "lap",
+                        "tag_id": p.tag_id,
+                        "laps": p.laps,
+                        "finished": p.finished,
+                        "last_pass_time": p.last_pass_time,
+                    }
+                    _publish(lap_payload)
+                    # Broadcast updated standings snapshot (enriched with rider info)
+                    table = _build_standings_items()
+                    standings_payload = {
+                        "type": "standings", "items": table, **_race_live_status()
+                    }
+                    _publish(standings_payload)
             else:
                 # W-011: fire unknown_tag SSE + add to ring buffer so the
                 # operator can register the tag via the "Couple tag → rider"
@@ -575,7 +584,8 @@ def _build_classification_csv() -> tuple[str, str]:
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(
         ["position", "bib", "name", "tag_id", "laps", "laps_behind", "status",
-         "finished", "finish_time", "total_time_ms", "last_pass_time"]
+         "finished", "finish_time", "total_time_ms", "net_time_ms",
+         "last_pass_time"]
     )
     for idx, item in enumerate(items, start=1):
         # F3: a non-classified rider (DNF/DNS/DSQ) has no finishing position —
@@ -592,6 +602,7 @@ def _build_classification_csv() -> tuple[str, str]:
             "true" if item.get("finished") else "false",
             item.get("finish_time") or "",
             item.get("total_time_ms") if item.get("total_time_ms") is not None else "",
+            item.get("net_time_ms") if item.get("net_time_ms") is not None else "",
             item.get("last_pass_time") or "",
         ])
 
@@ -780,6 +791,34 @@ def post_race_end():
         storage.update_race(race.race_id, ended=True, ended_at=ended_at)
     _publish({"type": "race_ended", "ended_at": ended_at_iso})
     return {"ended": True, "ended_at": ended_at_iso}
+
+
+@app.post("/race/reopen", status_code=200)
+def post_race_reopen():
+    """Undo an accidental "End race" (RECHECK-2026-07-25 #4).
+
+    Before this endpoint, one stray End click was irreversible without DB
+    surgery: add_lap no-ops post-end and the replay cutoff keeps it that way
+    across restarts. The events ARE all persisted though — so clearing the
+    ended state and rebuilding recovers everything losslessly, including the
+    passes that arrived while the race was wrongly ended.
+
+    409 when the race isn't ended. In leader mode a legitimately-finished race
+    re-derives its finishing state from the replay, so reopening after a real
+    finish keeps the flags — this is a hatch for ACCIDENTAL ends, not an
+    un-finish.
+    """
+    if not race.ended:
+        raise HTTPException(status_code=409, detail="race is not ended")
+    storage.set_meta("race_ended_at", "")
+    if race.race_id:
+        storage.update_race(race.race_id, ended=False, ended_at=None)
+    # Rebuild replays ALL events — the ended cutoff is gone now, so passes
+    # recorded during the accidental ended window count again.
+    _rebuild_active_race_state_in_place()
+    _publish({"type": "race_reopened"})
+    _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
+    return {"ended": False}
 
 
 # ---------------------------------------------------------------------------
@@ -1023,6 +1062,7 @@ class PatchConfigBody(BaseModel):
     reader_ip: str | None = None
     min_lap_interval_s: float | None = None
     total_laps: int | None = None
+    antenna_power: int | None = None
 
 
 def _effective_config() -> Config:
@@ -1039,6 +1079,7 @@ def _effective_config() -> Config:
             if config_store.get_total_laps() is not None
             else _RACE_TOTAL_LAPS
         ),
+        antenna_power=config_store.get_antenna_power(),
     )
 
 
@@ -1070,11 +1111,21 @@ def patch_config(body: PatchConfigBody):
         if not (1 <= body.total_laps <= 999):
             errors.append("total_laps must be between 1 and 999")
 
+    if body.antenna_power is not None:
+        # 0.1 dBm units; the Sirit's practical range is 10.0–30.0 dBm.
+        if not (100 <= body.antenna_power <= 300):
+            errors.append("antenna_power must be between 100 and 300 (0.1 dBm units)")
+
     if errors:
         raise HTTPException(status_code=422, detail=errors)
 
     if body.reader_ip is not None:
         config_store.set_reader_ip(body.reader_ip)
+
+    if body.antenna_power is not None:
+        # Persist only — the reader-service picks it up at spawn (next app
+        # restart), same lifecycle as reader_ip.
+        config_store.set_antenna_power(body.antenna_power)
 
     if body.min_lap_interval_s is not None:
         config_store.set_min_lap_interval_s(body.min_lap_interval_s)

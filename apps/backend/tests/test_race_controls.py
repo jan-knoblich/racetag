@@ -143,3 +143,50 @@ def test_reset_preserves_riders(tmp_path, monkeypatch):
         # Riders must still exist.
         riders_after = client.get("/riders").json()
         assert riders_after["count"] == 2, f"Expected 2 riders, got: {riders_after}"
+
+
+# ---------------------------------------------------------------------------
+# RECHECK-2026-07-25 #4: POST /race/reopen — undo an accidental End race.
+# ---------------------------------------------------------------------------
+
+def test_reopen_recovers_passes_recorded_while_wrongly_ended(tmp_path, monkeypatch):
+    """End race by accident → passes keep arriving (persisted, not counted)
+    → reopen → the missed passes count again, losslessly."""
+    monkeypatch.setenv("RACE_MIN_PASS_INTERVAL_S", "0")
+    app_module = _fresh_app(str(tmp_path), monkeypatch)
+
+    with TestClient(app_module.app) as client:
+        from domain.race import parse_iso as _parse_iso
+        started = "2026-04-15T11:00:00.000Z"
+        app_module.race.start(now=_parse_iso(started))
+        app_module.storage.set_meta("race_started_at", started)
+        if app_module.race.race_id:
+            app_module.storage.update_race(
+                app_module.race.race_id, started=True, started_at=_parse_iso(started))
+        client.post("/riders", json={"tag_id": "RO1", "bib": "1", "name": "R"})
+
+        # 2 counted laps
+        for ts in ("2026-04-15T12:00:00.000Z", "2026-04-15T12:01:00.000Z"):
+            client.post("/events/tag/batch", json=_batch([_tag_event("RO1", ts)]))
+        # Accidental end
+        assert client.post("/race/end").status_code == 200
+        # A pass arrives while wrongly ended — persisted, not counted
+        client.post("/events/tag/batch",
+                    json=_batch([_tag_event("RO1", "2026-04-15T12:02:00.000Z")]))
+        live = {s["tag_id"]: s["laps"] for s in client.get("/classification").json()["standings"]}
+        assert live == {"RO1": 2}
+
+        # Reopen: the third pass must now count
+        r = client.post("/race/reopen")
+        assert r.status_code == 200
+        assert r.json()["ended"] is False
+        after = {s["tag_id"]: s["laps"] for s in client.get("/classification").json()["standings"]}
+        assert after == {"RO1": 3}, f"reopen lost the wrongly-dropped pass: {after}"
+        # Race state consistent
+        assert client.get("/race").json()["ended"] is False
+
+
+def test_reopen_on_running_race_409(tmp_path, monkeypatch):
+    app_module = _fresh_app(str(tmp_path), monkeypatch)
+    with TestClient(app_module.app) as client:
+        assert client.post("/race/reopen").status_code == 409

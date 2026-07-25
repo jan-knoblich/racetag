@@ -29,6 +29,11 @@ class Config(BaseModel):
     reader_ip: Optional[str] = None
     min_lap_interval_s: Optional[float] = None
     total_laps: Optional[int] = None
+    # Antenna conducted power in 0.1 dBm units (300 = 30 dBm max). The
+    # reader-service applies it on every connect; the desktop shell reads the
+    # persisted value at spawn, so a change takes effect on the next app
+    # restart.
+    antenna_power: Optional[int] = None
 
 
 class ConfigStore:
@@ -37,6 +42,7 @@ class ConfigStore:
     _KEY_READER_IP = "reader_ip"
     _KEY_MIN_LAP = "min_lap_interval_s"
     _KEY_TOTAL_LAPS = "total_laps"
+    _KEY_ANTENNA_POWER = "antenna_power"
 
     def __init__(self, storage: Storage) -> None:
         self._storage = storage
@@ -66,6 +72,15 @@ class ConfigStore:
         except ValueError:
             return None
 
+    def get_antenna_power(self) -> Optional[int]:
+        raw = self._storage.get_meta(self._KEY_ANTENNA_POWER)
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
     # ------------------------------------------------------------------
     # Writers
     # ------------------------------------------------------------------
@@ -78,3 +93,6 @@ class ConfigStore:
 
     def set_total_laps(self, value: int) -> None:
         self._storage.set_meta(self._KEY_TOTAL_LAPS, str(value))
+
+    def set_antenna_power(self, value: int) -> None:
+        self._storage.set_meta(self._KEY_ANTENNA_POWER, str(value))

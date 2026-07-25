@@ -28,6 +28,8 @@
         <button id="startRaceBtn" class="btn-primary">Start race</button>
         <!-- End race (multi-race) -->
         <button id="endRaceBtn" class="btn-warn">End race</button>
+        <!-- Reopen (undo accidental End race) — hidden unless race ended -->
+        <button id="reopenRaceBtn" hidden>Reopen race</button>
         <!-- Export CSV results -->
         <button id="exportCsvBtn">Export results</button>
         <!-- W-036: Reset race -->
@@ -70,6 +72,7 @@
               <th>Last pass</th>
               <th>Gap</th>
               <th>Total time (s)</th>
+              <th title="First pass to finish — the individual time for staggered starts (TT)">Net time</th>
               <th>Laps&nbsp;±</th>
             </tr>
           </thead>
@@ -234,6 +237,13 @@
             Auto-snapshot interval (s) &mdash; active race; 0 disables
           </label>
           <input id="settingsSnapshotInterval" type="number" min="0" max="3600" step="1" placeholder="120" />
+        </div>
+
+        <div class="modal-field">
+          <label for="settingsAntennaPower">
+            Antenna power (0.1 dBm, 100&ndash;300; applied on next app restart)
+          </label>
+          <input id="settingsAntennaPower" type="number" min="100" max="300" step="10" placeholder="300" />
         </div>
 
         <div id="settingsError" class="modal-error" hidden></div>

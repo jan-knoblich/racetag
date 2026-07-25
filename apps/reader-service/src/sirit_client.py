@@ -294,6 +294,7 @@ class SiritClient:
         """
         power = int(self.antenna_power)
         all_ports = [1, 2, 3, 4]
+        fallback = self._parse_ports_str(self.antenna_ports_fallback)
         try:
             # Phase 1: light up every port so detection has something to measure.
             probe_cmds = [f"antennas.{n}.conducted_power={power}" for n in all_ports]
@@ -309,30 +310,38 @@ class SiritClient:
             if detected:
                 logger.info("[ANTENNA] detected connected ports: %s", detected)
             else:
-                detected = self._parse_ports_str(self.antenna_ports_fallback)
                 logger.warning(
                     "[ANTENNA] auto-detection returned nothing (reply=%r); "
-                    "falling back to configured ports: %s", reply, detected,
+                    "using fallback ports only: %s", reply, fallback,
                 )
         except Exception as e:
-            detected = self._parse_ports_str(self.antenna_ports_fallback)
+            detected = []
             logger.error(
-                "[ANTENNA] auto-detection failed (%s); falling back to ports %s",
-                e, detected,
+                "[ANTENNA] auto-detection failed (%s); using fallback ports %s",
+                e, fallback,
             )
 
-        if not detected:
-            detected = [1]  # last-ditch: at least port 1
+        # RECHECK-2026-07-25 #2: UNION of detected and fallback — the fallback
+        # ports are the guaranteed minimum, detection can only ADD ports. A
+        # borderline VSWR reading must never silently power off an antenna the
+        # operator plugged in (a powered open port is harmless; a silently dead
+        # port loses race data). Detection's job is catching EXTRA antennas.
+        ports = sorted(set(detected) | set(fallback))
+        if not ports:
+            ports = [1]  # last-ditch: at least port 1
+        extra = [p for p in ports if p not in fallback]
+        if extra:
+            logger.info("[ANTENNA] detection added ports beyond fallback: %s", extra)
 
-        # Phase 3: final config — power the detected ports, disable the rest.
+        # Phase 3: final config — power the selected ports, disable the rest.
         final_cmds = []
         for n in all_ports:
-            final_cmds.append(f"antennas.{n}.conducted_power={power if n in detected else 0}")
-        final_cmds.append("antennas.mux_sequence=" + " ".join(str(n) for n in detected))
+            final_cmds.append(f"antennas.{n}.conducted_power={power if n in ports else 0}")
+        final_cmds.append("antennas.mux_sequence=" + " ".join(str(n) for n in ports))
         final_cmds.append("setup.operating_mode=active")
         self._send_control(final_cmds)
         logger.info(
-            "[ANTENNA] configured: ports=%s power=%d (0.1 dBm)", detected, power
+            "[ANTENNA] configured: ports=%s power=%d (0.1 dBm)", ports, power
         )
 
     @staticmethod

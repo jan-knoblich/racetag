@@ -325,3 +325,14 @@ def test_classification_csv_has_laps_behind_column(fresh_app):
     body = client.get("/classification.csv").text
     header = [ln for ln in body.splitlines() if ln.startswith("position,")][0]
     assert "laps_behind" in header.split(",")
+
+
+def test_classification_csv_has_net_time_column(fresh_app):
+    """RECHECK-2026-07-25 #5: CSV carries net_time_ms (TT result column)."""
+    client, app_module = fresh_app
+    from domain.race import parse_iso as _parse_iso
+    client.post("/riders", json={"tag_id": "NT1", "bib": "1", "name": "T"})
+    app_module.race.start(now=_parse_iso("2026-04-15T07:50:00.000Z"))
+    body = client.get("/classification.csv").text
+    header = [ln for ln in body.splitlines() if ln.startswith("position,")][0]
+    assert "net_time_ms" in header.split(",")

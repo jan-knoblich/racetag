@@ -150,7 +150,7 @@ class TestConfigureAntennas:
         assert sent[-1] == "setup.operating_mode=active"
 
     def test_probe_phase_lights_all_ports_before_detection(self, monkeypatch):
-        client = _make_client(power=300)
+        client = _make_client(power=300, fallback="1")
         sent = self._capture_sends(client)
         order = []
         monkeypatch.setattr(client, "_query_control",
@@ -160,7 +160,39 @@ class TestConfigureAntennas:
         client._configure_antennas()
 
         # The probe mux (all 4 ports) is sent before the query,
-        # the final mux (detected) after.
+        # the final mux (detected ∪ fallback = {1}) after.
         assert "antennas.mux_sequence=1 2 3 4" in sent
         assert "antennas.mux_sequence=1" in sent
         assert sent.index("antennas.mux_sequence=1 2 3 4") < sent.index("antennas.mux_sequence=1")
+
+    # -- RECHECK-2026-07-25 #2: union semantics --------------------------
+
+    def test_partial_detection_never_disables_fallback_port(self, monkeypatch):
+        """Detection finds only port 1 but the operator plugged 2 antennas
+        (fallback '1 2'): port 2 must STAY powered — a borderline VSWR read
+        must never silently kill an antenna."""
+        client = _make_client(power=300, fallback="1 2")
+        sent = self._capture_sends(client)
+        monkeypatch.setattr(client, "_query_control", lambda cmd, timeout=2.0: "ok 1")
+        monkeypatch.setattr("sirit_client.time.sleep", lambda s: None)
+
+        client._configure_antennas()
+
+        assert "antennas.mux_sequence=1 2" in sent
+        assert "antennas.1.conducted_power=300" in sent
+        assert "antennas.2.conducted_power=300" in sent
+        assert "antennas.3.conducted_power=0" in sent
+
+    def test_detection_adds_ports_beyond_fallback(self, monkeypatch):
+        """A third antenna the operator forgot to configure is picked up by
+        detection and added to the fallback set."""
+        client = _make_client(power=300, fallback="1 2")
+        sent = self._capture_sends(client)
+        monkeypatch.setattr(client, "_query_control", lambda cmd, timeout=2.0: "ok 1 3")
+        monkeypatch.setattr("sirit_client.time.sleep", lambda s: None)
+
+        client._configure_antennas()
+
+        assert "antennas.mux_sequence=1 2 3" in sent
+        assert "antennas.3.conducted_power=300" in sent
+        assert "antennas.4.conducted_power=0" in sent
