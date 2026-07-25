@@ -1,5 +1,12 @@
 # Racetag — Generalprobe Cheat-Sheet (2026-06-14)
 
+> ⚠️ **STAND JUNI — TEILWEISE VERALTET.** Für das TT-Training am 26.07. gilt das
+> Runbook in `docs/issues/RECHECK-2026-07-25.md`. Seit Juli macht die App
+> selbst, was hier noch manuell beschrieben ist: **kein `export READER_IP`**
+> (§2 — IP kommt aus den Settings), **kein SSH für Antennen-Power/mux** (§1 —
+> Auto-Konfiguration beim Connect). Weiterhin gültig: §0 Netz-Checks, §6
+> Troubleshooting, §7 Backup.
+
 **Druck mich aus** und nimm mich mit auf die Bahn. Alle Commands sind copy-paste-fertig, mit den aktuell gültigen IPs.
 
 ## Aktuelle Konfiguration
