@@ -1255,6 +1255,36 @@ def delete_rider(tag_id: str):
         raise HTTPException(status_code=404, detail=f"No rider registered for tag '{tag_id}'")
 
 
+@app.delete("/riders/{tag_id}/passes", status_code=200)
+def delete_rider_passes(tag_id: str):
+    """Reset a rider: delete ALL their passes in the active race (2026-07-25).
+
+    For a botched measurement — e.g. a TT start read captured while the rider
+    was still staging in the read zone — this wipes the rider's events in one
+    action; their standings row disappears and their next roll across the
+    line starts a fresh attempt. Deliberate full-delete (mirrors the manual
+    -1 semantics, which already deletes single events permanently).
+
+    404 unknown rider; 409 on an ended race (frozen results).
+    """
+    if rider_store.get(tag_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No rider registered for tag '{tag_id}' in the active race",
+        )
+    if race.ended:
+        raise HTTPException(
+            status_code=409,
+            detail="Race has ended — rider reset is not allowed",
+        )
+
+    deleted = storage.delete_events_for_tag(tag_id)
+    _rebuild_active_race_state_in_place()
+
+    _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
+    return {"tag_id": tag_id, "deleted_events": deleted}
+
+
 @app.patch("/riders/{tag_id}/status", response_model=RiderDTO)
 def patch_rider_status(tag_id: str, body: RiderStatusDTO):
     """Set or clear a rider's result status (F3): "dnf", "dns", "dsq", or null.

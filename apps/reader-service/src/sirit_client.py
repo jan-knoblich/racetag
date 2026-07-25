@@ -19,6 +19,36 @@ from backend_client import BackendClient, HttpBackendClient, MockBackendClient
 logger = get_logger("reader.sirit")
 
 
+class _MessageThrottle:
+    """Rate-limit repeated log lines by key (2026-07-25 log-noise fix).
+
+    The reader emits event.warning.antenna / event.error.antenna
+    continuously for powered ports whose antenna check is unhappy — by
+    design we power the fallback ports even when detection is unsure (union
+    semantics), so these warnings are EXPECTED and would otherwise flood the
+    log many times per second. First occurrence per key logs immediately;
+    repeats within the window are counted and surface as one summary line
+    when the window rolls over.
+    """
+
+    def __init__(self, window_s: float = 60.0, clock=time.monotonic):
+        self.window_s = window_s
+        self.clock = clock
+        # key -> [window_start, suppressed_count]
+        self._state: Dict[str, list] = {}
+
+    def check(self, key: str) -> tuple:
+        """Return (log_now, suppressed_since_last_log)."""
+        now = self.clock()
+        st = self._state.get(key)
+        if st is None or now - st[0] >= self.window_s:
+            suppressed = st[1] if st else 0
+            self._state[key] = [now, 0]
+            return True, suppressed
+        st[1] += 1
+        return False, 0
+
+
 class SiritClient:
     def __init__(self, ip: str, control_port: int, event_port: int, init_commands_path: Optional[str], colorize: bool, raw: bool, interactive: bool, backend_url: Optional[str] = None, backend_token: Optional[str] = None, backend_transport: str = "http", min_lap_interval_s: float = 10.0, antenna_power: int = 300, antenna_ports_fallback: str = "1 2"):
         self.ip = ip
@@ -51,6 +81,8 @@ class SiritClient:
         self._query_pending = threading.Event()
         self._query_result: Optional[str] = None
         self._query_done = threading.Event()
+        # Log throttle for repeated reader warning/error notifications.
+        self._log_throttle = _MessageThrottle(window_s=60.0)
         # Backend client (HTTP/WS/MQTT)
         self._backend: Optional[BackendClient] = None
 
@@ -223,10 +255,12 @@ class SiritClient:
         if name.upper() == "EVENT":
             tag = "EVENT"
             base = "[%s] [%s] %s"
-            logger.info(base, name, _color(tag, _C.CYAN) if self.colorize else tag, msg)
+            if not self._log_noisy_reader_message(name, msg):
+                logger.info(base, name, _color(tag, _C.CYAN) if self.colorize else tag, msg)
         elif name.upper() == "CONTROL":
             tag = "CTRL"
-            logger.info("[%s] [%s] %s", name, _color(tag, _C.YELLOW) if self.colorize else tag, msg)
+            if not self._log_noisy_reader_message(name, msg):
+                logger.info("[%s] [%s] %s", name, _color(tag, _C.YELLOW) if self.colorize else tag, msg)
             # Capture a pending CONTROL query response (e.g. antennas.detected).
             # Armed by _query_control() immediately before its send, so the very
             # next "ok ..." line is the reply.
@@ -245,6 +279,28 @@ class SiritClient:
                     logger.info("[READER] serial_number=%s", self.reader_serial)
         else:
             logger.info("[%s] %s", name, msg)
+
+    def _log_noisy_reader_message(self, channel: str, msg: str) -> bool:
+        """Throttled logging for repeated reader notifications.
+
+        Returns True when the message matched a noisy class (event.warning.*/
+        event.error.*) and was handled here — first occurrence per event name
+        logs immediately, repeats within the 60 s window are counted and shown
+        as one "(+N suppressed)" summary when the window rolls over. Returns
+        False for everything else so the caller logs normally.
+        """
+        stripped = msg.strip()
+        low = stripped.lower()
+        if not (low.startswith("event.warning.") or low.startswith("event.error.")):
+            return False
+        # Key by the event name (first token) so e.g. all
+        # "event.warning.antenna ..." lines share one budget.
+        key = stripped.split(None, 1)[0]
+        log_now, suppressed = self._log_throttle.check(key)
+        if log_now:
+            suffix = f" (+{suppressed} repeats suppressed in the last 60s)" if suppressed else ""
+            logger.info("[%s] [READER-WARN] %s%s", channel, stripped, suffix)
+        return True
 
     def _send_control(self, cmds: List[str]):
         if not self.control_sock:

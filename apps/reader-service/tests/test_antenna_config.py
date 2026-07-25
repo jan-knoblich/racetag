@@ -196,3 +196,49 @@ class TestConfigureAntennas:
         assert "antennas.mux_sequence=1 2 3" in sent
         assert "antennas.3.conducted_power=300" in sent
         assert "antennas.4.conducted_power=0" in sent
+
+
+# ---------------------------------------------------------------------------
+# Log throttle for repeated reader warning/error notifications (2026-07-25).
+# ---------------------------------------------------------------------------
+
+class TestLogThrottle:
+    def test_first_occurrence_logs_repeats_suppressed(self):
+        from sirit_client import _MessageThrottle
+        clock = [1000.0]
+        t = _MessageThrottle(window_s=60.0, clock=lambda: clock[0])
+
+        assert t.check("event.warning.antenna") == (True, 0)   # first: log
+        assert t.check("event.warning.antenna") == (False, 0)  # repeat: suppress
+        assert t.check("event.warning.antenna") == (False, 0)
+        clock[0] += 61
+        # window rolled: log again, reporting 2 suppressed
+        assert t.check("event.warning.antenna") == (True, 2)
+
+    def test_keys_are_independent(self):
+        from sirit_client import _MessageThrottle
+        t = _MessageThrottle(window_s=60.0, clock=lambda: 5.0)
+        assert t.check("event.warning.antenna") == (True, 0)
+        assert t.check("event.error.antenna") == (True, 0)     # different key logs
+
+    def test_noisy_message_routed_through_throttle(self, caplog):
+        import logging
+        client = _make_client()
+        with caplog.at_level(logging.INFO, logger="reader.sirit"):
+            # First warning logs, next two are suppressed
+            client._handle_message("EVENT", "event.warning.antenna antenna = 2, status = ANTENNA_ABNORMAL")
+            client._handle_message("EVENT", "event.warning.antenna antenna = 2, status = ANTENNA_ABNORMAL")
+            client._handle_message("EVENT", "event.warning.antenna antenna = 2, status = ANTENNA_ABNORMAL")
+        warn_lines = [r for r in caplog.records if "READER-WARN" in r.getMessage()]
+        assert len(warn_lines) == 1, (
+            f"expected exactly 1 throttled warn line, got {len(warn_lines)}"
+        )
+
+    def test_normal_event_messages_still_log(self, caplog):
+        import logging
+        client = _make_client()
+        with caplog.at_level(logging.INFO, logger="reader.sirit"):
+            client._handle_message("EVENT", "event.status.something id = 7")
+            client._handle_message("EVENT", "event.status.something id = 7")
+        lines = [r for r in caplog.records if "event.status.something" in r.getMessage()]
+        assert len(lines) == 2  # untouched by the throttle

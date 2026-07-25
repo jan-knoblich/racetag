@@ -272,3 +272,61 @@ def test_manual_lap_can_trigger_finish(fresh_app, monkeypatch):
     assert body["laps"] == 3
     assert body["finished"] is True
     assert body["finish_time"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Rider reset (2026-07-25): wipe all passes for a fresh attempt.
+# ---------------------------------------------------------------------------
+
+def test_reset_rider_wipes_all_passes_and_allows_fresh_attempt(fresh_app):
+    client, app_module = fresh_app
+    _start_race(app_module)
+    assert _register(client, "TT_A").status_code == 201
+
+    # Botched attempt: 2 passes (start caught while staging + one more)
+    client.post("/riders/TT_A/laps", json={"timestamp": "2026-04-15T12:00:00.000Z"})
+    client.post("/riders/TT_A/laps", json={"timestamp": "2026-04-15T12:01:00.000Z"})
+    assert app_module.storage.count_events() == 2
+
+    r = client.delete("/riders/TT_A/passes")
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted_events"] == 2
+    assert app_module.storage.count_events() == 0
+    # Standings row gone — fresh slate
+    tags = [s["tag_id"] for s in client.get("/classification").json()["standings"]]
+    assert "TT_A" not in tags
+
+    # Fresh attempt counts from scratch
+    client.post("/riders/TT_A/laps", json={"timestamp": "2026-04-15T12:10:00.000Z"})
+    standings = client.get("/classification").json()["standings"]
+    row = next(s for s in standings if s["tag_id"] == "TT_A")
+    assert row["laps"] == 1
+
+
+def test_reset_rider_does_not_touch_other_riders(fresh_app):
+    client, app_module = fresh_app
+    _start_race(app_module)
+    _register(client, "KEEP", bib="1")
+    _register(client, "WIPE", bib="2")
+    client.post("/riders/KEEP/laps", json={"timestamp": "2026-04-15T12:00:00.000Z"})
+    client.post("/riders/WIPE/laps", json={"timestamp": "2026-04-15T12:00:30.000Z"})
+
+    client.delete("/riders/WIPE/passes")
+
+    laps = {s["tag_id"]: s["laps"] for s in client.get("/classification").json()["standings"]}
+    assert laps == {"KEEP": 1}
+
+
+def test_reset_rider_404_unknown(fresh_app):
+    client, app_module = fresh_app
+    _start_race(app_module)
+    assert client.delete("/riders/NOPE/passes").status_code == 404
+
+
+def test_reset_rider_409_on_ended_race(fresh_app):
+    client, app_module = fresh_app
+    _start_race(app_module)
+    _register(client, "TT_B")
+    client.post("/riders/TT_B/laps", json={"timestamp": "2026-04-15T12:00:00.000Z"})
+    assert client.post("/race/end").status_code in (200, 204)
+    assert client.delete("/riders/TT_B/passes").status_code == 409

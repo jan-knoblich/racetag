@@ -688,6 +688,23 @@ class Storage:
         )
         return cur.rowcount > 0
 
+    def delete_events_for_tag(
+        self, tag_id: str, race_id: Optional[str] = None
+    ) -> int:
+        """Delete ALL events for *tag_id* in the given race (default: active).
+
+        Rider-reset (2026-07-25): a botched measurement — e.g. a TT run where
+        the start read caught the rider while staging — is wiped in one action
+        so the rider can roll over the line again for a fresh attempt.
+        Returns the number of rows deleted.
+        """
+        rid = self._require_race_id(race_id)
+        cur = self._execute(
+            "DELETE FROM tag_events WHERE race_id = ? AND tag_id = ?;",
+            (rid, tag_id),
+        )
+        return cur.rowcount
+
     def count_events_by_antenna(
         self, window_s: int, race_id: Optional[str] = None
     ) -> dict:

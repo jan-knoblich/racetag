@@ -737,6 +737,32 @@ async function submitLapEditRemove() {
   }
 }
 
+// Rider reset: wipe ALL passes so a botched measurement (e.g. a TT start
+// read captured while staging) can be redone from scratch.
+async function submitLapEditReset() {
+  const modal = $('#lapEditModal');
+  if (!modal || !modal.dataset.tagId) return;
+  const tag_id = modal.dataset.tagId;
+  const label = _bibLabelFor(tag_id);
+  if (!confirm(`ALLE Durchgänge von ${label} löschen? Der Fahrer startet danach einen frischen Versuch.`)) return;
+  try {
+    const res = await fetch(`${state.backend}/riders/${encodeURIComponent(tag_id)}/passes`, {
+      method: 'DELETE',
+      headers: getApiHeaders(),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      showToast(`Reset failed (${res.status}): ${txt}`);
+      return;
+    }
+    const data = await res.json();
+    showToast(`${label} zurückgesetzt (${data.deleted_events} Durchgänge gelöscht)`);
+    closeLapEditModal();
+  } catch (err) {
+    showToast(`Reset network error: ${err.message}`);
+  }
+}
+
 function _bibLabelFor(tag_id) {
   const p = (state.lastStandings || []).find((r) => r.tag_id === tag_id);
   if (p && p.bib != null && p.bib !== '') return `bib ${p.bib}`;
@@ -1553,6 +1579,8 @@ function init() {
   if (lapEditAdd) lapEditAdd.addEventListener('click', submitLapEditAdd);
   const lapEditRemove = $('#lapEditRemoveBtn');
   if (lapEditRemove) lapEditRemove.addEventListener('click', submitLapEditRemove);
+  const lapEditReset = $('#lapEditResetBtn');
+  if (lapEditReset) lapEditReset.addEventListener('click', submitLapEditReset);
   const lapEditCancel = $('#lapEditCancelBtn');
   if (lapEditCancel) lapEditCancel.addEventListener('click', closeLapEditModal);
   const lapEditModal = $('#lapEditModal');
