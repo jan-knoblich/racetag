@@ -286,6 +286,12 @@ async function submitRegisterModal() {
     });
 
     if (res.ok) {
+      // Clear the cached unknown tag: without this, the NEXT "Couple tag"
+      // click re-opens the modal with the tag we JUST registered (stale
+      // cache), and typing the next rider's data would silently overwrite
+      // the previous rider via the upsert. The next click now waits for a
+      // fresh wave instead.
+      state.lastUnknownTag = null;
       closeRegisterModal();
       showToast(`Registered bib ${bib} \u2013 ${name}`);
     } else if (res.status === 401) {

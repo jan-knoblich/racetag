@@ -1221,12 +1221,18 @@ def get_recent_reads(limit: int = Query(default=10, ge=1, le=50)):
     """Return the most recent unknown-tag reads in reverse-chronological order (newest first).
 
     Query param `limit` is capped at 50 (the ring-buffer size).
+
+    Tags that have been registered SINCE their read are filtered out
+    (2026-07-25): during rapid sequential coupling, the ring buffer still
+    holds the tag that was just registered — offering it again invites the
+    operator to overwrite the previous rider via the upsert.
     """
     with _unknown_tags_lock:
         # deque is ordered oldest→newest; reverse for newest-first
         snapshot = list(recent_unknown_tags)
     snapshot.reverse()
-    sliced = snapshot[:limit]
+    still_unknown = [e for e in snapshot if e["tag_id"] not in rider_store]
+    sliced = still_unknown[:limit]
     items = [RecentReadDTO(**entry) for entry in sliced]
     return RecentReadsListDTO(count=len(items), items=items)
 

@@ -213,3 +213,27 @@ def test_tag_appears_in_standings_only_after_coupling(app_state):
     assert body["standings"][0]["tag_id"] == "LATE-COUPLE"
     assert body["standings"][0]["laps"] == 1
     assert body["standings"][0]["name"] == "Late"
+
+
+def test_recent_reads_hides_tags_registered_since(app_state):
+    """2026-07-25 coupling-flow fix: a tag that was just registered must not
+    be offered again by recent-reads — during rapid sequential coupling the
+    stale ring-buffer entry invited overwriting the previous rider."""
+    client, _app_module = app_state
+    # Unknown tag read → lands in the ring buffer
+    client.post("/events/tag/batch", json={"events": [{
+        "source": "test", "reader_ip": "127.0.0.1",
+        "timestamp": "2026-04-15T12:00:00.000Z",
+        "event_type": "arrive", "tag_id": "COUPLE_ME",
+    }]})
+    reads = client.get("/riders/recent-reads?limit=10").json()
+    assert any(i["tag_id"] == "COUPLE_ME" for i in reads["items"])
+
+    # Operator couples the tag
+    client.post("/riders", json={"tag_id": "COUPLE_ME", "bib": "5", "name": "Neu"})
+
+    # The ring buffer still holds the read, but the endpoint must hide it now
+    reads_after = client.get("/riders/recent-reads?limit=10").json()
+    assert not any(i["tag_id"] == "COUPLE_ME" for i in reads_after["items"]), (
+        "recent-reads offered an already-registered tag"
+    )
