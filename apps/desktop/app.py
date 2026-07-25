@@ -109,6 +109,12 @@ def _spawn_reader_service(backend_url: str) -> "subprocess.Popen | None":
     # MIN_LAP_INTERVAL_S for debugging, but the default keeps the reader from
     # silently suppressing passes the backend never sees.
     min_lap = os.environ.get("MIN_LAP_INTERVAL_S", "0")
+    # Antenna auto-config: the reader-service detects connected antenna ports
+    # (antennas.detected) and applies mux_sequence + power on every connect, so
+    # the operator no longer SSHes in to set them. ANTENNA_PORTS is only the
+    # fallback when detection returns nothing.
+    antenna_power = os.environ.get("ANTENNA_POWER", "300")
+    antenna_ports = os.environ.get("ANTENNA_PORTS", "1 2")
 
     # Resolve the init_commands file to an absolute path so the reader-service
     # finds it regardless of the cwd when the .app was launched. Without this,
@@ -125,6 +131,8 @@ def _spawn_reader_service(backend_url: str) -> "subprocess.Popen | None":
         "--backend-url", backend_url,
         "--min-lap-interval", min_lap,
         "--init_commands_file", init_commands_path,
+        "--antenna-power", antenna_power,
+        "--antenna-ports", antenna_ports,
     ]
 
     env = os.environ.copy()
@@ -132,6 +140,8 @@ def _spawn_reader_service(backend_url: str) -> "subprocess.Popen | None":
     env["BACKEND_URL"] = backend_url
     env["MIN_LAP_INTERVAL_S"] = min_lap
     env["INIT_COMMANDS_FILE"] = init_commands_path
+    env["ANTENNA_POWER"] = antenna_power
+    env["ANTENNA_PORTS"] = antenna_ports
 
     # Add reader-service src to PYTHONPATH so its local imports resolve when
     # invoked as a plain script (source mode only; frozen mode uses bundle).

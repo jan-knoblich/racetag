@@ -20,7 +20,7 @@ logger = get_logger("reader.sirit")
 
 
 class SiritClient:
-    def __init__(self, ip: str, control_port: int, event_port: int, init_commands_path: Optional[str], colorize: bool, raw: bool, interactive: bool, backend_url: Optional[str] = None, backend_token: Optional[str] = None, backend_transport: str = "http", min_lap_interval_s: float = 10.0):
+    def __init__(self, ip: str, control_port: int, event_port: int, init_commands_path: Optional[str], colorize: bool, raw: bool, interactive: bool, backend_url: Optional[str] = None, backend_token: Optional[str] = None, backend_transport: str = "http", min_lap_interval_s: float = 10.0, antenna_power: int = 300, antenna_ports_fallback: str = "1 2"):
         self.ip = ip
         self.control_port = control_port
         self.event_port = event_port
@@ -33,6 +33,10 @@ class SiritClient:
         self.backend_transport = backend_transport
 
         self.min_lap_interval_s = min_lap_interval_s
+        # Auto-antenna config (conducted power in 0.1 dBm units; ports fallback
+        # is used when the reader's antennas.detected returns nothing).
+        self.antenna_power = antenna_power
+        self.antenna_ports_fallback = antenna_ports_fallback
         self.session = SessionState()
         self.tags = TagTracker(min_lap_interval_s=min_lap_interval_s)
         self.control_sock: Optional[socket.socket] = None
@@ -41,6 +45,12 @@ class SiritClient:
         self._stop_event = threading.Event()
         self._stopping = threading.Event()
         self._stopped = threading.Event()
+        # Query/response coordination for CONTROL reads (e.g. antennas.detected).
+        # The recv loop (CONTROL thread) fills _query_result and sets the event
+        # when a query is pending; the caller (EVENT/config thread) waits on it.
+        self._query_pending = threading.Event()
+        self._query_result: Optional[str] = None
+        self._query_done = threading.Event()
         # Backend client (HTTP/WS/MQTT)
         self._backend: Optional[BackendClient] = None
 
@@ -217,6 +227,16 @@ class SiritClient:
         elif name.upper() == "CONTROL":
             tag = "CTRL"
             logger.info("[%s] [%s] %s", name, _color(tag, _C.YELLOW) if self.colorize else tag, msg)
+            # Capture a pending CONTROL query response (e.g. antennas.detected).
+            # Armed by _query_control() immediately before its send, so the very
+            # next "ok ..." line is the reply.
+            if self._query_pending.is_set():
+                stripped = msg.strip()
+                if stripped.lower().startswith("ok") or stripped.lower().startswith("error"):
+                    self._query_result = stripped
+                    self._query_pending.clear()
+                    self._query_done.set()
+                    return
             # Capture reader serial number once when still unknown
             if self.reader_serial is None:
                 m = re.match(r"ok\s+([0-9A-Fa-f]{8,})\b", msg.strip())
@@ -237,6 +257,105 @@ class SiritClient:
                     time.sleep(0.02)
         except OSError as e:
             logger.error("[CONTROL] send error: %s", e)
+
+    def _query_control(self, cmd: str, timeout: float = 2.0) -> Optional[str]:
+        """Send a CONTROL query and return the reader's reply line ("ok ...").
+
+        The CONTROL recv loop captures the next ok/error line into
+        _query_result while _query_pending is armed. Returns None on timeout or
+        when there's no socket. Used for antennas.detected (auto-detection).
+        """
+        if not self.control_sock:
+            return None
+        self._query_result = None
+        self._query_done.clear()
+        self._query_pending.set()
+        self._send_control([cmd])
+        got = self._query_done.wait(timeout=timeout)
+        self._query_pending.clear()
+        if not got:
+            logger.warning("[CONTROL] query timed out after %.1fs: %s", timeout, cmd)
+            return None
+        return self._query_result
+
+    def _configure_antennas(self):
+        """Auto-detect connected antennas and configure the reader (F: fast
+        setup / TODO-antenna-port-config).
+
+        Guest-permitted flow (perform_check() is admin-only, so we use the
+        guest-readable antennas.detected var instead):
+          1. Power on all 4 ports + mux 1..4 + active, so the reader runs its
+             per-port antenna checks and populates antennas.detected.
+          2. Read antennas.detected → "ok 1 2".
+          3. Set the final mux_sequence to the detected ports, power them,
+             power=0 on the rest, re-activate.
+        Falls back to the configured default ports if detection returns nothing
+        or fails, so the reader is always left in a working state.
+        """
+        power = int(self.antenna_power)
+        all_ports = [1, 2, 3, 4]
+        try:
+            # Phase 1: light up every port so detection has something to measure.
+            probe_cmds = [f"antennas.{n}.conducted_power={power}" for n in all_ports]
+            probe_cmds.append("antennas.mux_sequence=" + " ".join(str(n) for n in all_ports))
+            probe_cmds.append("setup.operating_mode=active")
+            self._send_control(probe_cmds)
+            # Give the reader time to cycle the mux and run antenna checks.
+            time.sleep(1.5)
+
+            # Phase 2: ask which ports actually have an antenna.
+            reply = self._query_control("antennas.detected", timeout=2.5)
+            detected = self._parse_detected_ports(reply)
+            if detected:
+                logger.info("[ANTENNA] detected connected ports: %s", detected)
+            else:
+                detected = self._parse_ports_str(self.antenna_ports_fallback)
+                logger.warning(
+                    "[ANTENNA] auto-detection returned nothing (reply=%r); "
+                    "falling back to configured ports: %s", reply, detected,
+                )
+        except Exception as e:
+            detected = self._parse_ports_str(self.antenna_ports_fallback)
+            logger.error(
+                "[ANTENNA] auto-detection failed (%s); falling back to ports %s",
+                e, detected,
+            )
+
+        if not detected:
+            detected = [1]  # last-ditch: at least port 1
+
+        # Phase 3: final config — power the detected ports, disable the rest.
+        final_cmds = []
+        for n in all_ports:
+            final_cmds.append(f"antennas.{n}.conducted_power={power if n in detected else 0}")
+        final_cmds.append("antennas.mux_sequence=" + " ".join(str(n) for n in detected))
+        final_cmds.append("setup.operating_mode=active")
+        self._send_control(final_cmds)
+        logger.info(
+            "[ANTENNA] configured: ports=%s power=%d (0.1 dBm)", detected, power
+        )
+
+    @staticmethod
+    def _parse_ports_str(s: Optional[str]) -> List[int]:
+        """Parse a "1 2" / "1,2" port list into [1, 2] (ports 1..4 only)."""
+        if not s:
+            return []
+        out = []
+        for tok in re.split(r"[\s,]+", s.strip()):
+            if tok.isdigit() and 1 <= int(tok) <= 4 and int(tok) not in out:
+                out.append(int(tok))
+        return out
+
+    @classmethod
+    def _parse_detected_ports(cls, reply: Optional[str]) -> List[int]:
+        """Parse an antennas.detected reply "ok 1 2" into [1, 2]. A bare "ok"
+        (no ports) or an error reply yields []."""
+        if not reply:
+            return []
+        r = reply.strip()
+        if not r.lower().startswith("ok"):
+            return []
+        return cls._parse_ports_str(r[2:])  # drop the leading "ok"
 
     def _maybe_bind_and_config(self):
         if self.session.id is None or self.session.bound:
@@ -289,6 +408,9 @@ class SiritClient:
                 logger.info("[SESSION] configuration applied (%d commands from %s init file)", len(extra_cmds), self.init_commands_path)
             else:
                 logger.info("[SESSION] no extra configuration commands were sent (file empty or missing)")
+            # Auto-detect + configure antennas (mux_sequence + per-port power)
+            # so the operator doesn't have to SSH in and set them by hand.
+            self._configure_antennas()
             self.session.bound = True
         except Exception as e:
             logger.error("[SESSION] configuration failed: %s", e)

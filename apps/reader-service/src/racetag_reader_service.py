@@ -53,6 +53,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--antenna-power",
+        type=int,
+        default=int(os.getenv("ANTENNA_POWER", "300")),
+        help=(
+            "Conducted power for connected antenna ports, in 0.1 dBm units "
+            "(300 = 30 dBm max). Applied automatically on every reader connect. "
+            "(env: ANTENNA_POWER)"
+        ),
+    )
+    parser.add_argument(
+        "--antenna-ports",
+        type=str,
+        default=os.getenv("ANTENNA_PORTS", "1 2"),
+        help=(
+            "Fallback antenna ports (space/comma separated, e.g. '1 2') used "
+            "only when the reader's antennas.detected auto-detection returns "
+            "nothing. (env: ANTENNA_PORTS)"
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         default=_env_flag("RACETAG_DEBUG", False),
@@ -80,6 +100,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         backend_token=args.backend_token,
         backend_transport=args.backend_transport,
         min_lap_interval_s=args.min_lap_interval,
+        antenna_power=args.antenna_power,
+        antenna_ports_fallback=args.antenna_ports,
     )
     
     # Install signal handlers for graceful shutdown in containers (SIGTERM) and terminals (SIGINT)
