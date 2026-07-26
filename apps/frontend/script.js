@@ -44,6 +44,9 @@ const state = {
     || 'http://localhost:8600',
   showTagColumn: true,
   lastStandings: [],
+  // TT view: 'official' (backend order) or 'net' (sorted by net time).
+  // Persisted so a mid-session app restart keeps the TT result view.
+  sortMode: localStorage.getItem('racetag.sortMode') === 'net' ? 'net' : 'official',
   es: null,
   // W-012: registration flow state
   awaitingRead: false,
@@ -549,11 +552,31 @@ function htmlEscape(s) {
     .replace(/'/g, '&#39;');
 }
 
+// TT view: client-side sort by net time (first pass → finish). Purely a
+// DISPLAY order — the backend's official ordering and all data stay
+// untouched. Riders without a net time (still on course / only one pass)
+// keep their official relative order below the ranked block; DNF/DNS/DSQ
+// stay at the bottom.
+function sortStandingsForDisplay(items) {
+  if (state.sortMode !== 'net') return items;
+  const ranked = [];
+  const unranked = [];
+  const statusRows = [];
+  for (const p of items) {
+    if (p.status) statusRows.push(p);
+    else if (typeof p.net_time_ms === 'number') ranked.push(p);
+    else unranked.push(p);
+  }
+  ranked.sort((a, b) => a.net_time_ms - b.net_time_ms);
+  return [...ranked, ...unranked, ...statusRows];
+}
+
 function renderStandings(items) {
   state.lastStandings = items;
   const tbody = $('#standingsTable tbody');
   tbody.innerHTML = '';
-  items.forEach((p, idx) => {
+  const netMode = state.sortMode === 'net';
+  sortStandingsForDisplay(items).forEach((p, idx) => {
     // F7: show the standard cycling representation of a deficit — "+N Rd."
     // (Runden) for lapped riders — instead of a bare smaller lap count or an
     // empty gap cell. Same-lap riders keep the time gap to the leader.
@@ -580,7 +603,11 @@ function renderStandings(items) {
     // and a blank position cell (they have no finishing rank).
     const status = (p.status || '').toLowerCase();
     const isClassified = !status;
-    const posCell = isClassified ? (idx + 1) : '';
+    // In net-sort mode only riders WITH a net time carry a rank (they sort
+    // first, so idx+1 IS the net rank); riders still on course show blank.
+    const posCell = !isClassified
+      ? ''
+      : (netMode && typeof p.net_time_ms !== 'number') ? '' : (idx + 1);
     if (!isClassified) tr.classList.add('status-row');
     const statusBadge = status
       ? ` <span class="status-badge status-${status}">${status.toUpperCase()}</span>`
@@ -1579,6 +1606,27 @@ function init() {
   // Manual lap correction: delegated handler on the standings table body.
   const standingsTable = $('#standingsTable');
   if (standingsTable) standingsTable.addEventListener('click', onStandingsTableClick);
+
+  // TT view: click the Net-time header to toggle net-time sorting.
+  const netHeader = $('#netTimeHeader');
+  function applyNetHeaderState() {
+    if (!netHeader) return;
+    const active = state.sortMode === 'net';
+    netHeader.textContent = active ? 'Net time ▲' : 'Net time';
+    netHeader.classList.toggle('sort-active', active);
+  }
+  if (netHeader) {
+    netHeader.addEventListener('click', () => {
+      state.sortMode = state.sortMode === 'net' ? 'official' : 'net';
+      localStorage.setItem('racetag.sortMode', state.sortMode);
+      applyNetHeaderState();
+      renderStandings(state.lastStandings || []);
+      showToast(state.sortMode === 'net'
+        ? 'Sortiert nach Netto-Zeit (TT-Ergebnis)'
+        : 'Offizielle Reihenfolge (Runden + Zeit)');
+    });
+    applyNetHeaderState();
+  }
 
   // Lap-edit modal
   const lapEditAdd = $('#lapEditAddBtn');
