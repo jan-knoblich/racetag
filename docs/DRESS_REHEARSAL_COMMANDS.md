@@ -14,7 +14,7 @@
 | Was | Wert |
 | --- | --- |
 | FritzBox | **7330**, FritzOS 6.56, IP `192.168.178.1`, SSID am Aufkleber |
-| Reader | Sirit INfinity 510, MAC `00:17:9E:00:37:D2`, **IP `192.168.178.22`** (fixe DHCP-Lease) |
+| Reader | Sirit INfinity 510, MAC `00:17:9E:00:37:D2`, **IP `192.168.178.22`** (fixe DHCP-Lease) — **an Port LAN2 anschließen, NICHT LAN1** (LAN1 = Gigabit, verhandelt mit dem alten Sirit-PHY nicht; 26.07. bestätigt) |
 | Reader-Hardware | F1-Sicherung mit Drahtbrücke überbrückt (echte Sicherung folgt) |
 | Racetag-App | `/Users/jan/Documents/git/racetag/apps/desktop/dist/Racetag.app` |
 | Backup-App | `/Users/jan/Documents/git/racetag/apps/desktop/dist/Racetag.app.prev` (Rollback) |
