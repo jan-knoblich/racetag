@@ -174,3 +174,78 @@ In Settings, use the **Import CSV** button to register many riders at once. The 
 On Windows, `~` resolves to `C:\Users\<username>`.
 
 In the packaged desktop app the working directory for `logs/` is inside the app bundle; to access spool and debug logs, run the reader-service separately from a terminal with the `--debug` flag.
+
+---
+
+## 8. Reader SSH access & useful CLI commands
+
+Most reader configuration (antenna power, region, time) is done directly on the Sirit over SSH or its web portal — not through Racetag.
+
+### Web portal
+
+Browse to `http://<reader-ip>/` (e.g. `http://192.168.178.76/`). Login: user `admin`, password `readeradmin`. If a modern browser forces HTTPS, type `http://` explicitly or use a private window.
+
+### SSH access
+
+The reader's SSH uses legacy algorithms that modern OpenSSH disables by default, so pass them explicitly:
+
+```
+ssh -oKexAlgorithms=+diffie-hellman-group14-sha1 \
+    -oHostKeyAlgorithms=+ssh-rsa \
+    -oPubkeyAcceptedAlgorithms=+ssh-rsa \
+    cliuser@<reader-ip>
+```
+
+User is `cliuser`, **no password** (just press Enter). To avoid typing the flags every time, add this to `~/.ssh/config`:
+
+```
+Host 192.168.178.76 169.254.1.2 *.local
+    KexAlgorithms +diffie-hellman-group14-sha1
+    HostKeyAlgorithms +ssh-rsa
+    PubkeyAcceptedAlgorithms +ssh-rsa
+    User cliuser
+```
+
+Then just `ssh 192.168.178.76` works.
+
+### CLI syntax
+
+- **Read** a setting: type the bare name, e.g. `antennas.1.conducted_power`
+- **Set** a setting: `name=value`, e.g. `setup.operating_mode=active`
+- **Call** a method: include parens, e.g. `tag.db.get()`
+
+### Antenna transmit power
+
+`conducted_power` is in **units of 0.1 dBm** (so `190` = 19.0 dBm). Datasheet max is **+30 dBm** (`300`).
+
+```
+antennas.1.conducted_power            # read current value
+antennas.1.conducted_power=250        # set antenna 1 to 25.0 dBm
+setup.operating_mode=active           # re-activate so the change takes effect
+antennas.1.conducted_power            # confirm it was accepted
+```
+
+Step up gradually (`220` → `250` → `300`) and stop at the lowest power that reads the race tags reliably. **More power = more range = more stray-tag bleed-through** — a tag in range (even one in an adjacent room) can register a phantom row in the standings, so don't over-power. The reader is in region `etsi` / `en302208_dense`, which caps **ERP** (conducted power + antenna gain) — if a high `conducted_power` value is rejected, use the highest value the reader accepts.
+
+### Clock & timezone
+
+Racetag pushes the host UTC clock automatically on connect (and sets the zone first). To set it manually:
+
+```
+info.time_zone=UTC                    # set zone FIRST
+info.time=2026-05-25T12:40:00         # then the time, interpreted as UTC
+info.time                             # read back
+```
+
+### Other handy commands
+
+```
+setup.operating_mode                          # read mode (expect: active)
+setup.operating_mode=active                   # start reading
+tag.db.get()                                   # dump tags the reader currently sees
+tag.db.clear()                                 # clear the reader's tag database
+reader.profile.show_running_config()           # dump the full current config
+reader.reboot()                                # reboot the reader
+```
+
+> Note on persistence: a hard power loss has been observed to reset the reader's network config back to the factory static IP `169.254.1.2`. If you rely on DHCP/`192.168.178.x`, set a fixed DHCP lease in the FritzBox and consider operating on the factory link-local IP instead (see the hardware notes). The exact command to persist running config to the startup profile is reader-firmware-specific; check the `reader.profile.*` namespace.

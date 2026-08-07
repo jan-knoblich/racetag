@@ -139,6 +139,7 @@ See [docs/TESTING.md](docs/TESTING.md). The CI workflow (`.github/workflows/ci.y
 
 - [docs/OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md) — field setup guide for race marshals
 - [docs/TESTING.md](docs/TESTING.md) — local test runs and CI overview
+- [docs/DEV_TOOLS.md](docs/DEV_TOOLS.md) — local dev helpers (e.g. `rtsearch` repo search via Ollama)
 
 ---
 
