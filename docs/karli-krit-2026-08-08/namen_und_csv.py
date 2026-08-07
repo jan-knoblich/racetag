@@ -84,7 +84,8 @@ def main():
                 updated += 1
         riders = req(base, "GET", "/riders")["items"]
 
-        outp = Path.home() / f"Downloads/tags-{slot}.csv"
+        slug = src.name.replace("-anmeldeliste.csv", "")
+        outp = Path.home() / f"Downloads/tags-{slug}.csv"
         rows = sorted(riders, key=lambda r: int(r["bib"]) if r["bib"].isdigit() else 9999)
         with open(outp, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f, delimiter=";", lineterminator="\n")
