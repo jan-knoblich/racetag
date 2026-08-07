@@ -58,9 +58,16 @@ LAUF_PUFFER = 0.20  # Nachmelde-Reserve pro Lauf-Block (aufgerundet)
 # der Reserve, damit die alphabetische Vergabe — und damit die GEDRUCKTEN
 # Blätter — stabil bleibt. Diese Personen werden aus dem alphabetischen Pool
 # herausgefiltert und direkt auf ihre Nummer gesetzt.
+# Format: (Name, Kategorie, feste Nummer, Slot-Präfix)
 LATE_FIXED = [
-    ("Peter Linde", "masters_2", 292),
-    ("Raphael Schmiedel", "lauf_m_5km", 397),
+    ("Peter Linde", "masters_2", 292, "1300"),
+    # Raceday 08.08. früh: Papiere 395-416 + 511-514 nicht gekoppelt →
+    # Umzug auf gekoppelte 10-km-Puffernummern. BLOCK_OVERRIDE in
+    # lauf_auswertung.py wertet 193-196 als 5-km-Läufer!
+    ("Till Winkel", "lauf_m_5km", 193, "0900"),
+    ("Christian Zoch", "lauf_m_5km", 194, "0900"),
+    ("Raphael Schmiedel", "lauf_m_5km", 195, "0900"),
+    ("Lenn Wilke", "lauf_m_u18_5km", 196, "0900"),
 ]
 
 
@@ -101,7 +108,7 @@ def main() -> None:
         with open(src, encoding="utf-8-sig") as f:
             reader = csv.reader(f, delimiter=";")
             next(reader, None)
-            late_keys = {(n, c) for n, c, _ in LATE_FIXED}
+            late_keys = {(n, c) for n, c, _, _ in LATE_FIXED}
             for row in reader:
                 if len(row) < 4 or not row[2].strip():
                     continue
@@ -157,20 +164,21 @@ def main() -> None:
                 assigned.append({"bib": num, "name": "",
                                  "kategorie": "nachmelde-puffer", "team": ""})
 
+        slot = src.stem
         # Feste Nachzügler-Nummern in die passende Reserve-Zeile eintragen
-        for name, cat, num in LATE_FIXED:
-            circle = CIRCLES.get(cat)
-            if circle is None or not (circle.start <= num < circle.stop):
+        # (Slot-Präfix routet den Eintrag; die Nummer darf auch außerhalb des
+        # Kategorie-Zirkels liegen — z. B. 5-km-Läufer auf 10-km-Puffer)
+        for name, cat, num, slotpfx in LATE_FIXED:
+            if not slot.startswith(slotpfx):
                 continue
             hit = next((e for e in assigned if e["bib"] == num), None)
             if hit is None:
-                continue  # Nummer gehört nicht zu diesem Slot
+                flagged.append(f"LATE_FIXED {num} ({name}): Nummer nicht im Slot!")
+                continue
             if hit["name"]:
                 flagged.append(f"LATE_FIXED {num} kollidiert mit {hit['name']}!")
                 continue
             hit.update({"name": name, "kategorie": cat})
-
-        slot = src.stem
         # Anmeldeliste: alphabetisch, fürs schnelle Finden am Tisch
         with open(outdir / f"{slot}-anmeldeliste.csv", "w",
                   encoding="utf-8-sig", newline="") as f:

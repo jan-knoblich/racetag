@@ -26,6 +26,13 @@ BLOCKS = [
 ]
 MIN_GAP_S = 15.0  # wie das Backend-Cooldown: Überfahrten dichter dran = 1 Pass
 
+# Raceday 08.08.: Papiere 395-416/511-514 fehlten → vier 5-km-Läufer laufen
+# mit 10-km-Puffernummern. Diese Nummern werden im 5-km-Block gewertet!
+# 193 Till Winkel · 194 Christian Zoch · 195 Raphael Schmiedel ·
+# 196 Lenn Wilke (U18!)
+BLOCK_OVERRIDE = {193: "5km Erwachsene", 194: "5km Erwachsene",
+                  195: "5km Erwachsene", 196: "5km Erwachsene"}
+
 
 def parse_ts(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -88,7 +95,11 @@ def main() -> None:
                 bib = int(rider["bib"])
             except (TypeError, ValueError):
                 continue
-            if not (lo <= bib <= hi):
+            override = BLOCK_OVERRIDE.get(bib)
+            if override is not None:
+                if override != label:
+                    continue  # zählt in seinem Override-Block, nicht hier
+            elif not (lo <= bib <= hi):
                 continue
             n = target or len(lst)
             entry = {
