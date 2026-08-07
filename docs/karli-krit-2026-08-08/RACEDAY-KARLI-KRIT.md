@@ -43,9 +43,15 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. In der App sind **12 Rennen*
 | ~5 min vorher | Race im Dropdown wählen → Format checken: `total_laps` im **Header** (NIE Zahnrad — M3/M4-Bug!), Zeit-Rennen: `final_laps` nach Ansage |
 | Startschuss | **„Start race"** |
 | Während | Namen eintragen (unten); ⚠-Marker = evtl. verpasste Lesung → Reparatur-Kasten |
-| Leader im Ziel | Abwink-Modell läuft automatisch (Lauf: per-rider, 10-km-Finisher werden „finished", 5-km-Läufer enden bei 5 Runden — Auswertung über Nummernblöcke) |
+| Leader im Ziel | Abwink-Modell läuft automatisch (Lauf: siehe eigener Kasten unten) |
 | Danach | **„End race"** → **„Export results"** → CSV sichern. Versehentlich beendet: „Reopen race" |
 | Sofort danach | **Nächstes Slot-Rennen auswählen** (nicht starten!) — siehe unten |
+
+### Lauf-Sonderfall: 5 km + 10 km in einem Rennen
+
+Das Rennen läuft mit **total_laps = 10** — **NIEMALS während oder nach dem Lauf auf 5 zurückdrehen!** (Offener M3/M4-Bug: `finished` wird nicht neu berechnet, und 10-km-Läufer würden bei ihrer nächsten Überfahrt fälschlich bei 5 Runden eingefroren.) Die 5-km-Läufer brauchen auch kein Einfrieren: Jede Überfahrt liegt mit Zeitstempel im Audit-Trail.
+
+**Auswertung nach dem Lauf (End race, dann):** `python3 docs/karli-krit-2026-08-08/lauf_auswertung.py` — liest die DB read-only und nimmt pro Läufer exakt die N-te Überfahrt seines Blocks (100er → 10., 300er → 5.; Blöcke oben im Skript anpassen, sobald Erik sie bestätigt). Immun gegen Ziel-Schlenderer (Extra-Überfahrten werden ignoriert und ausgewiesen); Läufer mit zu wenigen Lesungen landen als „unvollständig" unter der Wertung statt mit falscher Zeit drin. Ausgabe: `ergebnis-lauf-<block>.csv` sortiert nach Zeit. Die Live-Standings während des Laufs zeigen für 5-km-Läufer kein „finished" — egal, die Wertung kommt aus dem Skript.
 
 **Namen eintragen — ohne Reader, jederzeit:** Button **„Fahrer"** (oder Doppelklick auf Standings-Zeile) → Nummer suchen → Name tippen → Enter. **⚠ Haken „In allen Rennen übernehmen" AUS lassen** (ist Standard): dieselbe Plakette trägt in verschiedenen Rennen verschiedene PERSONEN — Übernehmen würde Namen in frühere/spätere Rennen schreiben. Nur setzen, wenn jemand nachweislich mit derselben Plakette mehrfach startet.
 
