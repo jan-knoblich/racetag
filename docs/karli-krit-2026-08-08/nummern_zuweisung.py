@@ -54,6 +54,15 @@ CIRCLES = {
 
 LAUF_PUFFER = 0.20  # Nachmelde-Reserve pro Lauf-Block (aufgerundet)
 
+# Nach Druckschluss (07.08. ~22:00) eingegangene Meldungen: FESTE Nummern aus
+# der Reserve, damit die alphabetische Vergabe — und damit die GEDRUCKTEN
+# Blätter — stabil bleibt. Diese Personen werden aus dem alphabetischen Pool
+# herausgefiltert und direkt auf ihre Nummer gesetzt.
+LATE_FIXED = [
+    ("Peter Linde", "masters_2", 292),
+    ("Raphael Schmiedel", "lauf_m_5km", 397),
+]
+
 
 def lastname_key(name: str) -> str:
     parts = name.split()
@@ -92,11 +101,15 @@ def main() -> None:
         with open(src, encoding="utf-8-sig") as f:
             reader = csv.reader(f, delimiter=";")
             next(reader, None)
+            late_keys = {(n, c) for n, c, _ in LATE_FIXED}
             for row in reader:
                 if len(row) < 4 or not row[2].strip():
                     continue
-                by_cat.setdefault(row[3].strip(), []).append(
-                    {"name": row[2].strip(), "team": row[4].strip() if len(row) > 4 else ""})
+                name, cat = row[2].strip(), row[3].strip()
+                if (name, cat) in late_keys:
+                    continue  # bekommt unten seine feste Reserve-Nummer
+                by_cat.setdefault(cat, []).append(
+                    {"name": name, "team": row[4].strip() if len(row) > 4 else ""})
 
         assigned: list[dict] = []
         # Lauf: m+w teilen sich einen Block → gemeinsam nummerieren.
@@ -143,6 +156,19 @@ def main() -> None:
             for num in rest:
                 assigned.append({"bib": num, "name": "",
                                  "kategorie": "nachmelde-puffer", "team": ""})
+
+        # Feste Nachzügler-Nummern in die passende Reserve-Zeile eintragen
+        for name, cat, num in LATE_FIXED:
+            circle = CIRCLES.get(cat)
+            if circle is None or not (circle.start <= num < circle.stop):
+                continue
+            hit = next((e for e in assigned if e["bib"] == num), None)
+            if hit is None:
+                continue  # Nummer gehört nicht zu diesem Slot
+            if hit["name"]:
+                flagged.append(f"LATE_FIXED {num} kollidiert mit {hit['name']}!")
+                continue
+            hit.update({"name": name, "kategorie": cat})
 
         slot = src.stem
         # Anmeldeliste: alphabetisch, fürs schnelle Finden am Tisch
