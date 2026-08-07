@@ -25,9 +25,9 @@ HERE = Path(__file__).parent
 CIRCLES = {
     # 07.08. spät gekürzt (Tag-Budget): Zirkel ~= Meldungen + realistische
     # Nachmelde-Reserve statt voller Excel-Breite.
-    "u15m": range(81, 91),        # 6 gemeldet, war 81-92
+    "u15m": range(81, 93),        # Original-Zirkel — Plaketten 91/92 existieren
     "u15w": None,                 # kein Zirkel im Excel
-    "u17w": range(301, 305),      # 1 gemeldet, war 301-306
+    "u17w": range(301, 307),      # Original-Zirkel — 305/306 existieren
     "u17m": range(181, 194),      # Erik 07.08.: 191-193 dazu — VOLL (13/13)
     "masters_4": range(316, 327),  # VOLL (11/11)
     "masters_2": range(281, 295),
@@ -160,9 +160,12 @@ def main() -> None:
                         f"({len(rest)} von {n_buf})")
             else:
                 rest = pool[len(everyone):]
+            # Ein-Kategorie-Zirkel: Reserve gleich der Kategorie zuordnen
+            # (Splitter kann Nachmelder dann automatisch einsortieren)
+            rest_kat = groups[0][0] if len(groups) == 1 else "nachmelde-puffer"
             for num in rest:
                 assigned.append({"bib": num, "name": "",
-                                 "kategorie": "nachmelde-puffer", "team": ""})
+                                 "kategorie": rest_kat, "team": ""})
 
         slot = src.stem
         # Feste Nachzügler-Nummern in die passende Reserve-Zeile eintragen
