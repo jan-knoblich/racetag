@@ -90,6 +90,16 @@
           <div id="coupleQueueNote" class="couple-queue-note" hidden></div>
           <button id="coupleRecoupleBtn" hidden>&#196;ndern (neu koppeln)</button>
         </div>
+        <!-- W-077: auto-assign loop — the app shows the next free number from
+             the race's Nummernzirkel; waving an unknown tag couples it
+             automatically and advances. Built for bulk labelling + tag
+             recycling between races. -->
+        <div class="couple-auto">
+          <input id="coupleAutoRanges" type="text"
+            placeholder="Nummernzirkel, z.B. 1-75 oder 101-175,181-190" />
+          <button id="coupleAutoStartBtn" class="btn-primary">Auto-Zuweisung starten</button>
+          <button id="coupleAutoStopBtn" hidden>Auto stoppen</button>
+        </div>
         <div class="couple-form">
           <div class="modal-field">
             <label for="coupleBib">Startnummer</label>
@@ -185,9 +195,13 @@
           <label for="riderEditName">Name</label>
           <input id="riderEditName" type="text" />
         </div>
+        <!-- Default OFF: with per-race Nummernzirkel + tag recycling the same
+             tag carries DIFFERENT numbers in different races — propagating
+             would corrupt earlier races' results. Tick only for a rider who
+             genuinely keeps tag+number across races. -->
         <div class="modal-checkbox-row">
-          <input id="riderEditAllRaces" type="checkbox" checked />
-          <label for="riderEditAllRaces">In allen Rennen übernehmen (Mehrfachstarter)</label>
+          <input id="riderEditAllRaces" type="checkbox" />
+          <label for="riderEditAllRaces">In allen Rennen übernehmen (nur wenn Tag+Nummer den ganzen Tag behalten!)</label>
         </div>
         <div id="riderEditError" class="modal-error" hidden></div>
         <div class="modal-actions">

@@ -373,6 +373,8 @@ const couple = {
   saving: false,
   muted: localStorage.getItem('racetag.coupleBeep') === 'off',
   audioCtx: null,
+  // W-077 auto-assign loop state
+  auto: { running: false, queue: [], current: null, done: 0, total: 0 },
 };
 
 const COUPLE_QUEUE_CAP = 3;
@@ -519,6 +521,10 @@ function coupleShowInfo(data) {
 
 function onCoupleTagSeen(data) {
   if (!couple.active) return;
+  if (couple.auto.running) {
+    onCoupleAutoTagSeen(data);
+    return;
+  }
   const tagId = data.tag_id;
 
   if (couple.phase === 'armed') {
@@ -627,6 +633,11 @@ async function coupleSave() {
 }
 
 function coupleSkip() {
+  if (couple.auto.running) {
+    // Auto mode: skip the displayed number (damaged plate, no taker, …)
+    coupleAutoAdvance();
+    return;
+  }
   if (couple.phase !== 'armed') return;
   couplePopQueue();
 }
@@ -644,6 +655,10 @@ function coupleModeOn() {
   }
   if (couple.audioCtx && couple.audioCtx.state === 'suspended') couple.audioCtx.resume();
   $('#coupleBeepToggle').checked = !couple.muted;
+  const rangesInput = $('#coupleAutoRanges');
+  if (rangesInput && !rangesInput.value) {
+    rangesInput.value = localStorage.getItem('racetag.autoRanges') || '';
+  }
   $('#couplePanel').hidden = false;
   $('#coupleModeBtn').classList.add('couple-mode-active');
   // Kill a pending one-shot arm so the register modal can't pop over the panel.
@@ -656,6 +671,7 @@ function coupleModeOff() {
   if (couple.phase === 'armed' && $('#coupleBib').value.trim()) {
     if (!window.confirm('Ungespeicherte Kopplung verwerfen?')) return;
   }
+  if (couple.auto.running) coupleAutoStop();
   couple.active = false;
   couple.queue = [];
   coupleToIdle();
@@ -666,6 +682,7 @@ function coupleModeOff() {
 
 function onCoupleRaceChanged() {
   if (!couple.active) return;
+  if (couple.auto.running) coupleAutoStop('Auto-Zuweisung gestoppt — Rennen gewechselt');
   couple.queue = [];
   const divider = document.createElement('li');
   divider.className = 'couple-log-divider';
@@ -675,6 +692,134 @@ function onCoupleRaceChanged() {
   coupleToIdle();
   refreshCoupleRiders();
   showToast('Koppel-Modus: Rennen gewechselt');
+}
+
+// ---- W-077: auto-assign loop ----------------------------------------------
+// The app shows the next free number from the race's Nummernzirkel; waving an
+// UNKNOWN tag couples it to that number automatically and advances. Registered
+// tags never advance the loop — and since riders are per-race, a tag recycled
+// from an earlier race counts as unknown in THIS race, so recycling needs no
+// special handling at all.
+
+function parseNumberRanges(text) {
+  const out = [];
+  const seen = new Set();
+  for (const part of String(text).split(',')) {
+    const p = part.trim();
+    if (!p) continue;
+    const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      const a = parseInt(m[1], 10);
+      const b = parseInt(m[2], 10);
+      if (b < a || b - a > 2000) return null;
+      for (let n = a; n <= b; n += 1) {
+        if (!seen.has(n)) { seen.add(n); out.push(n); }
+      }
+    } else if (/^\d+$/.test(p)) {
+      const n = parseInt(p, 10);
+      if (!seen.has(n)) { seen.add(n); out.push(n); }
+    } else {
+      return null;
+    }
+  }
+  return out;
+}
+
+function coupleAutoRender() {
+  const a = couple.auto;
+  coupleSetCard('new', 'AUTO — TAG SCHWENKEN', `Nr. ${a.current}`, null);
+  $('#coupleCardTag').textContent = `${a.done} vergeben · noch ${a.queue.length + 1} Nummern`;
+}
+
+function coupleAutoStart() {
+  const raw = $('#coupleAutoRanges').value;
+  const nums = parseNumberRanges(raw);
+  if (!nums || !nums.length) {
+    showToast('Zirkel unlesbar — Format: 1-75 oder 101-175,181-190');
+    return;
+  }
+  localStorage.setItem('racetag.autoRanges', raw);
+  const free = nums.filter((n) => !couple.ridersByBib.has(String(n)));
+  if (!free.length) {
+    showToast('Alle Nummern dieses Zirkels sind schon vergeben');
+    return;
+  }
+  couple.auto.running = true;
+  couple.auto.queue = free;
+  couple.auto.total = free.length;
+  couple.auto.done = 0;
+  couple.auto.current = couple.auto.queue.shift();
+  couple.phase = 'auto';
+  couple.armedTag = null;
+  couple.infoTag = null;
+  if (couple.infoTimer) {
+    clearTimeout(couple.infoTimer);
+    couple.infoTimer = null;
+  }
+  $('#coupleRecoupleBtn').hidden = true;
+  coupleClearWarn();
+  coupleSetInputsEnabled(false);
+  $('#coupleAutoStartBtn').hidden = true;
+  $('#coupleAutoStopBtn').hidden = false;
+  coupleAutoRender();
+  showToast(`Auto-Zuweisung: ${free.length} freie Nummern`);
+}
+
+function coupleAutoStop(message) {
+  couple.auto.running = false;
+  couple.auto.queue = [];
+  couple.auto.current = null;
+  $('#coupleAutoStartBtn').hidden = false;
+  $('#coupleAutoStopBtn').hidden = true;
+  if (message) showToast(message);
+  if (couple.active) coupleToIdle();
+}
+
+function coupleAutoAdvance() {
+  if (couple.auto.queue.length) {
+    couple.auto.current = couple.auto.queue.shift();
+    coupleAutoRender();
+  } else {
+    coupleAutoStop(`Zirkel komplett: ${couple.auto.done} Nummern vergeben`);
+  }
+}
+
+let _coupleAutoSaving = false;
+async function onCoupleAutoTagSeen(data) {
+  if (data.registered) {
+    showToast(`Tag ist schon Nr. ${data.bib}${data.name ? ` – ${data.name}` : ''} — anderen Tag nehmen`);
+    coupleBeep('known');
+    return;
+  }
+  if (_coupleAutoSaving) return; // one tag at a time; drop overlapping reads
+  _coupleAutoSaving = true;
+  const bib = String(couple.auto.current);
+  const tagId = data.tag_id;
+  try {
+    const res = await fetch(`${state.backend}/riders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify({ tag_id: tagId, bib, name: '' }),
+    });
+    if (res.ok) {
+      coupleLogEntry(bib, '', tagId);
+      couple.sessionCount += 1;
+      couple.auto.done += 1;
+      $('#coupleCounter').textContent = `${couple.sessionCount} gekoppelt`;
+      const rider = { tag_id: tagId, bib, name: '' };
+      couple.ridersByTag.set(tagId, rider);
+      couple.ridersByBib.set(bib, rider);
+      refreshCoupleRiders();
+      coupleBeep('known'); // audible "saved — next number is up"
+      coupleAutoAdvance();
+    } else {
+      showToast(`Fehler ${res.status} beim Koppeln von Nr. ${bib}`);
+    }
+  } catch (err) {
+    showToast(`Netzwerkfehler: ${err.message}`);
+  } finally {
+    _coupleAutoSaving = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2171,6 +2316,18 @@ function init() {
       coupleClearWarn(); // typing invalidates a pending duplicate-bib confirm
       $('#coupleSaveBtn').disabled = couple.phase !== 'armed' || !coupleBibInput.value.trim();
     });
+  }
+
+  // W-077: auto-assign loop wiring
+  const autoStartBtn = $('#coupleAutoStartBtn');
+  if (autoStartBtn) autoStartBtn.addEventListener('click', coupleAutoStart);
+  const autoStopBtn = $('#coupleAutoStopBtn');
+  if (autoStopBtn) {
+    autoStopBtn.addEventListener('click', () => coupleAutoStop('Auto-Zuweisung gestoppt'));
+  }
+  const autoRanges = $('#coupleAutoRanges');
+  if (autoRanges) {
+    autoRanges.addEventListener('keydown', (e) => { if (e.key === 'Enter') coupleAutoStart(); });
   }
 
   // W-076: rider editor wiring

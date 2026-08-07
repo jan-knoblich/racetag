@@ -488,6 +488,22 @@ tbody tr:hover { background: #0b1220; }
   font-size: 13px;
   font-weight: 600;
 }
+.couple-auto {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.couple-auto input {
+  flex: 1;
+  min-width: 220px;
+  background: #0b1220;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+}
 .couple-form {
   max-width: 420px;
   display: flex;

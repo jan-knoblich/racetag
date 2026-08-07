@@ -18,6 +18,11 @@ import urllib.request
 
 RACES = [
     # (name, total_laps, duration_s or None, scheduled_at UTC)
+    # Lauf: 5-km- und 10-km-Läufer gemischt (Nummernblöcke trennen die
+    # Wertung); per_rider + 10 Runden — 10-km-Finisher werden 'finished',
+    # 5-km-Läufer bleiben bei 5 Runden stehen und werden über den
+    # Nummernblock ausgewertet.
+    ("09:00 Lauf 5/10km", 10, None, "2026-08-08T07:00:00.000Z", "per_rider"),
     ("10:30 Kids Stadtmeisterschaft", 5, None, "2026-08-08T08:30:00.000Z"),
     ("11:20 U15+U17w (20 Rd)", 20, None, "2026-08-08T09:20:00.000Z"),
     ("12:10 U17m+Masters4 (32 Rd)", 32, None, "2026-08-08T10:10:00.000Z"),
@@ -77,7 +82,9 @@ def main():
     print(f"Backend: {base}")
 
     existing = {r["name"] for r in _get(base, "/races")["items"]}
-    for name, laps, duration, sched in RACES:
+    for entry in RACES:
+        name, laps, duration, sched = entry[:4]
+        finish_mode = entry[4] if len(entry) > 4 else "leader"
         if name in existing:
             print(f"skip   {name} (existiert)")
             continue
@@ -86,6 +93,7 @@ def main():
             "total_laps": laps,
             "scheduled_at": sched,
             "snapshot_interval_s": SNAPSHOT_INTERVAL_S,
+            "finish_mode": finish_mode,
         })
         if duration:
             _send(base, "PATCH", f"/races/{race['id']}", {
