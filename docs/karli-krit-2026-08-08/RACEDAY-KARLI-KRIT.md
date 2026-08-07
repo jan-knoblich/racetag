@@ -15,6 +15,10 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. **Nummern-Modell: eine Numme
 5. **Master in ALLE 11 Rennen importieren:** pro Rennen: Race wählen → Import CSV → tagesmaster.csv (≈10 s/Rennen). Unbenutzte Tags bleiben unsichtbar — Teilnehmer erscheinen erst nach dem ersten Read.
 6. Backup: `cp -r ~/.racetag/data ~/Desktop/karli-vorabend.bak`
 
+## Morgen früh (5 min)
+
+- Frische Meldelisten ziehen (Nachmeldungen über Nacht): `python3 docs/karli-krit-2026-08-08/fetch_meldelisten.py` — überschreibt `rennen/*.csv`.
+
 ## Morgen pro Slot (Friction-Minimum)
 
 | Schritt | Aktion |
