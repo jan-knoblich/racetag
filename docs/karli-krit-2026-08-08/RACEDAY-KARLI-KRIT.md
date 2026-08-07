@@ -20,8 +20,9 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. In der App sind **12 Rennen*
 | 17:15 Jedermann mittel | `101-175` (volle Breite) |
 | 18:15 Jedermann schwer | `201-240` (gekürzt) |
 
-(Zirkel am 07.08. spät aufs Tag-Budget gekürzt: Zirkel ≈ Meldungen + realistische Reserve. Achtung: der leicht-Zirkel liegt damit UNTER dem 75er-Rennlimit — wenn der Andrang das sprengt, Reserve-Bereiche 451-500/600+ nachziehen.)
 | Kids | kein Zirkel — vor Ort klären |
+
+(Zirkel am 07.08. spät aufs Tag-Budget gekürzt: Zirkel ≈ Meldungen + realistische Reserve. Achtung: der leicht-Zirkel liegt damit UNTER dem 75er-Rennlimit — wenn der Andrang das sprengt, Reserve-Bereiche 451-500/600+ nachziehen.)
 
 Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280, 295-300, 400, 451-500, 600+`.
 **Alle 412 Meldungen sind nummeriert** (`zuweisung/`-Listen, Stand 07.08. abends) — beim Kleben daran denken: auch die Plaketten **181–193, 401–410, 411–450** brauchen Tags!
