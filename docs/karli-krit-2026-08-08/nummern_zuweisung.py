@@ -23,24 +23,26 @@ HERE = Path(__file__).parent
 # Kategorie → Nummernzirkel (aus "Nummernzirkel Karli Krit.xlsx" + Erik-Ansage
 # für den Lauf). None = kein Zirkel bekannt → Kategorie wird nur geflaggt.
 CIRCLES = {
-    "u15m": range(81, 93),
-    "u15w": None,               # kein Zirkel im Excel
-    "u17w": range(301, 307),
-    "u17m": range(181, 194),   # Erik 07.08.: 191-193 dazu
-    "masters_4": range(316, 327),
+    # 07.08. spät gekürzt (Tag-Budget): Zirkel ~= Meldungen + realistische
+    # Nachmelde-Reserve statt voller Excel-Breite.
+    "u15m": range(81, 91),        # 6 gemeldet, war 81-92
+    "u15w": None,                 # kein Zirkel im Excel
+    "u17w": range(301, 305),      # 1 gemeldet, war 301-306
+    "u17m": range(181, 194),      # Erik 07.08.: 191-193 dazu — VOLL (13/13)
+    "masters_4": range(316, 327),  # VOLL (11/11)
     "masters_2": range(281, 295),
     "masters_3": range(331, 344),
     "junioren": range(401, 411),  # Erik 07.08.
-    "jedermann_leicht": range(1, 76),
-    "frauen_elite": range(351, 370),
+    "jedermann_leicht": range(1, 51),    # 33 gemeldet; gekürzt von 1-75
+    "frauen_elite": range(351, 367),     # 13 gemeldet, war -369
     "jedefrau": range(371, 382),
-    "juniorinnen": range(391, 400),
-    "jedermann_mittel": range(101, 176),
-    "jedermann_schwer": range(201, 276),
-    # Eigene Nummern (Vorschlag aus den tagesweit freien Bereichen 411-500;
-    # FG behält die Plakette über Quali + Finals):
-    "fixed_gear_men": range(411, 441),
-    "flinta": range(441, 451),
+    "juniorinnen": range(391, 396),      # 2 gemeldet, war -399
+    "jedermann_mittel": range(101, 166),  # 50 gemeldet; gekürzt von -175
+    "jedermann_schwer": range(201, 241),  # 18 gemeldet; gekürzt von -275
+    # Eigene Nummern (aus den tagesweit freien Bereichen; FG behält die
+    # Plakette über Quali + Finals):
+    "fixed_gear_men": range(411, 437),   # 22 gemeldet, war -440
+    "flinta": range(441, 447),           # 4 gemeldet, war -450
     # Lauf: Blöcke lt. Erik (m+w teilen sich den Block). Verbreitert über die
     # reinen 100er hinaus, damit +20 % Nachmelde-Puffer reinpassen — die
     # Blöcke bleiben untereinander disjunkt, Radnummern dürfen überlappen.

@@ -11,14 +11,16 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. In der App sind **12 Rennen*
 | Rennen | Zirkel |
 |---|---|
 | 09:00 Lauf (EIN Rennen, 5+10 km gleichzeitig) | 10 km `101-220` · 5 km `301-420` · U18 `501-530` — inkl. **+20 % Nachmelde-Puffer** (10 km: 193–211, 5 km: 397–416, U18: 512–514 sind Puffer-Blätter mit leerem Namen); Blöcke trennen die Wertung |
-| 11:20 R1 | U15m `81-92` · U17w `301-306` |
-| 12:10 R2 | U17m `181-193` (Erik: 191–193 dazu) · Masters 4 `316-326` |
-| 13:00 R3 | Masters 2 `281-294` · Masters 3 `331-343` · Junioren `401-410` (Erik) |
-| 15:00 Jedermann leicht | `1-75` |
-| 16:00/19:30/20:00 Fixed Gear | `411-440` · FLINTA `441-450` (Vorschlag aus den freien Bereichen — FG behält die Plakette Quali→Finals) |
-| 16:15 Frauen | Lizenz `351-369` · Jedefrau `371-381` · Juniorinnen `391-399` |
-| 17:15 Jedermann mittel | `101-175` |
-| 18:15 Jedermann schwer | `201-275` |
+| 11:20 R1 | U15m `81-90` · U17w `301-304` |
+| 12:10 R2 | U17m `181-193` · Masters 4 `316-326` — beide VOLL, keine Reserve |
+| 13:00 R3 | Masters 2 `281-294` · Masters 3 `331-343` · Junioren `401-410` |
+| 15:00 Jedermann leicht | `1-50` (gekürzt) |
+| 16:00/19:30/20:00 Fixed Gear | `411-436` · FLINTA `441-446` (FG behält die Plakette Quali→Finals) |
+| 16:15 Frauen | Lizenz `351-366` · Jedefrau `371-381` · Juniorinnen `391-395` |
+| 17:15 Jedermann mittel | `101-165` (gekürzt) |
+| 18:15 Jedermann schwer | `201-240` (gekürzt) |
+
+(Zirkel am 07.08. spät aufs Tag-Budget gekürzt: Zirkel ≈ Meldungen + realistische Reserve. Achtung: leicht/mittel-Zirkel liegen damit UNTER dem 75er-Rennlimit — wenn der Andrang das sprengt, Reserve-Bereiche 451-500/600+ nachziehen.)
 | Kids | kein Zirkel — vor Ort klären |
 
 Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280, 295-300, 400, 451-500, 600+`.
@@ -26,11 +28,11 @@ Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280
 
 ## Drucken: `startnummern-karli-krit.pdf` (in Downloads)
 
-**624 A5-Querseiten** im A5.docx-Format (Banner + Riesennummer), sortiert nach Slot → Nummer (Stapel kommen rennfertig aus dem Drucker):
+**535 A5-Querseiten** im A5.docx-Format (Banner + Riesennummer), sortiert nach Slot → Nummer (Stapel kommen rennfertig aus dem Drucker):
 - Lauf: 199 Gemeldete + 42 Puffer (+20 % je Block) = 241 Blätter
-- Rad: **komplette Zirkel** (Eriks Zirkel enthalten den Nachmelde-Puffer schon — Jedermann-Limit 75 = Zirkelbreite) = 383 Blätter; Reserve-Nummern stehen mit leerem Namen am Ende der Anmeldelisten
-- **184 Nummern sind absichtlich doppelt** (Lauf-Papier UND Rad-Plakette) — zwei physische Nummern, zwei Tags!
-- ⚠ Das heißt auch: **~624 Tags** werden heute Abend gebraucht. U17m (181–193) und Masters 4 (316–326) sind bereits voll gemeldet — dort gibt es KEINE Nachmelde-Reserve.
+- Rad: komplette (gekürzte) Zirkel = 294 Blätter; Reserve-Nummern stehen mit leerem Namen am Ende der Anmeldelisten
+- **165 Nummern sind absichtlich doppelt** (Lauf-Papier UND Rad-Plakette) — zwei physische Nummern, zwei Tags!
+- ⚠ **~535 Tags** werden heute Abend gebraucht. U17m + Masters 4 sind voll gemeldet — dort KEINE Reserve.
 
 Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
 
