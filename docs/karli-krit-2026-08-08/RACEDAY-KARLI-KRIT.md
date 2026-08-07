@@ -31,9 +31,9 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. **Nummern-Modell: eine Numme
 | Leader im Ziel | Abwink-Modell läuft automatisch (jeder wird bei seiner nächsten Durchfahrt gewertet) |
 | Danach | **„End race"** → **„Export results"** → CSV sichern. Versehentliches End: „Reopen race" |
 
-**Namen nachziehen (optional, zwischen den Slots):** `tagesmaster.csv` in Excel offen halten; Namen neben die vergebene Nummer eintragen (aus Eriks Liste); vor dem Ergebnis-Export einmal ins aktuelle Rennen re-importieren → Namen erscheinen rückwirkend in Standings + Export. Eine Datei für den ganzen Tag (Nummern sind personenfest!).
+**Namen eintragen — direkt in der App, ohne Reader:** Button **„Fahrer"** (oder Doppelklick auf eine Standings-Zeile) → nach Nummer suchen → Name tippen → Enter. Haken **„In allen Rennen übernehmen"** (Standard: an) schreibt den Namen in jedes Rennen, in dem der Tag registriert ist — ein Eintrag deckt also Mehrfachstarter für den ganzen Tag ab (Toast zeigt „(N Rennen)"). Kein Excel nötig; die tagesmaster.csv bleibt als Backup-Weg (Namen eintragen → Import CSV).
 
-**Nachmeldung vor Ort — braucht KEINEN Reader-Zugriff:** Weil die tagesmaster.csv in alle Rennen importiert ist, ist jeder gestern gekoppelte Tag in jedem Rennen schon startklar. Nachmeldung = freien Tag + Nummer ausgeben, fertig — gewertet wird ab der ersten Zieldurchfahrt. Name optional: in tagesmaster.csv bei der Nummer eintragen und ins aktuelle Rennen re-importieren (Import CSV — reine Dateioperation, Reader egal). Nur falls ein Rennen den Master NICHT importiert hat: Master jetzt importieren (10 s), ebenfalls ohne Reader.
+**Nachmeldung vor Ort — braucht KEINEN Reader-Zugriff:** Weil die tagesmaster.csv in alle Rennen importiert ist, ist jeder gestern gekoppelte Tag in jedem Rennen schon startklar. Nachmeldung = freien Tag + Nummer ausgeben, Name über den „Fahrer"-Button eintragen (Haken an) — fertig, gilt sofort für alle Rennen des Tages, gewertet wird ab der ersten Zieldurchfahrt. Nur falls ein Rennen den Master NICHT importiert hat: Master jetzt importieren (10 s), ebenfalls ohne Reader.
 
 ## Reparatur-Kasten (Kurzfassung — Details im TT-Runbook `docs/issues/RECHECK-2026-07-25.md` §5)
 

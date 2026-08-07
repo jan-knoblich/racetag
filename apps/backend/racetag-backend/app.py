@@ -1306,7 +1306,17 @@ def post_rider(body: RiderCreateDTO):
         created_at=created_at,
     )
     rider_store.upsert(rider)
-    return _rider_to_dto(rider)
+    dto = _rider_to_dto(rider)
+    if body.all_races:
+        # Day model (Karli Krit): one tag + one number per PERSON. Propagate
+        # bib/name to every race that has this tag registered — the active
+        # race's row was just written above and matches the same values, so
+        # the blanket UPDATE is idempotent for it. Other races pick the row
+        # up from the DB when they get activated.
+        dto.races_updated = storage.update_rider_bib_name_all_races(
+            body.tag_id, body.bib, body.name,
+        )
+    return dto
 
 
 @app.get("/riders/recent-reads", response_model=RecentReadsListDTO)

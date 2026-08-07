@@ -512,6 +512,37 @@ tbody tr:hover { background: #0b1220; }
   color: var(--accent);
 }
 
+/* ---- W-076: Rider editor modal ---- */
+.riders-box { width: 440px; max-height: 85vh; overflow-y: auto; }
+.riders-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.riders-list li {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+.riders-list li:hover { background: var(--surface-hover); }
+.riders-list li.riders-list--selected {
+  background: rgba(34, 197, 94, 0.15);
+  border-left: 3px solid var(--accent);
+}
+.riders-list-tag {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  float: right;
+}
+.riders-list-empty { color: var(--muted); cursor: default; }
+.riders-list-empty:hover { background: none; }
+
 /* ---- W-051: Antenna diagnostics panel ---- */
 .diagnostics-panel {
   margin-top: 20px;

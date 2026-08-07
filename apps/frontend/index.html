@@ -27,6 +27,11 @@
         <button id="coupleModeBtn"
           title="Serien-Kopplung: Tag scannen, Nummer tippen, Enter — viele Tags nacheinander">
           Koppel-Modus</button>
+        <!-- W-076: rider editor (no reader needed; also via double-click on a
+             standings row) -->
+        <button id="ridersBtn"
+          title="Fahrer suchen und bearbeiten — Name/Nummer ohne Reader eintragen (Nachmeldungen), optional in allen Rennen">
+          Fahrer</button>
         <!-- Multi-race: race selector + create -->
         <label class="toggle-control race-select-control">
           Race:
@@ -157,6 +162,41 @@
                  #modalCancelBtn
                  #modalRetryBtn (hidden until 401)
     -->
+    <!-- W-076: Rider editor — edit bib/name WITHOUT a reader (late entries),
+         search by number, optional propagation to all races (day model). -->
+    <div id="ridersModal" class="modal-backdrop" role="dialog" aria-modal="true"
+         aria-labelledby="ridersModalTitle" hidden>
+      <div class="modal-box riders-box">
+        <h2 id="ridersModalTitle" class="modal-title">Fahrer bearbeiten</h2>
+        <div class="modal-field">
+          <label for="ridersSearch">Suche (Nummer / Name / Tag)</label>
+          <input id="ridersSearch" type="text" placeholder="z.B. 57" autocomplete="off" />
+        </div>
+        <ul id="ridersList" class="riders-list"></ul>
+        <div class="modal-field">
+          <label for="riderEditTag">Tag-ID</label>
+          <input id="riderEditTag" type="text" readonly />
+        </div>
+        <div class="modal-field">
+          <label for="riderEditBib">Startnummer</label>
+          <input id="riderEditBib" type="number" min="1" />
+        </div>
+        <div class="modal-field">
+          <label for="riderEditName">Name</label>
+          <input id="riderEditName" type="text" />
+        </div>
+        <div class="modal-checkbox-row">
+          <input id="riderEditAllRaces" type="checkbox" checked />
+          <label for="riderEditAllRaces">In allen Rennen übernehmen (Mehrfachstarter)</label>
+        </div>
+        <div id="riderEditError" class="modal-error" hidden></div>
+        <div class="modal-actions">
+          <button id="riderEditSaveBtn" class="btn-primary" disabled>Speichern</button>
+          <button id="ridersCloseBtn">Schließen</button>
+        </div>
+      </div>
+    </div>
+
     <div id="registerModal" class="modal-backdrop" role="dialog" aria-modal="true"
          aria-labelledby="registerModalTitle" hidden>
       <div class="modal-box">

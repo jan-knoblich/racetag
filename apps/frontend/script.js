@@ -678,6 +678,136 @@ function onCoupleRaceChanged() {
 }
 
 // ---------------------------------------------------------------------------
+// W-076 — Rider editor modal (Fahrer)
+//
+// Edit bib/name WITHOUT a reader: late entries at sign-on get their name
+// typed here (search by bib), with optional propagation to every race the
+// tag is registered in (day model: one tag + one number per person).
+// Also opened via double-click on a standings row.
+// ---------------------------------------------------------------------------
+
+const ridersUi = {
+  items: [], // riders of the active race (GET /riders)
+  selectedTag: null,
+};
+
+async function refreshRidersUiList() {
+  try {
+    const res = await fetch(`${state.backend}/riders`, { headers: getApiHeaders() });
+    if (!res.ok) return;
+    ridersUi.items = (await res.json()).items || [];
+  } catch {
+    // list stays stale; save path reports real errors
+  }
+  renderRidersUiList();
+}
+
+function renderRidersUiList() {
+  const list = $('#ridersList');
+  if (!list) return;
+  const q = ($('#ridersSearch').value || '').trim().toLowerCase();
+  const filtered = ridersUi.items.filter((r) => {
+    if (!q) return true;
+    return String(r.bib).toLowerCase().includes(q)
+      || (r.name || '').toLowerCase().includes(q)
+      || r.tag_id.toLowerCase().includes(q);
+  });
+  filtered.sort((a, b) => {
+    const na = parseInt(a.bib, 10);
+    const nb = parseInt(b.bib, 10);
+    if (Number.isNaN(na) || Number.isNaN(nb)) return String(a.bib).localeCompare(String(b.bib));
+    return na - nb;
+  });
+  list.innerHTML = '';
+  for (const r of filtered.slice(0, 200)) {
+    const li = document.createElement('li');
+    li.dataset.tagId = r.tag_id;
+    if (r.tag_id === ridersUi.selectedTag) li.classList.add('riders-list--selected');
+    li.innerHTML = `<strong>Nr. ${htmlEscape(r.bib)}</strong> ${htmlEscape(r.name || '—')}`
+      + ` <span class="riders-list-tag">${htmlEscape(coupleShortTag(r.tag_id))}</span>`;
+    list.appendChild(li);
+  }
+  if (!filtered.length) {
+    const li = document.createElement('li');
+    li.className = 'riders-list-empty';
+    li.textContent = ridersUi.items.length
+      ? 'Kein Treffer' : 'Keine Fahrer im aktiven Rennen (Master importiert?)';
+    list.appendChild(li);
+  }
+}
+
+function selectRiderForEdit(tagId) {
+  const r = ridersUi.items.find((x) => x.tag_id === tagId);
+  if (!r) return;
+  ridersUi.selectedTag = tagId;
+  $('#riderEditTag').value = r.tag_id;
+  $('#riderEditBib').value = r.bib;
+  $('#riderEditName').value = r.name || '';
+  $('#riderEditSaveBtn').disabled = false;
+  const err = $('#riderEditError');
+  err.hidden = true;
+  renderRidersUiList();
+  const nameInput = $('#riderEditName');
+  nameInput.focus();
+  nameInput.select();
+}
+
+function openRidersModal(preselectTag) {
+  const modal = $('#ridersModal');
+  if (!modal) return;
+  modal.hidden = false;
+  ridersUi.selectedTag = preselectTag || null;
+  $('#riderEditTag').value = '';
+  $('#riderEditBib').value = '';
+  $('#riderEditName').value = '';
+  $('#riderEditSaveBtn').disabled = true;
+  $('#riderEditError').hidden = true;
+  refreshRidersUiList().then(() => {
+    if (preselectTag) selectRiderForEdit(preselectTag);
+  });
+  if (!preselectTag) $('#ridersSearch').focus();
+}
+
+function closeRidersModal() {
+  const modal = $('#ridersModal');
+  if (modal) modal.hidden = true;
+}
+
+async function saveRiderEdit() {
+  const tag_id = $('#riderEditTag').value.trim();
+  const bib = $('#riderEditBib').value.trim();
+  const name = $('#riderEditName').value.trim();
+  const err = $('#riderEditError');
+  if (!tag_id || !bib) return;
+  try {
+    const res = await fetch(`${state.backend}/riders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify({
+        tag_id, bib, name,
+        all_races: $('#riderEditAllRaces').checked,
+      }),
+    });
+    if (res.ok) {
+      const dto = await res.json().catch(() => ({}));
+      const n = dto.races_updated;
+      showToast(`Nr. ${bib} – ${name || '—'} gespeichert${
+        typeof n === 'number' ? ` (${n} Rennen)` : ''}`);
+      err.hidden = true;
+      refreshRidersUiList();
+      if (couple.active) refreshCoupleRiders();
+    } else {
+      const txt = await res.text().catch(() => '');
+      err.textContent = `Fehler ${res.status}: ${txt.slice(0, 120)}`;
+      err.hidden = false;
+    }
+  } catch (e) {
+    err.textContent = `Netzwerkfehler: ${e.message}`;
+    err.hidden = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // W-074 — Settings modal
 // ---------------------------------------------------------------------------
 
@@ -2040,6 +2170,43 @@ function init() {
     coupleBibInput.addEventListener('input', () => {
       coupleClearWarn(); // typing invalidates a pending duplicate-bib confirm
       $('#coupleSaveBtn').disabled = couple.phase !== 'armed' || !coupleBibInput.value.trim();
+    });
+  }
+
+  // W-076: rider editor wiring
+  const ridersBtn = $('#ridersBtn');
+  if (ridersBtn) ridersBtn.addEventListener('click', () => openRidersModal());
+  const ridersCloseBtn = $('#ridersCloseBtn');
+  if (ridersCloseBtn) ridersCloseBtn.addEventListener('click', closeRidersModal);
+  const ridersModal = $('#ridersModal');
+  if (ridersModal) {
+    ridersModal.addEventListener('click', (e) => {
+      if (e.target === ridersModal) closeRidersModal();
+    });
+  }
+  const ridersSearch = $('#ridersSearch');
+  if (ridersSearch) ridersSearch.addEventListener('input', renderRidersUiList);
+  const ridersList = $('#ridersList');
+  if (ridersList) {
+    ridersList.addEventListener('click', (e) => {
+      const li = e.target.closest('li[data-tag-id]');
+      if (li) selectRiderForEdit(li.dataset.tagId);
+    });
+  }
+  const riderEditSaveBtn = $('#riderEditSaveBtn');
+  if (riderEditSaveBtn) riderEditSaveBtn.addEventListener('click', saveRiderEdit);
+  ['#riderEditBib', '#riderEditName'].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveRiderEdit(); });
+  });
+  // Double-click a standings row → edit that rider (fulfils the old
+  // "edit tag/rider on double-click" TODO via the same editor).
+  const standingsBody = $('#standingsTable tbody');
+  if (standingsBody) {
+    standingsBody.addEventListener('dblclick', (e) => {
+      const row = e.target.closest('tr');
+      const carrier = row && row.querySelector('[data-tag-id]');
+      if (carrier) openRidersModal(carrier.dataset.tagId);
     });
   }
 

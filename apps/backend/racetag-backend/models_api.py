@@ -187,6 +187,11 @@ class RiderDTO(BaseModel):
     name: str = Field(..., description='Rider display name')
     created_at: datetime = Field(..., description='UTC timestamp when the rider was first registered')
     status: Optional[str] = Field(None, description='Result status: null, "dnf", "dns", "dsq"')
+    races_updated: Optional[int] = Field(
+        None,
+        description='Only set when the request had all_races=true: number of '
+                    'race rows (across ALL races) that were updated.',
+    )
 
 
 class RiderCreateDTO(BaseModel):
@@ -195,6 +200,12 @@ class RiderCreateDTO(BaseModel):
     tag_id: str = Field(..., description='RFID tag id (uppercase hex)')
     bib: str = Field(..., description='Bib number')
     name: str = Field(..., description='Rider display name')
+    all_races: bool = Field(
+        default=False,
+        description='Also update bib/name for this tag in every OTHER race '
+                    'where it is registered (day model: one tag + number per '
+                    'person). Update-only — never inserts into other races.',
+    )
 
 
 class RiderStatusDTO(BaseModel):

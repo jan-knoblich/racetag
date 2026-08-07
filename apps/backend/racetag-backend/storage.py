@@ -641,6 +641,21 @@ class Storage:
         ).fetchone()
         return row[0]
 
+    def update_rider_bib_name_all_races(self, tag_id: str, bib: str, name: str) -> int:
+        """Set bib/name for this tag in EVERY race that has it registered.
+
+        Day-model for multi-race events (Karli Krit): one tag + one number
+        per PERSON for the whole day, so a late-entry name applies to all
+        races the tag was pre-imported into. Update-only by design — races
+        that don't know the tag are left alone. Status is never touched.
+        Returns the number of race rows updated.
+        """
+        cur = self._execute(
+            "UPDATE riders SET bib = ?, name = ? WHERE tag_id = ?;",
+            (bib, name, tag_id),
+        )
+        return cur.rowcount if cur is not None else 0
+
     def tag_read_summary(self, race_id: Optional[str] = None) -> list[dict]:
         """One row per distinct tag read in the race, in first-read order.
 
