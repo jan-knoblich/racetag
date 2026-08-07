@@ -20,6 +20,11 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. In der App sind **12 Rennen*
 | 18:15 Jedermann schwer | `201-275` |
 | Kids / Fixed Gear | kein Zirkel im Excel — vor Ort klären |
 
+**⚠ Offene Zirkel-Fragen an Erik (Stand 07.08. abends, aus `nummern_zuweisung.py`):**
+1. **U17m: 13 Meldungen, aber nur 10 Nummern (181–190)** — Zirkel erweitern?
+2. **Junioren/U19m: 7 Meldungen, kein Zirkel** im Excel (R3-Sheet nennt sie im Titel).
+3. **Fixed Gear (22) + FLINTA (4): kein Zirkel** — eigene Nummern?
+
 ## Heute Abend: Kleben mit Auto-Zuweisung (Fließband)
 
 1. `racetag` (oder `racetag log` fürs Terminal-Log). Reader an **FritzBox LAN2!**
@@ -28,8 +33,11 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. In der App sind **12 Rennen*
 4. Schon-gekoppelte Tags stören nicht: blauer Hinweis „schon Nr. X", die Schleife rückt NICHT weiter.
 5. Alle Zirkel durcharbeiten (auch Läufer-Plaketten!). Abbrechen/fortsetzen jederzeit — beim Neustart bietet die Schleife nur noch freie Nummern an.
 6. **„Export tags"** → als `tagesmaster.csv` sichern (enthält jetzt tag_id;Nummer). `reads`-Spalte checken: schwache Tags aussortieren.
-7. **Master in ALLE 12 Rennen importieren** (Race wählen → Import CSV, ~10 s je Rennen). Damit ist jede Plakette in jedem Rennen startklar — Ausgabe einer Plakette ist die komplette „Anmeldung", ganz ohne Reader.
-8. Backup: `cp -r ~/.racetag/data ~/Desktop/karli-vorabend.bak`
+7. **Namen-Zuweisung generieren:** `python3 docs/karli-krit-2026-08-08/nummern_zuweisung.py --master <pfad>/tagesmaster.csv` — vergibt pro Kategorie die Zirkel-Nummern alphabetisch an die Meldeliste und schreibt nach `zuweisung/`: pro Slot eine **Anmeldeliste** (Name → Nummer, mit Abhak-Spalte für den Sign-on-Tisch — drucken!) und eine **Import-Datei** (tag_id;bib;name). Deterministisch: gleiche Meldeliste ⇒ gleiche Nummern. (Ohne `--master` entstehen nur die Anmeldelisten — so wurde die Zuordnung schon am Vorabend fixiert.)
+8. **Pro Rennen importieren:** erst `tagesmaster.csv` (alle Plaketten als Platzhalter), dann `zuweisung/<slot>-import.csv` (die Namen). Zwei Klicks je Rennen.
+9. Backup: `cp -r ~/.racetag/data ~/Desktop/karli-vorabend.bak`
+
+**Sign-on morgen damit:** Name auf der Anmeldeliste finden → abhaken → Plakette mit der Nummer ausgeben. Fertig — Name ist schon in racetag. Nachmeldungen bekommen freie (nicht zugewiesene) Nummern des Zirkels + Name per Fahrer-Editor.
 
 ## Morgen früh (5 min)
 
