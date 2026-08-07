@@ -122,20 +122,25 @@ def main() -> None:
             for cat, e in everyone[len(pool):]:
                 assigned.append({"bib": "", "name": e["name"], "kategorie": cat,
                                  "team": e["team"]})
-            # Lauf-Blöcke: +20 % Nachmelde-Puffer — die nächsten freien Nummern
-            # des Blocks als leere Einträge (Name wird am Sign-on-Tisch
-            # eingetragen; Blatt wird mitgedruckt, Tag mitgekoppelt).
+            # Nachmelde-Puffer als leere Einträge (Name kommt am Sign-on-Tisch;
+            # Blatt wird mitgedruckt, Tag mitgekoppelt):
+            # - Lauf-Blöcke: +20 % der Meldungen (Blöcke dafür verbreitert)
+            # - Rad-Zirkel: der KOMPLETTE Rest des Zirkels — Eriks Zirkel
+            #   enthalten den Puffer schon (Jedermann-Limit 75 = Zirkelbreite),
+            #   also braucht jede Zirkel-Nummer ein physisches Blatt.
             if any(cat.startswith("lauf_") for cat, _ in groups):
                 import math
                 n_buf = math.ceil(len(everyone) * LAUF_PUFFER)
                 rest = pool[len(everyone):len(everyone) + n_buf]
-                for num in rest:
-                    assigned.append({"bib": num, "name": "",
-                                     "kategorie": "nachmelde-puffer", "team": ""})
                 if len(rest) < n_buf:
                     flagged.append(
                         f"Zirkel {start}-{stop - 1}: Puffer abgeschnitten "
                         f"({len(rest)} von {n_buf})")
+            else:
+                rest = pool[len(everyone):]
+            for num in rest:
+                assigned.append({"bib": num, "name": "",
+                                 "kategorie": "nachmelde-puffer", "team": ""})
 
         slot = src.stem
         # Anmeldeliste: alphabetisch, fürs schnelle Finden am Tisch

@@ -26,7 +26,13 @@ Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280
 
 ## Drucken: `startnummern-karli-krit.pdf` (in Downloads)
 
-454 A5-Querseiten im A5.docx-Format (Banner + Riesennummer): eine Seite pro Teilnehmer **plus 42 Lauf-Puffer-Blätter (+20 % je Block)**, sortiert nach Slot → Nummer (Stapel kommen rennfertig aus dem Drucker). **136 Nummern sind absichtlich doppelt** (Lauf-Papier UND Rad-Plakette, z. B. zweimal „101") — zwei verschiedene physische Nummern mit zwei verschiedenen Tags! Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
+**624 A5-Querseiten** im A5.docx-Format (Banner + Riesennummer), sortiert nach Slot → Nummer (Stapel kommen rennfertig aus dem Drucker):
+- Lauf: 199 Gemeldete + 42 Puffer (+20 % je Block) = 241 Blätter
+- Rad: **komplette Zirkel** (Eriks Zirkel enthalten den Nachmelde-Puffer schon — Jedermann-Limit 75 = Zirkelbreite) = 383 Blätter; Reserve-Nummern stehen mit leerem Namen am Ende der Anmeldelisten
+- **184 Nummern sind absichtlich doppelt** (Lauf-Papier UND Rad-Plakette) — zwei physische Nummern, zwei Tags!
+- ⚠ Das heißt auch: **~624 Tags** werden heute Abend gebraucht. U17m (181–193) und Masters 4 (316–326) sind bereits voll gemeldet — dort gibt es KEINE Nachmelde-Reserve.
+
+Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
 
 ## Heute Abend: Kleben mit Auto-Zuweisung (Fließband)
 
