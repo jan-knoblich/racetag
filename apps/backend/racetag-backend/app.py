@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import threading
+import time
 from datetime import datetime, timezone
 import json
 import os
@@ -262,6 +263,24 @@ _UNKNOWN_TAG_CAP = 50
 recent_unknown_tags: collections.deque = collections.deque(maxlen=_UNKNOWN_TAG_CAP)
 _unknown_tags_lock = threading.Lock()
 
+# W-075: per-tag throttle for the tag_seen SSE broadcast (serial coupling
+# mode). Every arrive — registered AND unknown — emits at most one tag_seen
+# frame per tag per interval, taming parked-tag / zone-edge flutter streams.
+_TAG_SEEN_MIN_INTERVAL_S = 2.0
+_tag_seen_last: Dict[str, float] = {}  # tag_id -> _monotonic() of last emit
+_tag_seen_lock = threading.Lock()
+_monotonic = time.monotonic  # indirection so tests can monkeypatch the clock
+
+
+def _tag_seen_should_publish(tag_id: str) -> bool:
+    now = _monotonic()
+    with _tag_seen_lock:
+        last = _tag_seen_last.get(tag_id)
+        if last is not None and (now - last) < _TAG_SEEN_MIN_INTERVAL_S:
+            return False
+        _tag_seen_last[tag_id] = now
+        return True
+
 
 # ---------------------------------------------------------------------------
 # W-050: Replay persisted events on startup to restore race state.
@@ -456,7 +475,24 @@ def post_events_batch(batch: TagEventBatchDTO):
             # The unknown_tag SSE + recent-reads ring buffer still fire so the
             # "Couple tag → rider" modal can offer them for explicit registration;
             # once coupled, the next pass shows up in standings normally.
-            is_registered = ev.tag_id in rider_store
+            rider = rider_store.get(ev.tag_id)
+            is_registered = rider is not None
+
+            # W-075: live feed for the serial coupling panel. Fires for BOTH
+            # registered and unknown tags (registered pre-start re-scans are
+            # otherwise fully silent — the RECHECK #1 suppression below),
+            # throttled per tag. The frontend ignores it outside coupling mode.
+            if _tag_seen_should_publish(ev.tag_id):
+                _publish({
+                    "type": "tag_seen",
+                    "tag_id": ev.tag_id,
+                    "timestamp": ev.timestamp,
+                    "antenna": ev.antenna,
+                    "rssi": ev.rssi,
+                    "registered": is_registered,
+                    "bib": rider.bib if rider else None,
+                    "name": rider.name if rider else None,
+                })
 
             if is_registered:
                 # RECHECK-2026-07-25 #1: broadcast only when the pass actually
@@ -644,6 +680,57 @@ def get_classification_csv_for_race(race_id: str):
     return get_classification_csv()
 
 
+@app.get("/tags.csv", responses={200: {"content": {"text/csv": {}}}})
+def get_tags_csv():
+    """Tag-inventory export: every distinct tag read in the ACTIVE race, in
+    first-read (= wave) order, as an import-ready start-list CSV.
+
+    Workflow: create a scratch race, wave the physical tag pool past the
+    antenna, download — a ready-to-fill ``tag_id;bib;name`` template. The
+    trailing info columns are ignored by the rider import (it only reads the
+    first three); low ``reads`` values flag tags that read poorly. No
+    '#'-metadata lines on purpose — unlike classification.csv this file must
+    round-trip through the importer, which skips exactly one header row.
+    Semicolon + UTF-8 BOM so German Excel opens it in columns.
+    """
+    import csv
+    import io
+    from datetime import datetime, timezone
+
+    from fastapi.responses import Response
+
+    summary = storage.tag_read_summary()
+    race_row = storage.get_race(race.race_id) if race.race_id else None
+    race_name = race_row.name if race_row else "Race"
+
+    buf = io.StringIO()
+    buf.write("﻿")
+    writer = csv.writer(buf, delimiter=";", lineterminator="\n")
+    writer.writerow(
+        ["tag_id", "bib", "name",
+         "reads (ignored on import)", "first read (ignored on import)"]
+    )
+    for row in summary:
+        # W-075: after a coupling session this export IS the master start
+        # list — prefill bib/name for tags that are already registered.
+        rider = rider_store.get(row["tag_id"])
+        writer.writerow([
+            row["tag_id"],
+            rider.bib if rider else "",
+            rider.name if rider else "",
+            row["reads"],
+            row["first_seen"],
+        ])
+
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"racetag-tags-{_slugify(race_name)}-{date_str}.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _iso_or_none(dt) -> Optional[str]:
     if dt is None:
         return None
@@ -726,6 +813,8 @@ def post_race_reset():
     events.clear()
     with _unknown_tags_lock:
         recent_unknown_tags.clear()
+    with _tag_seen_lock:
+        _tag_seen_last.clear()
     _publish({"type": "race_reset"})
 
 
@@ -866,6 +955,10 @@ def _switch_active_race(new_race_id: str) -> None:
     _apply_ended_state_after_replay(race)
     with _unknown_tags_lock:
         recent_unknown_tags.clear()
+    # W-075: throttle state is per-race context (registered/bib payloads change
+    # with the rider registry) — a parked tag must re-announce promptly.
+    with _tag_seen_lock:
+        _tag_seen_last.clear()
 
 
 @app.get("/races", response_model=RaceListDTO)

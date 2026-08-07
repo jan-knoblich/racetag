@@ -66,8 +66,13 @@ def test_sse_multiple_subscribers_get_all_events(fresh_app):
 
         # Each of the 10 events is now from a registered rider, so each fires
         # lap + standings (2 frames). 10 * 2 = 20 frames per subscriber.
-        assert len(buf_a) == 20, f"Expected 20 frames in buf_a, got {len(buf_a)}"
-        assert len(buf_b) == 20, f"Expected 20 frames in buf_b, got {len(buf_b)}"
+        # (Filter by type: every arrive additionally fires a W-075 tag_seen
+        # frame whose count depends on the real-clock throttle — not what
+        # this test pins.)
+        lapstand_a = [f for f in buf_a if f.get("type") in ("lap", "standings")]
+        lapstand_b = [f for f in buf_b if f.get("type") in ("lap", "standings")]
+        assert len(lapstand_a) == 20, f"Expected 20 frames in buf_a, got {len(lapstand_a)}"
+        assert len(lapstand_b) == 20, f"Expected 20 frames in buf_b, got {len(lapstand_b)}"
 
         # Both buffers should have identical content
         assert buf_a == buf_b
@@ -109,14 +114,19 @@ def test_suppressed_flutter_pass_does_not_broadcast(fresh_app):
         client.post("/events/tag/batch", json=_batch([
             _tag_event("FLUT01", ts="2026-04-15T12:00:00.000Z"),
         ]))
-        assert len(buf) == 2, f"first pass should broadcast 2 frames, got {len(buf)}"
+        # W-075 tag_seen frames ride the real-clock throttle — pin only
+        # lap/standings here (that is exactly the RECHECK #1 contract).
+        def lapstand():
+            return [f for f in buf if f.get("type") in ("lap", "standings")]
+
+        assert len(lapstand()) == 2, f"first pass should broadcast 2 frames, got {len(lapstand())}"
 
         # Flutter: 3 s later, within the 8 s cooldown → suppressed → NO frames
         client.post("/events/tag/batch", json=_batch([
             _tag_event("FLUT01", ts="2026-04-15T12:00:03.000Z"),
         ]))
-        assert len(buf) == 2, (
-            f"suppressed pass broadcast anyway: {len(buf)} frames "
+        assert len(lapstand()) == 2, (
+            f"suppressed pass broadcast anyway: {len(lapstand())} frames "
             f"(types: {[f.get('type') for f in buf]})"
         )
 
@@ -124,7 +134,7 @@ def test_suppressed_flutter_pass_does_not_broadcast(fresh_app):
         client.post("/events/tag/batch", json=_batch([
             _tag_event("FLUT01", ts="2026-04-15T12:00:15.000Z"),
         ]))
-        assert len(buf) == 4
+        assert len(lapstand()) == 4
     finally:
         with app_module._subscribers_lock:
             try:

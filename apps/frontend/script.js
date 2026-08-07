@@ -163,6 +163,24 @@ function formatTimestampForDisplay(isoUtc) {
   });
 }
 
+// Decode a CSV file's raw bytes. German Excel saves "CSV" as windows-1252,
+// not UTF-8 — FileReader.readAsText() would turn every umlaut into U+FFFD
+// before the parser ever sees it. Strict UTF-8 first (BOM'd or plain), then
+// cp1252 fallback. UTF-16 BOMs are honoured too so Excel's "Unicode Text"
+// export (UTF-16LE, tab-separated) imports as well.
+function decodeCsvBytes(buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length >= 2) {
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(buffer);
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(buffer);
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch {
+    return new TextDecoder('windows-1252').decode(buffer);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // W-013 — Bulk CSV import: POST each row to /riders
 // Replaces the old browser-only tagData map approach.
@@ -186,6 +204,7 @@ async function importCSVToBackend(csvText) {
 
   const errors = []; // { tag_id, reason }
   let imported = 0;
+  let skippedEmpty = 0;
 
   // Show errors container (hidden until there are errors)
   const errContainer = $('#importErrors');
@@ -210,6 +229,13 @@ async function importCSVToBackend(csvText) {
       errors.push({ tag_id: `(row ${i + 2})`, reason: 'empty tag_id' });
       continue;
     }
+    // A tag-pool template row nobody filled in (no bib, no name) carries zero
+    // information — skip it so an unfilled template imports cleanly instead
+    // of coupling dozens of blank riders.
+    if (!bib && !name) {
+      skippedEmpty++;
+      continue;
+    }
 
     setStatus(`Importing ${i + 1}/${total} riders (${errors.length} errors)\u2026`);
 
@@ -231,8 +257,9 @@ async function importCSVToBackend(csvText) {
   }
 
   // Summary toast
-  showToast(`Imported ${imported}/${total} riders${errors.length ? ` (${errors.length} errors)` : ''}`);
-  setStatus(`Import complete: ${imported}/${total} riders`);
+  const skippedNote = skippedEmpty ? `, ${skippedEmpty} empty skipped` : '';
+  showToast(`Imported ${imported}/${total} riders${skippedNote}${errors.length ? ` (${errors.length} errors)` : ''}`);
+  setStatus(`Import complete: ${imported}/${total} riders${skippedNote}`);
 
   // Show per-row errors in collapsible list
   if (errors.length > 0 && errContainer && errList) {
@@ -317,6 +344,337 @@ async function submitRegisterModal() {
       errBanner.hidden = false;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// W-075 — Serial coupling mode (Koppel-Modus)
+//
+// Rapidly couple many tags in a row: wave tag → big feedback card → type the
+// bib → Enter → next tag. Driven by the backend's tag_seen SSE frames (fired
+// for registered AND unknown tags, throttled ~2 s per tag server-side).
+//
+// Core invariant: once a NEW tag is ARMED (waiting for its bib), nothing but
+// Save / Skip / mode off / race switch may change the tag under the
+// operator's fingers — further new tags queue instead of replacing it, so
+// typing "12" for tag A can never couple tag B.
+// ---------------------------------------------------------------------------
+
+const couple = {
+  active: false,
+  phase: 'idle', // 'idle' | 'info' | 'armed'
+  armedTag: null, // { tag_id, recouple } while awaiting bib entry
+  infoTag: null, // { tag_id, bib, name } shown on the verification card
+  infoTimer: null,
+  queue: [], // tag_ids of NEW tags seen while armed (deduped)
+  ridersByTag: new Map(),
+  ridersByBib: new Map(),
+  sessionCount: 0,
+  pendingConfirmBib: null, // duplicate-bib two-step confirm latch
+  saving: false,
+  muted: localStorage.getItem('racetag.coupleBeep') === 'off',
+  audioCtx: null,
+};
+
+const COUPLE_QUEUE_CAP = 3;
+const COUPLE_INFO_CLEAR_MS = 4000;
+
+function coupleShortTag(tagId) {
+  return tagId.length > 10 ? `…${tagId.slice(-8)}` : tagId;
+}
+
+function coupleBeep(kind) {
+  if (couple.muted || !couple.audioCtx) return;
+  const ctx = couple.audioCtx;
+  if (ctx.state === 'suspended') ctx.resume();
+  const tone = (freq, start, dur) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const t0 = ctx.currentTime + start;
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.3, t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  };
+  if (kind === 'new') {
+    tone(880, 0, 0.12); // rising double tone = action needed (type the bib)
+    tone(1320, 0.16, 0.18);
+  } else {
+    tone(660, 0, 0.25); // single mid tone = known tag / save confirmed
+  }
+}
+
+async function refreshCoupleRiders() {
+  try {
+    const res = await fetch(`${state.backend}/riders`, { headers: getApiHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    couple.ridersByTag = new Map();
+    couple.ridersByBib = new Map();
+    for (const r of data.items || []) {
+      couple.ridersByTag.set(r.tag_id, r);
+      couple.ridersByBib.set(String(r.bib).trim(), r);
+    }
+  } catch {
+    // cache refresh is best-effort; the backend stays authoritative
+  }
+}
+
+function coupleSetCard(mod, stateText, mainText, tagId) {
+  const card = $('#coupleCard');
+  card.className = `couple-card couple-card--${mod}`;
+  $('#coupleCardState').textContent = stateText;
+  $('#coupleCardMain').textContent = mainText;
+  const tagEl = $('#coupleCardTag');
+  tagEl.textContent = tagId ? coupleShortTag(tagId) : '';
+  tagEl.title = tagId || '';
+}
+
+function coupleRenderQueueNote() {
+  const note = $('#coupleQueueNote');
+  if (couple.queue.length === 0) {
+    note.hidden = true;
+    return;
+  }
+  note.textContent = couple.queue.length === 1
+    ? '1 weiterer neuer Tag wartet'
+    : `${couple.queue.length} weitere neue Tags warten`;
+  note.hidden = false;
+}
+
+function coupleSetInputsEnabled(enabled) {
+  $('#coupleBib').disabled = !enabled;
+  $('#coupleName').disabled = !enabled;
+  $('#coupleSaveBtn').disabled = !enabled || !$('#coupleBib').value.trim();
+}
+
+function coupleClearWarn() {
+  const warn = $('#coupleWarn');
+  warn.hidden = true;
+  warn.textContent = '';
+  couple.pendingConfirmBib = null;
+}
+
+function coupleToIdle() {
+  couple.phase = 'idle';
+  couple.armedTag = null;
+  couple.infoTag = null;
+  if (couple.infoTimer) {
+    clearTimeout(couple.infoTimer);
+    couple.infoTimer = null;
+  }
+  $('#coupleRecoupleBtn').hidden = true;
+  $('#coupleBib').value = '';
+  $('#coupleName').value = '';
+  coupleClearWarn();
+  coupleSetInputsEnabled(false);
+  coupleSetCard('waiting', 'Tag an die Antenne halten…', '', null);
+  coupleRenderQueueNote();
+}
+
+function coupleArm(tagId, opts = {}) {
+  couple.phase = 'armed';
+  couple.armedTag = { tag_id: tagId, recouple: !!opts.recouple };
+  couple.infoTag = null;
+  if (couple.infoTimer) {
+    clearTimeout(couple.infoTimer);
+    couple.infoTimer = null;
+  }
+  $('#coupleRecoupleBtn').hidden = true;
+  coupleClearWarn();
+  if (opts.recouple) {
+    coupleSetCard('recouple', 'NEU KOPPELN', opts.prefillBib ? `Nr. ${opts.prefillBib}` : '', tagId);
+    $('#coupleBib').value = opts.prefillBib || '';
+    $('#coupleName').value = opts.prefillName || '';
+  } else {
+    coupleSetCard('new', 'NEUER TAG', 'Nummer eingeben', tagId);
+    $('#coupleBib').value = '';
+    $('#coupleName').value = '';
+    coupleBeep('new');
+  }
+  coupleSetInputsEnabled(true);
+  const bibInput = $('#coupleBib');
+  bibInput.focus();
+  if (opts.recouple) bibInput.select();
+}
+
+function coupleShowInfo(data) {
+  couple.phase = 'info';
+  couple.infoTag = { tag_id: data.tag_id, bib: data.bib, name: data.name };
+  coupleSetCard(
+    'known',
+    'Bereits gekoppelt',
+    `Nr. ${data.bib}${data.name ? ` – ${data.name}` : ''}`,
+    data.tag_id,
+  );
+  $('#coupleRecoupleBtn').hidden = false;
+  if (couple.infoTimer) clearTimeout(couple.infoTimer);
+  couple.infoTimer = setTimeout(() => {
+    if (couple.phase === 'info') coupleToIdle();
+  }, COUPLE_INFO_CLEAR_MS);
+}
+
+function onCoupleTagSeen(data) {
+  if (!couple.active) return;
+  const tagId = data.tag_id;
+
+  if (couple.phase === 'armed') {
+    if (tagId === couple.armedTag.tag_id) return; // re-read of the armed tag
+    if (data.registered) {
+      // Verification info in passing — never disturbs the armed tag.
+      showToast(`Bereits gekoppelt: Nr. ${data.bib}${data.name ? ` – ${data.name}` : ''}`);
+      coupleBeep('known');
+      return;
+    }
+    if (!couple.queue.includes(tagId) && couple.queue.length < COUPLE_QUEUE_CAP) {
+      couple.queue.push(tagId);
+      coupleRenderQueueNote();
+    }
+    return; // no beep — a beep strictly means "the tag on the card"
+  }
+
+  if (data.registered) {
+    const sameTag = couple.phase === 'info'
+      && couple.infoTag && couple.infoTag.tag_id === tagId;
+    coupleShowInfo(data);
+    if (!sameTag) coupleBeep('known'); // held-in-field re-read: timer restart only
+  } else {
+    coupleArm(tagId);
+  }
+}
+
+function couplePopQueue() {
+  while (couple.queue.length) {
+    const next = couple.queue.shift();
+    if (couple.ridersByTag.has(next)) continue; // coupled meanwhile — stale
+    coupleRenderQueueNote();
+    coupleArm(next);
+    return;
+  }
+  coupleToIdle();
+}
+
+function coupleLogEntry(bib, name, tagId) {
+  const li = document.createElement('li');
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2, '0');
+  const mm = String(t.getMinutes()).padStart(2, '0');
+  const tagSpan = `<span class="tag-id-copyable" data-tag-id="${htmlEscape(tagId)}"`
+    + ` title="${htmlEscape(tagId)}">${htmlEscape(coupleShortTag(tagId))}</span>`;
+  li.innerHTML = `${hh}:${mm} · Nr. ${htmlEscape(bib)} – `
+    + `${htmlEscape(name || '—')} · ${tagSpan}`;
+  const log = $('#coupleLog');
+  log.insertBefore(li, log.firstChild);
+}
+
+async function coupleSave() {
+  if (!couple.active || couple.phase !== 'armed' || couple.saving) return;
+  const bib = $('#coupleBib').value.trim();
+  const name = $('#coupleName').value.trim();
+  if (!bib) return;
+  const tagId = couple.armedTag.tag_id;
+
+  // Duplicate-bib soft guard (client cache only; backend stays permissive).
+  const holder = couple.ridersByBib.get(bib);
+  if (holder && holder.tag_id !== tagId && couple.pendingConfirmBib !== bib) {
+    const warn = $('#coupleWarn');
+    warn.textContent = `Nr. ${bib} ist bereits an ${holder.name || coupleShortTag(holder.tag_id)}`
+      + ' vergeben – nochmal Enter/Speichern zum trotzdem Koppeln';
+    warn.hidden = false;
+    couple.pendingConfirmBib = bib;
+    return;
+  }
+
+  couple.saving = true;
+  $('#coupleSaveBtn').disabled = true;
+  try {
+    const res = await fetch(`${state.backend}/riders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify({ tag_id: tagId, bib, name }),
+    });
+    if (res.ok) {
+      coupleLogEntry(bib, name, tagId);
+      couple.sessionCount += 1;
+      $('#coupleCounter').textContent = `${couple.sessionCount} gekoppelt`;
+      // Optimistic cache insert so the dup-bib guard and the queue staleness
+      // check see the new rider immediately; full refresh in the background.
+      const rider = { tag_id: tagId, bib, name };
+      couple.ridersByTag.set(tagId, rider);
+      couple.ridersByBib.set(bib, rider);
+      refreshCoupleRiders();
+      coupleBeep('known');
+      couplePopQueue();
+    } else {
+      const txt = await res.text().catch(() => '');
+      const warn = $('#coupleWarn');
+      warn.textContent = res.status === 401
+        ? 'Authorisation failed (401). Check API key configuration.'
+        : `Fehler ${res.status}: ${txt.slice(0, 120)}`;
+      warn.hidden = false;
+    }
+  } catch (err) {
+    const warn = $('#coupleWarn');
+    warn.textContent = `Netzwerkfehler: ${err.message}`;
+    warn.hidden = false;
+  } finally {
+    couple.saving = false;
+    coupleSetInputsEnabled(couple.phase === 'armed');
+  }
+}
+
+function coupleSkip() {
+  if (couple.phase !== 'armed') return;
+  couplePopQueue();
+}
+
+function coupleModeOn() {
+  couple.active = true;
+  couple.queue = [];
+  if (!couple.audioCtx) {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) couple.audioCtx = new AC(); // inside the click = user gesture
+    } catch {
+      couple.audioCtx = null; // audio is additive; the card is the feedback
+    }
+  }
+  if (couple.audioCtx && couple.audioCtx.state === 'suspended') couple.audioCtx.resume();
+  $('#coupleBeepToggle').checked = !couple.muted;
+  $('#couplePanel').hidden = false;
+  $('#coupleModeBtn').classList.add('couple-mode-active');
+  // Kill a pending one-shot arm so the register modal can't pop over the panel.
+  state.awaitingRead = false;
+  coupleToIdle();
+  refreshCoupleRiders();
+}
+
+function coupleModeOff() {
+  if (couple.phase === 'armed' && $('#coupleBib').value.trim()) {
+    if (!window.confirm('Ungespeicherte Kopplung verwerfen?')) return;
+  }
+  couple.active = false;
+  couple.queue = [];
+  coupleToIdle();
+  $('#couplePanel').hidden = true;
+  $('#coupleModeBtn').classList.remove('couple-mode-active');
+  // sessionCount, the log DOM, and the AudioContext survive for re-opening.
+}
+
+function onCoupleRaceChanged() {
+  if (!couple.active) return;
+  couple.queue = [];
+  const divider = document.createElement('li');
+  divider.className = 'couple-log-divider';
+  divider.textContent = '— Rennen gewechselt —';
+  const log = $('#coupleLog');
+  log.insertBefore(divider, log.firstChild);
+  coupleToIdle();
+  refreshCoupleRiders();
+  showToast('Koppel-Modus: Rennen gewechselt');
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1405,8 @@ function connectSSE() {
       loadRaces();
       loadRaceConfig();
       loadSnapshot().catch(() => {});
+      // W-075: rider cache may have drifted during the outage window.
+      if (couple.active) refreshCoupleRiders();
     },
     onError: () => {}, // status handled by onStatusChange
     onStatusChange: (msg) => setStatus(msg),
@@ -1067,9 +1427,16 @@ function connectSSE() {
         // W-012: handle unknown_tag SSE event
         if (data?.type === 'unknown_tag') {
           state.lastUnknownTag = { tag_id: data.tag_id, timestamp: data.timestamp };
-          if (state.awaitingRead) {
+          // W-075: while coupling mode is on, the panel owns tag handling —
+          // never pop the one-shot register modal over it.
+          if (state.awaitingRead && !couple.active) {
             openRegisterModal(data.tag_id);
           }
+        }
+
+        // W-075: serial coupling mode — live tag feed (ignored unless open)
+        if (data?.type === 'tag_seen') {
+          onCoupleTagSeen(data);
         }
 
         // W-036: race reset — clear standings table locally
@@ -1117,6 +1484,7 @@ function connectSSE() {
           loadRaces();
           loadRaceConfig();
           loadSnapshot();
+          onCoupleRaceChanged(); // W-075: riders are per-race — drop armed tag
         }
       } catch {
         // ignore non-JSON payloads
@@ -1347,7 +1715,7 @@ function init() {
     });
   }
 
-  // Export CSV button.
+  // Export CSV buttons (results + tag inventory).
   //
   // In the packaged desktop app (pywebview/WKWebView) the usual Blob +
   // <a download> trick fails — WKWebView opens the CSV INSIDE the app
@@ -1355,55 +1723,69 @@ function init() {
   // exposed Python API (`save_csv`), which pops a native macOS/Windows
   // save dialog. Fallback for a normal browser keeps the Blob+anchor
   // path so /classification.csv still works when opened directly.
+  async function downloadCsvFromBackend(path, fallbackFilename) {
+    try {
+      const res = await fetch(`${state.backend}${path}`, {
+        headers: getApiHeaders(),
+      });
+      if (!res.ok) {
+        showToast(`Export failed: HTTP ${res.status}`);
+        return;
+      }
+
+      // Pull filename out of Content-Disposition if present.
+      let filename = fallbackFilename;
+      const cd = res.headers.get('content-disposition') || '';
+      const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";\n]+)"?/i);
+      if (m && m[1]) {
+        try { filename = decodeURIComponent(m[1]); }
+        catch { filename = m[1]; }
+      }
+
+      // res.text() strips the backend's UTF-8 BOM while decoding; put it
+      // back so German Excel detects the encoding when opening the file.
+      let csvText = await res.text();
+      if (!csvText.startsWith('\ufeff')) csvText = '\ufeff' + csvText;
+
+      // Path 1: pywebview's native save dialog (desktop app).
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.save_csv) {
+        const saved = await window.pywebview.api.save_csv(csvText, filename);
+        if (saved) {
+          showToast(`Exported: ${filename}`);
+        } else {
+          showToast('Export cancelled');
+        }
+        return;
+      }
+
+      // Path 2: fallback for plain browsers — Blob + <a download>.
+      const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      showToast(`Exported: ${filename}`);
+    } catch (e) {
+      showToast(`Export error: ${e.message}`);
+    }
+  }
+
   const exportBtn = $('#exportCsvBtn');
   if (exportBtn) {
-    exportBtn.addEventListener('click', async () => {
-      try {
-        const res = await fetch(`${state.backend}/classification.csv`, {
-          headers: getApiHeaders(),
-        });
-        if (!res.ok) {
-          showToast(`Export failed: HTTP ${res.status}`);
-          return;
-        }
+    exportBtn.addEventListener('click', () =>
+      downloadCsvFromBackend('/classification.csv', 'racetag-export.csv'));
+  }
 
-        // Pull filename out of Content-Disposition if present.
-        let filename = 'racetag-export.csv';
-        const cd = res.headers.get('content-disposition') || '';
-        const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";\n]+)"?/i);
-        if (m && m[1]) {
-          try { filename = decodeURIComponent(m[1]); }
-          catch { filename = m[1]; }
-        }
-
-        const csvText = await res.text();
-
-        // Path 1: pywebview's native save dialog (desktop app).
-        if (window.pywebview && window.pywebview.api && window.pywebview.api.save_csv) {
-          const saved = await window.pywebview.api.save_csv(csvText, filename);
-          if (saved) {
-            showToast(`Exported: ${filename}`);
-          } else {
-            showToast('Export cancelled');
-          }
-          return;
-        }
-
-        // Path 2: fallback for plain browsers — Blob + <a download>.
-        const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 0);
-        showToast(`Exported: ${filename}`);
-      } catch (e) {
-        showToast(`Export error: ${e.message}`);
-      }
-    });
+  // Tag inventory (Karlie-Krit prep): every tag read in the active race,
+  // first-read order, as an import-ready start-list template.
+  const exportTagsBtn = $('#exportTagsBtn');
+  if (exportTagsBtn) {
+    exportTagsBtn.addEventListener('click', () =>
+      downloadCsvFromBackend('/tags.csv', 'racetag-tags.csv'));
   }
 
   // CSV file upload handler (W-013: now POSTs to /riders)
@@ -1412,13 +1794,13 @@ function init() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      importCSVToBackend(ev.target.result).catch((err) => {
+      importCSVToBackend(decodeCsvBytes(ev.target.result)).catch((err) => {
         console.error('CSV import error:', err);
         setStatus('Error during CSV import');
       });
     };
     reader.onerror = () => setStatus('Error reading CSV file');
-    reader.readAsText(file);
+    reader.readAsArrayBuffer(file);
     // Reset so re-selecting same file triggers change event again
     e.target.value = '';
   });
@@ -1438,6 +1820,11 @@ function init() {
   const coupleBtn = $('#coupleTagBtn');
   if (coupleBtn) {
     coupleBtn.addEventListener('click', async () => {
+      // W-075: the serial panel owns tag handling while it is open.
+      if (couple.active) {
+        showToast('Koppel-Modus ist aktiv — Panel benutzen');
+        return;
+      }
       state.awaitingRead = true;
       setStatus('Hold a tag near the antenna\u2026');
 
@@ -1594,6 +1981,67 @@ function init() {
     const el = $(sel);
     if (el) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitRegisterModal(); });
   });
+
+  // W-075: serial coupling mode wiring
+  const coupleModeBtn = $('#coupleModeBtn');
+  if (coupleModeBtn) {
+    coupleModeBtn.addEventListener('click', () => {
+      if (couple.active) coupleModeOff();
+      else coupleModeOn();
+    });
+  }
+  const coupleCloseBtn = $('#coupleModeCloseBtn');
+  if (coupleCloseBtn) coupleCloseBtn.addEventListener('click', coupleModeOff);
+  const coupleSaveBtn = $('#coupleSaveBtn');
+  if (coupleSaveBtn) coupleSaveBtn.addEventListener('click', coupleSave);
+  const coupleSkipBtn = $('#coupleSkipBtn');
+  if (coupleSkipBtn) coupleSkipBtn.addEventListener('click', coupleSkip);
+  const recoupleBtn = $('#coupleRecoupleBtn');
+  if (recoupleBtn) {
+    recoupleBtn.addEventListener('click', () => {
+      if (couple.phase === 'info' && couple.infoTag) {
+        coupleArm(couple.infoTag.tag_id, {
+          recouple: true,
+          prefillBib: couple.infoTag.bib,
+          prefillName: couple.infoTag.name,
+        });
+      }
+    });
+  }
+  const beepToggle = $('#coupleBeepToggle');
+  if (beepToggle) {
+    beepToggle.addEventListener('change', (e) => {
+      couple.muted = !e.target.checked;
+      localStorage.setItem('racetag.coupleBeep', couple.muted ? 'off' : 'on');
+    });
+  }
+  ['#coupleBib', '#coupleName'].forEach((sel) => {
+    const el = $(sel);
+    if (!el) return;
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        coupleSave();
+      } else if (e.key === 'Escape') {
+        // First Escape clears the inputs, second skips the armed tag.
+        if ($('#coupleBib').value || $('#coupleName').value) {
+          $('#coupleBib').value = '';
+          $('#coupleName').value = '';
+          coupleClearWarn();
+          coupleSetInputsEnabled(couple.phase === 'armed');
+          $('#coupleBib').focus();
+        } else {
+          coupleSkip();
+        }
+      }
+    });
+  });
+  const coupleBibInput = $('#coupleBib');
+  if (coupleBibInput) {
+    coupleBibInput.addEventListener('input', () => {
+      coupleClearWarn(); // typing invalidates a pending duplicate-bib confirm
+      $('#coupleSaveBtn').disabled = couple.phase !== 'armed' || !coupleBibInput.value.trim();
+    });
+  }
 
   // Close modal on backdrop click
   const modal = $('#registerModal');

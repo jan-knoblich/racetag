@@ -641,6 +641,25 @@ class Storage:
         ).fetchone()
         return row[0]
 
+    def tag_read_summary(self, race_id: Optional[str] = None) -> list[dict]:
+        """One row per distinct tag read in the race, in first-read order.
+
+        First-read order == the order the operator waved the tags, which is
+        what the tag-inventory CSV export (GET /tags.csv) presents to the
+        user; ``reads`` doubles as a read-quality check per tag.
+        """
+        rid = self._require_race_id(race_id)
+        rows = self._conn.execute(
+            "SELECT tag_id, COUNT(*) AS reads, MIN(timestamp) AS first_seen "
+            "FROM tag_events WHERE race_id = ? "
+            "GROUP BY tag_id ORDER BY first_seen, tag_id;",
+            (rid,),
+        ).fetchall()
+        return [
+            {"tag_id": r["tag_id"], "reads": r["reads"], "first_seen": r["first_seen"]}
+            for r in rows
+        ]
+
     def clear_events(self, race_id: Optional[str] = None) -> None:
         rid = self._require_race_id(race_id)
         self._execute("DELETE FROM tag_events WHERE race_id = ?;", (rid,))

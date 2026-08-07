@@ -3,6 +3,7 @@
   --fg: #e2e8f0;
   --muted: #94a3b8;
   --accent: #22c55e;
+  --info: #38bdf8;
   --warn: #f97316;
   --error: #ef4444;
   --surface: #1e293b;
@@ -409,6 +410,103 @@ tbody tr:hover { background: #0b1220; }
   font-weight: 700;
   cursor: help;
   margin-left: 4px;
+}
+
+/* ---- W-075: Serial coupling mode (Koppel-Modus) ----
+   Big feedback card readable across the gluing table; green = new tag
+   (action: type the bib), blue = already coupled (label verification),
+   orange = re-coupling an existing tag. */
+.couple-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.couple-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.couple-panel-header h2 { margin: 0; font-size: 16px; }
+.couple-counter { color: var(--muted); font-size: 13px; }
+.couple-panel-header .toggle-control { margin-left: auto; }
+.couple-card {
+  min-height: 110px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px;
+  text-align: center;
+  border-radius: 10px;
+  border: 2px dashed var(--border);
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.couple-card--waiting { color: var(--muted); }
+.couple-card--new {
+  border: 2px solid var(--accent);
+  background: rgba(34, 197, 94, 0.12);
+}
+.couple-card--known {
+  border: 2px solid var(--info);
+  background: rgba(56, 189, 248, 0.12);
+}
+.couple-card--recouple {
+  border: 2px solid var(--warn);
+  background: rgba(249, 115, 22, 0.12);
+}
+.couple-card-state {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.couple-card--new .couple-card-state { color: var(--accent); }
+.couple-card--known .couple-card-state { color: var(--info); }
+.couple-card--recouple .couple-card-state { color: var(--warn); }
+.couple-card-main {
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+.couple-card-tag {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
+.couple-queue-note {
+  color: var(--warn);
+  font-size: 13px;
+  font-weight: 600;
+}
+.couple-form {
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.couple-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+.couple-log li {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.couple-log-divider { color: var(--muted); text-align: center; }
+.couple-mode-active {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ---- W-051: Antenna diagnostics panel ---- */

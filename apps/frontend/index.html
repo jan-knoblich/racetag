@@ -14,10 +14,19 @@
           <input id="backendUrl" type="text" />
         </label>
         <button id="connectBtn">Connect</button>
-        <input id="csvFile" type="file" accept=".csv" style="display: none;" />
+        <input id="csvFile" type="file" accept=".csv,.txt" style="display: none;" />
         <button id="importCsvBtn">Import CSV</button>
+        <!-- Tag inventory: wave tags in a scratch race, download an
+             import-ready start-list template of everything that was read -->
+        <button id="exportTagsBtn"
+          title="Download every tag read in this race as a start-list CSV template (wave tags, then export)">
+          Export tags</button>
         <!-- W-012: Register rider button -->
         <button id="coupleTagBtn">Couple tag &#x2192; rider</button>
+        <!-- W-075: serial coupling mode toggle -->
+        <button id="coupleModeBtn"
+          title="Serien-Kopplung: Tag scannen, Nummer tippen, Enter — viele Tags nacheinander">
+          Koppel-Modus</button>
         <!-- Multi-race: race selector + create -->
         <label class="toggle-control race-select-control">
           Race:
@@ -57,6 +66,42 @@
         <button id="importErrorsToggle" class="import-errors-toggle">Show import errors</button>
         <ul id="importErrorList" class="import-error-list" hidden></ul>
       </div>
+
+      <!-- W-075: Serial coupling mode panel. Standings stay visible below;
+           the big card is readable across the gluing table. -->
+      <section id="couplePanel" class="couple-panel" hidden>
+        <div class="couple-panel-header">
+          <h2>Koppel-Modus</h2>
+          <span id="coupleCounter" class="couple-counter">0 gekoppelt</span>
+          <label class="toggle-control">
+            <input id="coupleBeepToggle" type="checkbox" checked /> Ton
+          </label>
+          <button id="coupleModeCloseBtn">Beenden</button>
+        </div>
+        <div id="coupleCard" class="couple-card couple-card--waiting">
+          <div id="coupleCardState" class="couple-card-state">Tag an die Antenne halten&#8230;</div>
+          <div id="coupleCardMain" class="couple-card-main"></div>
+          <div id="coupleCardTag" class="couple-card-tag"></div>
+          <div id="coupleQueueNote" class="couple-queue-note" hidden></div>
+          <button id="coupleRecoupleBtn" hidden>&#196;ndern (neu koppeln)</button>
+        </div>
+        <div class="couple-form">
+          <div class="modal-field">
+            <label for="coupleBib">Startnummer</label>
+            <input id="coupleBib" type="number" min="1" placeholder="z.B. 42" disabled />
+          </div>
+          <div class="modal-field">
+            <label for="coupleName">Name (optional)</label>
+            <input id="coupleName" type="text" disabled />
+          </div>
+          <div id="coupleWarn" class="modal-error" hidden></div>
+          <div class="modal-actions">
+            <button id="coupleSaveBtn" class="btn-primary" disabled>Speichern (Enter)</button>
+            <button id="coupleSkipBtn">&#220;berspringen</button>
+          </div>
+        </div>
+        <ul id="coupleLog" class="couple-log"></ul>
+      </section>
 
       <section>
         <h2>Standings</h2>
