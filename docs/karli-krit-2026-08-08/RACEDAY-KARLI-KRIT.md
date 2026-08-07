@@ -64,7 +64,8 @@ Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
 
 | Schritt | Aktion |
 |---|---|
-| Sign-on | Plakette aus dem Zirkel des Rennens ausgeben; Erik notiert Name ↔ Nummer auf der Meldeliste (`rennen/<HHMM>-….csv`) |
+| Sign-on | Plakette aus dem Zirkel des Rennens ausgeben; Erik führt Name ↔ Nummer |
+| **T−15: Eriks finale Liste kommt** | Nur die DELTAS zur Vorab-Zuweisung einpflegen (siehe unten) — die Zeitmessung wartet NIE auf Namen, das Rennen startet notfalls mit halbfertiger Liste |
 | ~5 min vorher | Race im Dropdown wählen → Format checken: `total_laps` im **Header** (NIE Zahnrad — M3/M4-Bug!), Zeit-Rennen: `final_laps` nach Ansage |
 | Startschuss | **„Start race"** |
 | Während | Namen eintragen (unten); ⚠-Marker = evtl. verpasste Lesung → Reparatur-Kasten |
@@ -77,6 +78,18 @@ Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
 Das Rennen läuft mit **total_laps = 10** — **NIEMALS während oder nach dem Lauf auf 5 zurückdrehen!** (Offener M3/M4-Bug: `finished` wird nicht neu berechnet, und 10-km-Läufer würden bei ihrer nächsten Überfahrt fälschlich bei 5 Runden eingefroren.) Die 5-km-Läufer brauchen auch kein Einfrieren: Jede Überfahrt liegt mit Zeitstempel im Audit-Trail.
 
 **Auswertung nach dem Lauf (End race, dann):** `python3 docs/karli-krit-2026-08-08/lauf_auswertung.py` — liest die DB read-only und nimmt pro Läufer exakt die N-te Überfahrt seines Blocks (100er → 10., 300er → 5.; Blöcke oben im Skript anpassen, sobald Erik sie bestätigt). Immun gegen Ziel-Schlenderer (Extra-Überfahrten werden ignoriert und ausgewiesen); Läufer mit zu wenigen Lesungen landen als „unvollständig" unter der Wertung statt mit falscher Zeit drin. Ausgabe: `ergebnis-lauf-<block>.csv` sortiert nach Zeit. Die Live-Standings während des Laufs zeigen für 5-km-Läufer kein „finished" — egal, die Wertung kommt aus dem Skript.
+
+### Eriks 15-Minuten-Liste: NICHTS tun müssen — Namen kommen im Nachhinein
+
+**Entschieden 07.08.: Tagsüber läuft alles nur über Nummern.** Eriks Liste pro Rennen einfach einsammeln/ablegen — eingeheiratet werden die Namen NACH dem Rennen:
+
+```
+„Export results" → python3 docs/karli-krit-2026-08-08/ergebnis_merge.py export.csv erik-liste.csv
+```
+
+→ schreibt `…-mit-namen.csv` (Excel-tauglich): Namen aus Eriks Liste (Erik gewinnt bei Konflikt mit Vorab-Namen), Warnung für Nummern ganz ohne Namen, No-Shows werden gelistet. Funktioniert genauso für die Lauf-Ergebnisse aus `lauf_auswertung.py`. Eriks Listenformat ist egal (Nummer;Name oder Name,Nummer, Kopfzeile ja/nein) — muss nur digital vorliegen (abtippen/abfotografieren+abtippen reicht abends).
+
+Optional, wenn zwischendurch Luft ist (schöner für Live-Standings/Sprecher): Namen per **„Fahrer"**-Button oder `namen_einspielen.py liste.csv` (gegen die laufende App, aktives Rennen) schon tagsüber einpflegen — nötig ist es nicht.
 
 **Namen eintragen — ohne Reader, jederzeit:** Button **„Fahrer"** (oder Doppelklick auf Standings-Zeile) → Nummer suchen → Name tippen → Enter. **⚠ Haken „In allen Rennen übernehmen" AUS lassen** (ist Standard): dieselbe Plakette trägt in verschiedenen Rennen verschiedene PERSONEN — Übernehmen würde Namen in frühere/spätere Rennen schreiben. Nur setzen, wenn jemand nachweislich mit derselben Plakette mehrfach startet.
 
