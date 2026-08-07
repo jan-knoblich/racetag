@@ -9,6 +9,7 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. **Nummern-Modell: eine Numme
 3. **Koppel-Session** (Reader an, FritzBox **LAN2!**):
    - Rennen egal (z. B. Default race) — Riders sind zwar per-race, aber der Export läuft über die Reads + Kopplungen desselben Rennens: **im selben Rennen bleiben** für Koppeln + Export!
    - **„Koppel-Modus"** klicken → Tag ans Lesefeld → grüne Karte „NEUER TAG" + Doppel-Piep → **Nummer vom Label tippen → Enter** → nächster Tag. Name leer lassen (kommt morgen).
+   - **WIRKLICH ALLE physischen Tags koppeln, auch die komplette Reserve!** Jeder heute gekoppelte Tag ist nach dem Master-Import automatisch der Nachmelde-Platzhalter in jedem Rennen. Ein heute NICHT gekoppelter Tag ist morgen ohne Reader-Zugriff wertlos — seine ID lässt sich ohne Lesung nicht ermitteln.
    - Karte blau „Bereits gekoppelt: Nr. X" = dieser Tag ist schon vergeben (Label-Check!). Falsches Label → „Ändern (neu koppeln)".
    - Doppelte Nummer wird gewarnt (zweites Enter überschreibt bewusst).
 4. **Master-CSV exportieren:** „Export tags" → `racetag-tags-….csv` speichern als **`tagesmaster.csv`**. Enthält jetzt tag_id;bib;(name) aller gekoppelten Tags. Spalte `reads` checken: Tag mit auffällig wenigen Reads liest schlecht → aussortieren.
@@ -32,7 +33,7 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. **Nummern-Modell: eine Numme
 
 **Namen nachziehen (optional, zwischen den Slots):** `tagesmaster.csv` in Excel offen halten; Namen neben die vergebene Nummer eintragen (aus Eriks Liste); vor dem Ergebnis-Export einmal ins aktuelle Rennen re-importieren → Namen erscheinen rückwirkend in Standings + Export. Eine Datei für den ganzen Tag (Nummern sind personenfest!).
 
-**Nachmeldung vor Ort:** neuer Fahrer bekommt freien Tag+Nummer → Koppel-Modus kurz an (oder „Couple tag → rider") im AKTUELLEN Rennen koppeln, in tagesmaster.csv nachtragen (sonst fehlt er in späteren Rennen!).
+**Nachmeldung vor Ort — braucht KEINEN Reader-Zugriff:** Weil die tagesmaster.csv in alle Rennen importiert ist, ist jeder gestern gekoppelte Tag in jedem Rennen schon startklar. Nachmeldung = freien Tag + Nummer ausgeben, fertig — gewertet wird ab der ersten Zieldurchfahrt. Name optional: in tagesmaster.csv bei der Nummer eintragen und ins aktuelle Rennen re-importieren (Import CSV — reine Dateioperation, Reader egal). Nur falls ein Rennen den Master NICHT importiert hat: Master jetzt importieren (10 s), ebenfalls ohne Reader.
 
 ## Reparatur-Kasten (Kurzfassung — Details im TT-Runbook `docs/issues/RECHECK-2026-07-25.md` §5)
 
