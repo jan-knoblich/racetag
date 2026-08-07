@@ -19,8 +19,9 @@ from pathlib import Path
 
 # Nummernblöcke: (Label, von, bis, Ziel-Runden) — an Eriks Ansage anpassen!
 BLOCKS = [
-    ("10km Erwachsene", 100, 199, 10),
-    ("5km Erwachsene", 300, 399, 5),
+    # inkl. +20%-Puffer-Verbreiterung (siehe nummern_zuweisung.py)
+    ("10km Erwachsene", 100, 220, 10),
+    ("5km Erwachsene", 300, 420, 5),
     ("5km-10km U18", 500, 599, None),  # None = Ziel unklar, nur Rohliste
 ]
 MIN_GAP_S = 15.0  # wie das Backend-Cooldown: Überfahrten dichter dran = 1 Pass

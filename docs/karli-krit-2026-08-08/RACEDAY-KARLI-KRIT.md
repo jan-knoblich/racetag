@@ -10,7 +10,7 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. In der App sind **12 Rennen*
 
 | Rennen | Zirkel |
 |---|---|
-| 09:00 Lauf (EIN Rennen, 5+10 km gleichzeitig) | Erwachsene 10 km = 100er-Block, dann 300er, 500er usw. — Blöcke trennen die Wertung |
+| 09:00 Lauf (EIN Rennen, 5+10 km gleichzeitig) | 10 km `101-220` · 5 km `301-420` · U18 `501-530` — inkl. **+20 % Nachmelde-Puffer** (10 km: 193–211, 5 km: 397–416, U18: 512–514 sind Puffer-Blätter mit leerem Namen); Blöcke trennen die Wertung |
 | 11:20 R1 | U15m `81-92` · U17w `301-306` |
 | 12:10 R2 | U17m `181-193` (Erik: 191–193 dazu) · Masters 4 `316-326` |
 | 13:00 R3 | Masters 2 `281-294` · Masters 3 `331-343` · Junioren `401-410` (Erik) |
@@ -26,7 +26,7 @@ Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280
 
 ## Drucken: `startnummern-karli-krit.pdf` (in Downloads)
 
-412 A5-Querseiten im A5.docx-Format (Banner + Riesennummer), **eine Seite pro Teilnehmer**, sortiert nach Slot → Nummer (Stapel kommen rennfertig aus dem Drucker). **111 Nummern sind absichtlich doppelt** (Lauf-Papier UND Rad-Plakette, z. B. zweimal „101") — das sind zwei verschiedene physische Nummern mit zwei verschiedenen Tags! Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
+454 A5-Querseiten im A5.docx-Format (Banner + Riesennummer): eine Seite pro Teilnehmer **plus 42 Lauf-Puffer-Blätter (+20 % je Block)**, sortiert nach Slot → Nummer (Stapel kommen rennfertig aus dem Drucker). **136 Nummern sind absichtlich doppelt** (Lauf-Papier UND Rad-Plakette, z. B. zweimal „101") — zwei verschiedene physische Nummern mit zwei verschiedenen Tags! Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
 
 ## Heute Abend: Kleben mit Auto-Zuweisung (Fließband)
 

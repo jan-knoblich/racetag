@@ -41,12 +41,16 @@ CIRCLES = {
     # FG behält die Plakette über Quali + Finals):
     "fixed_gear_men": range(411, 441),
     "flinta": range(441, 451),
-    # Lauf: Blöcke lt. Erik (m+w teilen sich den Block)
-    "lauf_m_10km": range(101, 200), "lauf_w_10km": range(101, 200),
-    "lauf_m_5km": range(301, 400), "lauf_w_5km": range(301, 400),
-    "lauf_m_u18_5km": range(501, 600), "lauf_w_u18_5km": range(501, 600),
-    "lauf_m_u18_10km": range(501, 600), "lauf_w_u18_10km": range(501, 600),
+    # Lauf: Blöcke lt. Erik (m+w teilen sich den Block). Verbreitert über die
+    # reinen 100er hinaus, damit +20 % Nachmelde-Puffer reinpassen — die
+    # Blöcke bleiben untereinander disjunkt, Radnummern dürfen überlappen.
+    "lauf_m_10km": range(101, 221), "lauf_w_10km": range(101, 221),
+    "lauf_m_5km": range(301, 421), "lauf_w_5km": range(301, 421),
+    "lauf_m_u18_5km": range(501, 531), "lauf_w_u18_5km": range(501, 531),
+    "lauf_m_u18_10km": range(501, 531), "lauf_w_u18_10km": range(501, 531),
 }
+
+LAUF_PUFFER = 0.20  # Nachmelde-Reserve pro Lauf-Block (aufgerundet)
 
 
 def lastname_key(name: str) -> str:
@@ -118,6 +122,20 @@ def main() -> None:
             for cat, e in everyone[len(pool):]:
                 assigned.append({"bib": "", "name": e["name"], "kategorie": cat,
                                  "team": e["team"]})
+            # Lauf-Blöcke: +20 % Nachmelde-Puffer — die nächsten freien Nummern
+            # des Blocks als leere Einträge (Name wird am Sign-on-Tisch
+            # eingetragen; Blatt wird mitgedruckt, Tag mitgekoppelt).
+            if any(cat.startswith("lauf_") for cat, _ in groups):
+                import math
+                n_buf = math.ceil(len(everyone) * LAUF_PUFFER)
+                rest = pool[len(everyone):len(everyone) + n_buf]
+                for num in rest:
+                    assigned.append({"bib": num, "name": "",
+                                     "kategorie": "nachmelde-puffer", "team": ""})
+                if len(rest) < n_buf:
+                    flagged.append(
+                        f"Zirkel {start}-{stop - 1}: Puffer abgeschnitten "
+                        f"({len(rest)} von {n_buf})")
 
         slot = src.stem
         # Anmeldeliste: alphabetisch, fürs schnelle Finden am Tisch
