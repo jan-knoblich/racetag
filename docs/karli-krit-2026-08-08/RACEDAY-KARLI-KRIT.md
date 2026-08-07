@@ -12,18 +12,17 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. In der App sind **12 Rennen*
 |---|---|
 | 09:00 Lauf (EIN Rennen, 5+10 km gleichzeitig) | Erwachsene 10 km = 100er-Block, dann 300er, 500er usw. — Blöcke trennen die Wertung |
 | 11:20 R1 | U15m `81-92` · U17w `301-306` |
-| 12:10 R2 | U17m `181-190` · Masters 4 `316-326` |
-| 13:00 R3 | Masters 2 `281-294` · Masters 3 `331-343` — ⚠ Junioren/U19m-Zirkel fehlt im Excel, Erik fragen |
+| 12:10 R2 | U17m `181-193` (Erik: 191–193 dazu) · Masters 4 `316-326` |
+| 13:00 R3 | Masters 2 `281-294` · Masters 3 `331-343` · Junioren `401-410` (Erik) |
 | 15:00 Jedermann leicht | `1-75` |
+| 16:00/19:30/20:00 Fixed Gear | `411-440` · FLINTA `441-450` (Vorschlag aus den freien Bereichen — FG behält die Plakette Quali→Finals) |
 | 16:15 Frauen | Lizenz `351-369` · Jedefrau `371-381` · Juniorinnen `391-399` |
 | 17:15 Jedermann mittel | `101-175` |
 | 18:15 Jedermann schwer | `201-275` |
-| Kids / Fixed Gear | kein Zirkel im Excel — vor Ort klären |
+| Kids | kein Zirkel — vor Ort klären |
 
-**⚠ Offene Zirkel-Fragen an Erik (Stand 07.08. abends, aus `nummern_zuweisung.py`):**
-1. **U17m: 13 Meldungen, aber nur 10 Nummern (181–190)** — Zirkel erweitern?
-2. **Junioren/U19m: 7 Meldungen, kein Zirkel** im Excel (R3-Sheet nennt sie im Titel).
-3. **Fixed Gear (22) + FLINTA (4): kein Zirkel** — eigene Nummern?
+Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280, 295-300, 400, 451-500, 600+`.
+**Alle 412 Meldungen sind nummeriert** (`zuweisung/`-Listen, Stand 07.08. abends) — beim Kleben daran denken: auch die Plaketten **181–193, 401–410, 411–450** brauchen Tags!
 
 ## Heute Abend: Kleben mit Auto-Zuweisung (Fließband)
 

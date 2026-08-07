@@ -26,19 +26,21 @@ CIRCLES = {
     "u15m": range(81, 93),
     "u15w": None,               # kein Zirkel im Excel
     "u17w": range(301, 307),
-    "u17m": range(181, 191),
+    "u17m": range(181, 194),   # Erik 07.08.: 191-193 dazu
     "masters_4": range(316, 327),
     "masters_2": range(281, 295),
     "masters_3": range(331, 344),
-    "junioren": None,           # ⚠ fehlt im Excel — Erik fragen
+    "junioren": range(401, 411),  # Erik 07.08.
     "jedermann_leicht": range(1, 76),
     "frauen_elite": range(351, 370),
     "jedefrau": range(371, 382),
     "juniorinnen": range(391, 400),
     "jedermann_mittel": range(101, 176),
     "jedermann_schwer": range(201, 276),
-    "fixed_gear_men": None,     # eigene Nummern — vor Ort klären
-    "flinta": None,
+    # Eigene Nummern (Vorschlag aus den tagesweit freien Bereichen 411-500;
+    # FG behält die Plakette über Quali + Finals):
+    "fixed_gear_men": range(411, 441),
+    "flinta": range(441, 451),
     # Lauf: Blöcke lt. Erik (m+w teilen sich den Block)
     "lauf_m_10km": range(101, 200), "lauf_w_10km": range(101, 200),
     "lauf_m_5km": range(301, 400), "lauf_w_5km": range(301, 400),
