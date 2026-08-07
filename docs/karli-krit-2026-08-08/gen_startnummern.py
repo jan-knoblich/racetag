@@ -43,6 +43,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--banner", default=None, help="Banner-Bild (PNG/JPEG)")
     ap.add_argument("--out", default=str(Path.home() / "Downloads/startnummern-karli-krit.pdf"))
+    ap.add_argument("--split-before", default=None, metavar="HHMM",
+                    help="in zwei PDFs teilen: Slots vor HHMM -> -teil1, ab HHMM -> -teil2")
     args = ap.parse_args()
 
     pairs = collect_numbers()
@@ -52,26 +54,37 @@ def main() -> None:
         print(f"{len(dupes)} Nummern kommen mehrfach vor (Lauf/Rad-Überschneidung), "
               f"z. B. {sorted(dupes)[:6]}")
 
-    c = canvas.Canvas(args.out, pagesize=(PAGE_W, PAGE_H))
-    banner_w, banner_h = 13.5 * cm, 2.22 * cm
-    for slot, num in pairs:
-        if args.banner:
-            c.drawImage(args.banner, (PAGE_W - banner_w) / 2,
-                        PAGE_H - 0.75 * cm - banner_h,
-                        width=banner_w, height=banner_h,
-                        preserveAspectRatio=True, mask="auto")
-        text = str(num)
-        size = 320
-        while c.stringWidth(text, "Helvetica-Bold", size) > PAGE_W - 1.2 * cm:
-            size -= 10
-        c.setFont("Helvetica-Bold", size)
-        # Vertikal mittig im Bereich unter dem Banner (Kapitälchenhöhe ~0.72 em)
-        area_top = PAGE_H - 0.75 * cm - banner_h - 0.4 * cm
-        baseline = (area_top - 0.72 * size) / 2 + 0.06 * size
-        c.drawCentredString(PAGE_W / 2, max(baseline, 0.8 * cm), text)
-        c.showPage()
-    c.save()
-    print(f"-> {args.out}")
+    def render(path, subset):
+        c = canvas.Canvas(path, pagesize=(PAGE_W, PAGE_H))
+        banner_w, banner_h = 13.5 * cm, 2.22 * cm
+        for slot, num in subset:
+            if args.banner:
+                c.drawImage(args.banner, (PAGE_W - banner_w) / 2,
+                            PAGE_H - 0.75 * cm - banner_h,
+                            width=banner_w, height=banner_h,
+                            preserveAspectRatio=True, mask="auto")
+            text = str(num)
+            size = 320
+            while c.stringWidth(text, "Helvetica-Bold", size) > PAGE_W - 1.2 * cm:
+                size -= 10
+            c.setFont("Helvetica-Bold", size)
+            # Vertikal mittig unter dem Banner (Kapitälchenhöhe ~0.72 em)
+            area_top = PAGE_H - 0.75 * cm - banner_h - 0.4 * cm
+            baseline = (area_top - 0.72 * size) / 2 + 0.06 * size
+            c.drawCentredString(PAGE_W / 2, max(baseline, 0.8 * cm), text)
+            c.showPage()
+        c.save()
+        print(f"-> {path} ({len(subset)} Seiten)")
+
+    if args.split_before:
+        cut = args.split_before
+        part1 = [p for p in pairs if p[0][:4] < cut]
+        part2 = [p for p in pairs if p[0][:4] >= cut]
+        stem = args.out[:-4] if args.out.endswith(".pdf") else args.out
+        render(f"{stem}-teil1.pdf", part1)
+        render(f"{stem}-teil2.pdf", part2)
+    else:
+        render(args.out, pairs)
 
 
 if __name__ == "__main__":
