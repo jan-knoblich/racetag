@@ -37,24 +37,18 @@ Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280
 
 Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
 
-## Heute Abend: Kleben mit Auto-Zuweisung (Fließband)
+## Heute Abend: Kleben mit Auto-Zuweisung — PRO RENNEN (entschieden 07.08. ~21:30)
 
-**⚠ Wegen der doppelten Nummern in ZWEI Gruppen koppeln:**
-- **Lauf-Papiere** (101-199, 301-399, 501er): im Rennen **„09:00 Lauf 5/10km"** koppeln → dort „Export tags" = **Lauf-Master**.
-- **Rad-Plaketten** (alle übrigen Zirkel): in einem **Arbeits-Rennen** (z. B. Default race) koppeln → „Export tags" = **Rad-Master**, wird in die 11 Rad-Rennen importiert (NICHT ins Lauf-Rennen!).
-- Zuweisung dann: `nummern_zuweisung.py --master rad-master.csv --master-lauf lauf-master.csv` — der 0900-Slot bekommt seine Import-Datei aus dem Lauf-Master, alle anderen aus dem Rad-Master.
+**Jede Plakette wird direkt in ihrem Rennen gekoppelt.** Kein Arbeits-Rennen, keine Master-Importe — die Fahrerlisten entstehen beim Koppeln selbst. Doppelte Nummern (Lauf 101 vs. mittel 101) sind dadurch automatisch sauber getrennt.
 
-1. `racetag` (oder `racetag log` fürs Terminal-Log). Reader an **FritzBox LAN2!**
-2. In einem Arbeits-Rennen bleiben (z. B. Default race) → **„Koppel-Modus"** → unten den Zirkel eintragen (z. B. `1-75` oder `1-75,81-92,101-175`) → **„Auto-Zuweisung starten"**.
-3. Fließband: App zeigt groß **„Nr. 1"** → frischen Tag über die Antenne → Piep = gekoppelt, App zeigt „Nr. 2" → Tag auf Plakette 1 kleben → nächster Tag. **Reihenfolge ist alles:** immer erst schwenken, dann kleben, nie zwei Tags gleichzeitig ins Feld. Plakette fehlt/kaputt → „Überspringen".
-4. Schon-gekoppelte Tags stören nicht: blauer Hinweis „schon Nr. X", die Schleife rückt NICHT weiter.
-5. Alle Zirkel durcharbeiten (auch Läufer-Plaketten!). Abbrechen/fortsetzen jederzeit — beim Neustart bietet die Schleife nur noch freie Nummern an.
-6. **„Export tags"** → als `tagesmaster.csv` sichern (enthält jetzt tag_id;Nummer). `reads`-Spalte checken: schwache Tags aussortieren.
-7. **Namen-Zuweisung generieren:** `python3 docs/karli-krit-2026-08-08/nummern_zuweisung.py --master <pfad>/tagesmaster.csv` — vergibt pro Kategorie die Zirkel-Nummern alphabetisch an die Meldeliste und schreibt nach `zuweisung/`: pro Slot eine **Anmeldeliste** (Name → Nummer, mit Abhak-Spalte für den Sign-on-Tisch — drucken!) und eine **Import-Datei** (tag_id;bib;name). Deterministisch: gleiche Meldeliste ⇒ gleiche Nummern. (Ohne `--master` entstehen nur die Anmeldelisten — so wurde die Zuordnung schon am Vorabend fixiert.)
-8. **Pro Rennen importieren:** erst `tagesmaster.csv` (alle Plaketten als Platzhalter), dann `zuweisung/<slot>-import.csv` (die Namen). Zwei Klicks je Rennen.
-9. Backup: `cp -r ~/.racetag/data ~/Desktop/karli-vorabend.bak`
+1. `racetag` (oder `racetag log`). Reader an **FritzBox LAN2!**
+2. **Pro Rennen:** Rennen im Dropdown wählen → „Koppel-Modus" → Zirkel des Rennens eintragen (Tabelle oben) → „Auto-Zuweisung starten" → Fließband: schwenken → Piep → kleben → nächster. Immer erst schwenken, dann kleben, ein Tag zur Zeit; kaputte Plakette → „Überspringen". Beim Neustart bietet die Schleife nur freie Nummern an.
+3. **Fixed Gear (Plakette bleibt beim Fahrer über 3 Rennen):** 411-436 nur im **Quali-Rennen (16:00)** koppeln → dort „Export tags" → die Datei in **19:30** und **20:00** importieren (gleiche Plakette = gleicher Tag). FLINTA 441-446 zusätzlich direkt im 19:30-Rennen per Auto-Zuweisung.
+4. **Lauf-Papiere** (101-211, 301-416, 501-514) im Lauf-Rennen — fertig zu Ende koppeln.
+5. **Prüflauf:** `python3 docs/karli-krit-2026-08-08/pruefe_kopplung.py` — prüft alle 12 Rennen: Soll/Ist pro Zirkel, doppelte Nummern, Lauf↔Rad-Tag-Trennung, FG-Tag-Gleichheit, Formate, Start-Flags. Muss am Ende „KEINE strukturellen Fehler" sagen und überall voll gekoppelt zeigen.
+6. Backup: `cp -r ~/.racetag/data ~/Desktop/karli-vorabend.bak`
 
-**Sign-on morgen damit:** Name auf der Anmeldeliste finden → abhaken → Plakette mit der Nummer ausgeben. Fertig — Name ist schon in racetag. Nachmeldungen bekommen freie (nicht zugewiesene) Nummern des Zirkels + Name per Fahrer-Editor.
+**Sign-on morgen:** Anmeldeliste (`zuweisung/…-anmeldeliste.csv`, drucken) → Name abhaken → Plakette ausgeben. Namen kommen NICHT live in die App — Ergebnisse werden im Nachhinein gemerged (siehe unten). Falsch gekoppelte Plaketten-Gruppen repariert `fix_falsches_rennen.py --quelle … --ziel … --von … --bis …` (Dry-Run zuerst).
 
 ## Morgen früh (5 min)
 
