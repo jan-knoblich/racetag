@@ -24,7 +24,16 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. In der App sind **12 Rennen*
 Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280, 295-300, 400, 451-500, 600+`.
 **Alle 412 Meldungen sind nummeriert** (`zuweisung/`-Listen, Stand 07.08. abends) — beim Kleben daran denken: auch die Plaketten **181–193, 401–410, 411–450** brauchen Tags!
 
+## Drucken: `startnummern-karli-krit.pdf` (in Downloads)
+
+412 A5-Querseiten im A5.docx-Format (Banner + Riesennummer), **eine Seite pro Teilnehmer**, sortiert nach Slot → Nummer (Stapel kommen rennfertig aus dem Drucker). **111 Nummern sind absichtlich doppelt** (Lauf-Papier UND Rad-Plakette, z. B. zweimal „101") — das sind zwei verschiedene physische Nummern mit zwei verschiedenen Tags! Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
+
 ## Heute Abend: Kleben mit Auto-Zuweisung (Fließband)
+
+**⚠ Wegen der doppelten Nummern in ZWEI Gruppen koppeln:**
+- **Lauf-Papiere** (101-199, 301-399, 501er): im Rennen **„09:00 Lauf 5/10km"** koppeln → dort „Export tags" = **Lauf-Master**.
+- **Rad-Plaketten** (alle übrigen Zirkel): in einem **Arbeits-Rennen** (z. B. Default race) koppeln → „Export tags" = **Rad-Master**, wird in die 11 Rad-Rennen importiert (NICHT ins Lauf-Rennen!).
+- Zuweisung dann: `nummern_zuweisung.py --master rad-master.csv --master-lauf lauf-master.csv` — der 0900-Slot bekommt seine Import-Datei aus dem Lauf-Master, alle anderen aus dem Rad-Master.
 
 1. `racetag` (oder `racetag log` fürs Terminal-Log). Reader an **FritzBox LAN2!**
 2. In einem Arbeits-Rennen bleiben (z. B. Default race) → **„Koppel-Modus"** → unten den Zirkel eintragen (z. B. `1-75` oder `1-75,81-92,101-175`) → **„Auto-Zuweisung starten"**.

@@ -56,16 +56,26 @@ def lastname_key(name: str) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--master", help="tagesmaster.csv (tag_id;bib;…) für Import-Dateien")
+    ap.add_argument("--master", help="Rad-Master (Export tags des Arbeits-Rennens)")
+    ap.add_argument("--master-lauf", help="Lauf-Master (Export tags des Lauf-Rennens) "
+                    "— 111 Nummern existieren doppelt (Lauf-Papier + Rad-Plakette), "
+                    "jede Gruppe hat ihre eigenen Tags!")
     args = ap.parse_args()
 
-    tag_by_bib: dict[str, str] = {}
-    if args.master:
-        with open(args.master, encoding="utf-8-sig") as f:
+    def load_master(path):
+        m: dict[str, str] = {}
+        with open(path, encoding="utf-8-sig") as f:
             for row in csv.reader(f, delimiter=";"):
                 if len(row) >= 2 and row[0] and row[1] and row[0] != "tag_id":
-                    tag_by_bib[row[1].strip()] = row[0].strip()
-        print(f"Master: {len(tag_by_bib)} Tag↔Nummer-Paare")
+                    m[row[1].strip()] = row[0].strip()
+        return m
+
+    tag_by_bib = load_master(args.master) if args.master else {}
+    tag_by_bib_lauf = load_master(args.master_lauf) if args.master_lauf else {}
+    if tag_by_bib:
+        print(f"Rad-Master: {len(tag_by_bib)} Tag↔Nummer-Paare")
+    if tag_by_bib_lauf:
+        print(f"Lauf-Master: {len(tag_by_bib_lauf)} Tag↔Nummer-Paare")
 
     outdir = HERE / "zuweisung"
     outdir.mkdir(exist_ok=True)
@@ -118,9 +128,13 @@ def main() -> None:
             for e in sorted(assigned, key=lambda e: lastname_key(e["name"])):
                 w.writerow([e["name"], e["bib"], e["kategorie"], e["team"], ""])
 
-        # Import-Datei: nur wenn Master da ist (tag_id-Auflösung über die Nummer)
-        note = ""
-        if tag_by_bib:
+        # Import-Datei: nur wenn der passende Master da ist. Der Lauf-Slot
+        # nutzt den Lauf-Master (eigene Papiernummern + Tags), alle Rad-Slots
+        # den Rad-Master.
+        is_lauf = slot.startswith("0900")
+        master = tag_by_bib_lauf if is_lauf else tag_by_bib
+        note = "" if master else " (kein passender Master — keine Import-Datei)"
+        if master:
             missing = 0
             with open(outdir / f"{slot}-import.csv", "w",
                       encoding="utf-8-sig", newline="") as f:
@@ -128,7 +142,7 @@ def main() -> None:
                 w.writerow(["tag_id", "bib", "name", "kategorie (Import ignoriert)"])
                 for e in sorted([a for a in assigned if a["bib"] != ""],
                                 key=lambda e: e["bib"]):
-                    tag = tag_by_bib.get(str(e["bib"]), "")
+                    tag = master.get(str(e["bib"]), "")
                     if not tag:
                         missing += 1
                     w.writerow([tag, e["bib"], e["name"], e["kategorie"]])
