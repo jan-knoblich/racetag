@@ -30,6 +30,9 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. **Nummern-Modell: eine Numme
 | Während | Glocke/laps-to-go-Banner beachten; ⚠-Marker = evtl. verpasste Lesung → Reparatur-Kasten |
 | Leader im Ziel | Abwink-Modell läuft automatisch (jeder wird bei seiner nächsten Durchfahrt gewertet) |
 | Danach | **„End race"** → **„Export results"** → CSV sichern. Versehentliches End: „Reopen race" |
+| Sofort danach | **Nächstes Slot-Rennen auswählen** (nicht starten!) — siehe unten |
+
+**Zwischen den Rennen (wichtig — Master ist überall importiert!):** Ein *laufendes* Rennen bei offener Strecke ist das einzige Fenster, in dem Warmup-Fahrer/Fußgänger mit Tag echte Runden sammeln. Deshalb: (1) **„End race" sofort nach dem letzten Zieldurchgang** — danach ist die Linie tot. (2) **Direkt das nächste Slot-Rennen auswählen, NICHT starten** — Überfahrten bis zum Startschuss sind dann nur 0-Runden-Check-ins, die nebenbei bestätigen, dass die Tags lesen. Rutscht doch mal ein Passant in ein laufendes Rennen: DNS/DSQ setzen oder „Reset rider" (Reparatur-Kasten), geht auch nach Rennende vor dem Export.
 
 **Namen eintragen — direkt in der App, ohne Reader:** Button **„Fahrer"** (oder Doppelklick auf eine Standings-Zeile) → nach Nummer suchen → Name tippen → Enter. Haken **„In allen Rennen übernehmen"** (Standard: an) schreibt den Namen in jedes Rennen, in dem der Tag registriert ist — ein Eintrag deckt also Mehrfachstarter für den ganzen Tag ab (Toast zeigt „(N Rennen)"). Kein Excel nötig; die tagesmaster.csv bleibt als Backup-Weg (Namen eintragen → Import CSV).
 
