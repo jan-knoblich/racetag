@@ -37,7 +37,7 @@ CIRCLES = {
     "frauen_elite": range(351, 367),     # 13 gemeldet, war -369
     "jedefrau": range(371, 382),
     "juniorinnen": range(391, 396),      # 2 gemeldet, war -399
-    "jedermann_mittel": range(101, 166),  # 50 gemeldet; gekürzt von -175
+    "jedermann_mittel": range(101, 176),  # volle Breite (50 gemeldet, Limit 75)
     "jedermann_schwer": range(201, 241),  # 18 gemeldet; gekürzt von -275
     # Eigene Nummern (aus den tagesweit freien Bereichen; FG behält die
     # Plakette über Quali + Finals):

@@ -17,10 +17,10 @@ Rennbüro + Start/Ziel: Karl-Liebknecht-Straße 31. In der App sind **12 Rennen*
 | 15:00 Jedermann leicht | `1-50` (gekürzt) |
 | 16:00/19:30/20:00 Fixed Gear | `411-436` · FLINTA `441-446` (FG behält die Plakette Quali→Finals) |
 | 16:15 Frauen | Lizenz `351-366` · Jedefrau `371-381` · Juniorinnen `391-395` |
-| 17:15 Jedermann mittel | `101-165` (gekürzt) |
+| 17:15 Jedermann mittel | `101-175` (volle Breite) |
 | 18:15 Jedermann schwer | `201-240` (gekürzt) |
 
-(Zirkel am 07.08. spät aufs Tag-Budget gekürzt: Zirkel ≈ Meldungen + realistische Reserve. Achtung: leicht/mittel-Zirkel liegen damit UNTER dem 75er-Rennlimit — wenn der Andrang das sprengt, Reserve-Bereiche 451-500/600+ nachziehen.)
+(Zirkel am 07.08. spät aufs Tag-Budget gekürzt: Zirkel ≈ Meldungen + realistische Reserve. Achtung: der leicht-Zirkel liegt damit UNTER dem 75er-Rennlimit — wenn der Andrang das sprengt, Reserve-Bereiche 451-500/600+ nachziehen.)
 | Kids | kein Zirkel — vor Ort klären |
 
 Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280, 295-300, 400, 451-500, 600+`.
@@ -28,11 +28,11 @@ Tagesweit noch komplett frei (für Kids/Spontanes): `76-80, 93-100, 200, 276-280
 
 ## Drucken: `startnummern-karli-krit.pdf` (in Downloads)
 
-**535 A5-Querseiten** im A5.docx-Format (Banner + Riesennummer), sortiert nach Slot → Nummer (Stapel kommen rennfertig aus dem Drucker):
+**545 A5-Querseiten** im A5.docx-Format (Banner + Riesennummer), sortiert nach Slot → Nummer (Stapel kommen rennfertig aus dem Drucker):
 - Lauf: 199 Gemeldete + 42 Puffer (+20 % je Block) = 241 Blätter
-- Rad: komplette (gekürzte) Zirkel = 294 Blätter; Reserve-Nummern stehen mit leerem Namen am Ende der Anmeldelisten
-- **165 Nummern sind absichtlich doppelt** (Lauf-Papier UND Rad-Plakette) — zwei physische Nummern, zwei Tags!
-- ⚠ **~535 Tags** werden heute Abend gebraucht. U17m + Masters 4 sind voll gemeldet — dort KEINE Reserve.
+- Rad: komplette (teils gekürzte) Zirkel = 304 Blätter; Reserve-Nummern stehen mit leerem Namen am Ende der Anmeldelisten
+- **175 Nummern sind absichtlich doppelt** (Lauf-Papier UND Rad-Plakette) — zwei physische Nummern, zwei Tags!
+- ⚠ **~545 Tags** werden heute Abend gebraucht. U17m + Masters 4 sind voll gemeldet — dort KEINE Reserve.
 
 Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
 
