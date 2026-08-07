@@ -425,6 +425,9 @@ tbody tr:hover { background: #0b1220; }
   flex-direction: column;
   gap: 14px;
 }
+/* display:flex above beats the UA's [hidden]{display:none} — restore it
+   (same pattern as .modal-backdrop[hidden]). */
+.couple-panel[hidden] { display: none; }
 .couple-panel-header {
   display: flex;
   align-items: center;
