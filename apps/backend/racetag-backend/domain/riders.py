@@ -22,6 +22,10 @@ class Rider(BaseModel):
     created_at: datetime
     # F3 — result status: None (classified/racing), "dnf", "dns", "dsq".
     status: Optional[str] = None
+    # SRB-Stammdaten für den Amtliches-Ergebnis-Export. Leerstring = unbekannt;
+    # ein Upsert mit leerem Wert überschreibt vorhandene Werte NICHT.
+    verein: str = ""
+    uci_id: str = ""
 
 
 class RiderStore:
@@ -70,6 +74,17 @@ class RiderStore:
         existing = self._riders.get(rider.tag_id)
         if rider.status is None and existing is not None and existing.status:
             rider = rider.model_copy(update={"status": existing.status})
+        # Stammdaten (verein/uci_id) verhalten sich wie status: ein Upsert
+        # ohne Wert (Import, Koppel-Modus, Namens-Push) darf vorhandene
+        # Werte nicht wegwischen.
+        if existing is not None:
+            keep = {}
+            if not rider.verein.strip() and existing.verein:
+                keep["verein"] = existing.verein
+            if not rider.uci_id.strip() and existing.uci_id:
+                keep["uci_id"] = existing.uci_id
+            if keep:
+                rider = rider.model_copy(update=keep)
         if self._storage is not None:
             self._storage.upsert_rider(rider, race_id=self._race_id)
         self._riders[rider.tag_id] = rider

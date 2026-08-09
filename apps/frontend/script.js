@@ -194,7 +194,12 @@ async function importCSVToBackend(csvText) {
   }
   const delimName = delimiter === ';' ? 'semicolon' : delimiter === '\t' ? 'tab' : 'comma';
 
-  // First row is header — skip it
+  // First row is header — skip it. Optional Stammdaten columns are matched
+  // BY HEADER NAME so legacy templates (col 4 = "kategorie (Import
+  // ignoriert)" etc.) keep their ignore-semantics untouched.
+  const headerCells = rows[0].map((h) => h.trim().toLowerCase());
+  const vereinIdx = headerCells.findIndex((h) => h === 'verein');
+  const uciIdx = headerCells.findIndex((h) => h === 'uci_id' || h === 'uci-id');
   const dataRows = rows.slice(1).filter(r => r.some(cell => cell !== ''));
   const total = dataRows.length;
   if (total === 0) {
@@ -240,10 +245,13 @@ async function importCSVToBackend(csvText) {
     setStatus(`Importing ${i + 1}/${total} riders (${errors.length} errors)\u2026`);
 
     try {
+      const body = { tag_id, bib, name };
+      if (vereinIdx >= 0 && row[vereinIdx]) body.verein = row[vereinIdx];
+      if (uciIdx >= 0 && row[uciIdx]) body.uci_id = row[uciIdx];
       const res = await fetch(`${state.backend}/riders`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
-        body: JSON.stringify({ tag_id, bib, name }),
+        body: JSON.stringify(body),
       });
       if (res.ok) {
         imported++;
@@ -888,6 +896,8 @@ function selectRiderForEdit(tagId) {
   $('#riderEditTag').value = r.tag_id;
   $('#riderEditBib').value = r.bib;
   $('#riderEditName').value = r.name || '';
+  $('#riderEditVerein').value = r.verein || '';
+  $('#riderEditUci').value = r.uci_id || '';
   $('#riderEditSaveBtn').disabled = false;
   const err = $('#riderEditError');
   err.hidden = true;
@@ -905,6 +915,8 @@ function openRidersModal(preselectTag) {
   $('#riderEditTag').value = '';
   $('#riderEditBib').value = '';
   $('#riderEditName').value = '';
+  $('#riderEditVerein').value = '';
+  $('#riderEditUci').value = '';
   $('#riderEditSaveBtn').disabled = true;
   $('#riderEditError').hidden = true;
   refreshRidersUiList().then(() => {
@@ -930,6 +942,8 @@ async function saveRiderEdit() {
       headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
       body: JSON.stringify({
         tag_id, bib, name,
+        verein: $('#riderEditVerein').value.trim(),
+        uci_id: $('#riderEditUci').value.trim(),
         all_races: $('#riderEditAllRaces').checked,
       }),
     });
@@ -2352,7 +2366,7 @@ function init() {
   }
   const riderEditSaveBtn = $('#riderEditSaveBtn');
   if (riderEditSaveBtn) riderEditSaveBtn.addEventListener('click', saveRiderEdit);
-  ['#riderEditBib', '#riderEditName'].forEach((sel) => {
+  ['#riderEditBib', '#riderEditName', '#riderEditVerein', '#riderEditUci'].forEach((sel) => {
     const el = $(sel);
     if (el) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveRiderEdit(); });
   });

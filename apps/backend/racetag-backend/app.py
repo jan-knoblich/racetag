@@ -414,6 +414,8 @@ def _rider_to_dto(rider: Rider) -> RiderDTO:
         name=rider.name,
         created_at=rider.created_at,
         status=rider.status,
+        verein=rider.verein,
+        uci_id=rider.uci_id,
     )
 
 
@@ -1304,8 +1306,10 @@ def post_rider(body: RiderCreateDTO):
         bib=body.bib,
         name=body.name,
         created_at=created_at,
+        verein=body.verein,
+        uci_id=body.uci_id,
     )
-    rider_store.upsert(rider)
+    rider = rider_store.upsert(rider)  # merged result (keep-semantics!)
     dto = _rider_to_dto(rider)
     if body.all_races:
         # Day model (Karli Krit): one tag + one number per PERSON. Propagate
@@ -1315,6 +1319,7 @@ def post_rider(body: RiderCreateDTO):
         # up from the DB when they get activated.
         dto.races_updated = storage.update_rider_bib_name_all_races(
             body.tag_id, body.bib, body.name,
+            verein=body.verein, uci_id=body.uci_id,
         )
     return dto
 

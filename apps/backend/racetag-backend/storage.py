@@ -142,6 +142,7 @@ class Storage:
         self._ensure_races_snapshot_interval_column()
         self._ensure_races_race_format_columns()
         self._ensure_riders_status_column()
+        self._ensure_riders_stammdaten_columns()
         self._ensure_default_race()
         # Create the race index now that tag_events.race_id is guaranteed to exist.
         with self._lock:
@@ -233,6 +234,18 @@ class Storage:
             return
         with self._lock:
             self._conn.execute("ALTER TABLE riders ADD COLUMN status TEXT;")
+
+    def _ensure_riders_stammdaten_columns(self) -> None:
+        """Add riders.verein / riders.uci_id for the SRB official-result
+        export (post-Karli-Krit TODO). Idempotent."""
+        cols = self._table_columns("riders")
+        with self._lock:
+            if "verein" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE riders ADD COLUMN verein TEXT NOT NULL DEFAULT '';")
+            if "uci_id" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE riders ADD COLUMN uci_id TEXT NOT NULL DEFAULT '';")
 
     def _ensure_races_race_format_columns(self) -> None:
         """Add the finish_mode / duration_s / final_laps columns to a
@@ -502,17 +515,23 @@ class Storage:
         )
         # status is deliberately NOT in the UPDATE clause: a CSV re-import or
         # re-coupling must not wipe a DNF/DNS/DSQ the operator already set
-        # (F3). Status is managed through set_rider_status().
+        # (F3). Status is managed through set_rider_status(). verein/uci_id
+        # ARE updated — their keep-if-incoming-empty semantics live in
+        # RiderStore.upsert, which passes the merged values down.
         self._execute(
             """
-            INSERT INTO riders (race_id, tag_id, bib, name, created_at, status)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO riders (race_id, tag_id, bib, name, created_at, status,
+                                verein, uci_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(race_id, tag_id) DO UPDATE SET
                 bib        = excluded.bib,
                 name       = excluded.name,
-                created_at = excluded.created_at;
+                created_at = excluded.created_at,
+                verein     = excluded.verein,
+                uci_id     = excluded.uci_id;
             """,
-            (rid, rider.tag_id, rider.bib, rider.name, created_at_str, rider.status),
+            (rid, rider.tag_id, rider.bib, rider.name, created_at_str,
+             rider.status, rider.verein, rider.uci_id),
         )
 
     def set_rider_status(
@@ -530,8 +549,8 @@ class Storage:
     def get_rider(self, tag_id: str, race_id: Optional[str] = None) -> Optional["Rider"]:
         rid = self._require_race_id(race_id)
         row = self._conn.execute(
-            "SELECT tag_id, bib, name, created_at, status FROM riders "
-            "WHERE race_id = ? AND tag_id = ?;",
+            "SELECT tag_id, bib, name, created_at, status, verein, uci_id "
+            "FROM riders WHERE race_id = ? AND tag_id = ?;",
             (rid, tag_id),
         ).fetchone()
         return self._row_to_rider(row) if row else None
@@ -539,8 +558,8 @@ class Storage:
     def list_riders(self, race_id: Optional[str] = None) -> List["Rider"]:
         rid = self._require_race_id(race_id)
         rows = self._conn.execute(
-            "SELECT tag_id, bib, name, created_at, status FROM riders "
-            "WHERE race_id = ? ORDER BY rowid;",
+            "SELECT tag_id, bib, name, created_at, status, verein, uci_id "
+            "FROM riders WHERE race_id = ? ORDER BY rowid;",
             (rid,),
         ).fetchall()
         return [self._row_to_rider(r) for r in rows]
@@ -564,16 +583,20 @@ class Storage:
         created_at = datetime.fromisoformat(created_at_str)
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
-        try:
-            status = row["status"]
-        except (KeyError, IndexError):
-            status = None
+        def opt(key, default):
+            try:
+                return row[key] if row[key] is not None else default
+            except (KeyError, IndexError):
+                return default
+
         return Rider(
             tag_id=row["tag_id"],
             bib=row["bib"],
             name=row["name"],
             created_at=created_at,
-            status=status,
+            status=opt("status", None),
+            verein=opt("verein", ""),
+            uci_id=opt("uci_id", ""),
         )
 
     # ---- Tag-event persistence (race-scoped) ---------------------------
@@ -641,18 +664,29 @@ class Storage:
         ).fetchone()
         return row[0]
 
-    def update_rider_bib_name_all_races(self, tag_id: str, bib: str, name: str) -> int:
-        """Set bib/name for this tag in EVERY race that has it registered.
+    def update_rider_bib_name_all_races(
+        self, tag_id: str, bib: str, name: str,
+        verein: str = "", uci_id: str = "",
+    ) -> int:
+        """Set bib/name (+ Stammdaten) for this tag in EVERY race that has it
+        registered.
 
         Day-model for multi-race events (Karli Krit): one tag + one number
         per PERSON for the whole day, so a late-entry name applies to all
         races the tag was pre-imported into. Update-only by design — races
-        that don't know the tag are left alone. Status is never touched.
+        that don't know the tag are left alone. Status is never touched;
+        verein/uci_id only overwrite when non-empty (keep semantics).
         Returns the number of race rows updated.
         """
         cur = self._execute(
-            "UPDATE riders SET bib = ?, name = ? WHERE tag_id = ?;",
-            (bib, name, tag_id),
+            """
+            UPDATE riders SET
+                bib = ?, name = ?,
+                verein = CASE WHEN ? != '' THEN ? ELSE verein END,
+                uci_id = CASE WHEN ? != '' THEN ? ELSE uci_id END
+            WHERE tag_id = ?;
+            """,
+            (bib, name, verein, verein, uci_id, uci_id, tag_id),
         )
         return cur.rowcount if cur is not None else 0
 
