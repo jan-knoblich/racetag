@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Gesamt-Ergebnis-PDF: alle Wertungen des Tages in einem Dokument.
+
+Quellen: die srb-*.xlsx (Rad, inkl. bestätigter Korrekturen), die
+fixed-ergebnisse-srb.xlsx (Fixed-Gear-Finals) und die ergebnis-lauf-*.csv
+(Lauf, inkl. geretteter Finisher). Reihenfolge = Tagesplan.
+
+Usage: e2e-venv/bin/python gesamt_pdf.py  ->  ~/Downloads/karli-krit-ergebnisse-gesamt.pdf
+"""
+import csv
+import datetime as dt
+from pathlib import Path
+
+from openpyxl import load_workbook
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate,
+                                Spacer, Table, TableStyle)
+
+HERE = Path(__file__).parent
+OUT = Path.home() / "Downloads/karli-krit-ergebnisse-gesamt.pdf"
+
+LABELS = {
+    "u15m": "Schüler U15 männlich", "u17w": "Jugend U17 weiblich",
+    "u17m": "Jugend U17 männlich", "masters_4": "Masters 4",
+    "masters_2": "Masters 2", "masters_3": "Masters 3",
+    "junioren": "Junioren U19", "jedermann_leicht": "Jedermann leicht",
+    "fixed_gear_men": "Fixed Gear Qualifying",
+    "frauen_elite": "Frauen Elite/Lizenz", "juniorinnen": "Juniorinnen U19",
+    "jedefrau": "Jedefrau", "jedermann_mittel": "Jedermann mittel",
+    "jedermann_schwer": "Jedermann schwer",
+    "Fixed Gear B": "Fixed Gear B-Finale", "FLINTA": "FLINTA*",
+    "Fixed Gear A": "Fixed Gear A-Finale",
+}
+# (Überschrift Slot, Datei, Sheets in Reihenfolge)
+XLSX = [
+    ("11:20 Uhr", "srb-11-20-u15-u17w-20-rd.xlsx", ["u15m", "u17w"]),
+    ("12:10 Uhr", "srb-12-10-u17m-masters4-32-rd.xlsx", ["u17m", "masters_4"]),
+    ("13:00 Uhr", "srb-13-00-masters2-3-junioren-45-rd.xlsx",
+     ["masters_2", "masters_3", "junioren"]),
+    ("15:00 Uhr", "srb-15-00-jedermann-leicht-45-min.xlsx", ["jedermann_leicht"]),
+    ("16:00 Uhr", "srb-16-00-fixed-gear-quali-5-rd.xlsx", ["fixed_gear_men"]),
+    ("16:15 Uhr", "srb-16-15-frauen-elite-u19w-jedefrau-30-rd.xlsx",
+     ["frauen_elite", "juniorinnen", "jedefrau"]),
+    ("17:15 Uhr", "srb-17-15-jedermann-mittel-45-min.xlsx", ["jedermann_mittel"]),
+    ("18:15 Uhr", "srb-18-15-jedermann-schwer-60-min.xlsx", ["jedermann_schwer"]),
+    ("19:30 / 20:00 Uhr", "fixed-ergebnisse-srb.xlsx",
+     ["Fixed Gear B", "FLINTA", "Fixed Gear A"]),
+]
+
+h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=17, leading=21,
+                    spaceAfter=2)
+sub = ParagraphStyle("sub", fontName="Helvetica", fontSize=10.5, leading=13,
+                     textColor=colors.HexColor("#555555"), spaceAfter=10)
+h2 = ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=13, leading=16,
+                    spaceBefore=10, spaceAfter=4,
+                    textColor=colors.HexColor("#b03090"))
+note = ParagraphStyle("note", fontName="Helvetica", fontSize=8, leading=10,
+                      textColor=colors.HexColor("#666666"), spaceBefore=2)
+cell = ParagraphStyle("cell", fontName="Helvetica", fontSize=8.5, leading=10.5)
+
+
+def fmt_zeit(v):
+    if isinstance(v, dt.time):
+        return f"{v.hour}:{v.minute:02d}:{v.second:02d}"
+    return str(v) if v is not None else ""
+
+
+def tabelle(header, rows, widths):
+    data = [[Paragraph(f"<b>{h}</b>", cell) for h in header]]
+    for r in rows:
+        data.append([Paragraph(str(c) if c is not None else "", cell) for c in r])
+    t = Table(data, colWidths=widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#aaaaaa")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f2d9ec")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+    ]))
+    return t
+
+
+story = [
+    Paragraph("Karli Krit + Karli Lauf — Gesamtergebnisse", h1),
+    Paragraph("Leipzig, 08.08.2026 · Zeitnahme racetag (RFID) · Stand 10.08.2026 "
+              "inkl. aller vom Wettkampfgericht bestätigten Korrekturen", sub),
+]
+
+# ---- Lauf (09:00) ----
+story.append(Paragraph("09:00 Uhr — Karli Lauf", h2))
+for datei, titel, extra in [
+        ("ergebnis-lauf-10km-erwachsene.csv", "10 km Erwachsene", None),
+        ("ergebnis-lauf-5km-erwachsene.csv", "5 km Erwachsene", None),
+        ("ergebnis-lauf-5km-10km-u18.csv", "U18 (5/10 km)",
+         "Rohliste nach letzter Überfahrt — amtliche U18-Wertung per Kampfgericht")]:
+    rows_ok, rows_ng = [], []
+    with open(HERE / datei, encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f, delimiter=";"):
+            if r["platz"].strip() == "-":
+                rows_ng.append(r)
+            else:
+                rows_ok.append([r["platz"], r["nummer"], r["name"], r["zeit"]])
+    story.append(Paragraph(f"Lauf — {titel}", h2))
+    story.append(tabelle(["Platz", "St.-Nr.", "Name", "Zeit"], rows_ok,
+                         [1.6 * cm, 1.8 * cm, 9.6 * cm, 2.6 * cm]))
+    if rows_ng:
+        ng = ", ".join(f"Nr. {r['nummer']} {r['name']} ({r['ueberfahrten']} Überf.)"
+                       for r in rows_ng)
+        story.append(Paragraph(f"Nicht gewertet: {ng}", note))
+    if extra:
+        story.append(Paragraph(extra, note))
+
+# ---- Rad ----
+for slot, datei, sheets in XLSX:
+    wb = load_workbook(HERE / datei)
+    for sheet in sheets:
+        ws = wb[sheet]
+        header = [c.value for c in ws[14] if c.value]
+        lizenz = "UCI-ID" in header
+        rows = []
+        for row in ws.iter_rows(min_row=15, values_only=True):
+            if row[0] is None and row[1] is None:
+                continue
+            runden = row[6] if lizenz else row[5]
+            if not runden:
+                continue  # 0 Runden = nie gestartet (Reserve-Plakette/DNS)
+            if lizenz:
+                rows.append([row[0], row[1], row[2], row[3] or "", row[4] or "",
+                             row[5] or "", row[6]])
+            else:
+                rows.append([row[0], row[1], row[2], row[3] or "",
+                             fmt_zeit(row[4]), row[5]])
+        story.append(Paragraph(f"{slot} — {LABELS.get(sheet, sheet)}", h2))
+        if lizenz:
+            story.append(tabelle(
+                ["Platz", "St.-Nr.", "Name", "Verein", "UCI-ID", "Punkte", "Runden"],
+                rows, [1.3 * cm, 1.5 * cm, 4.6 * cm, 4.4 * cm, 2.5 * cm,
+                       1.4 * cm, 1.5 * cm]))
+        else:
+            story.append(tabelle(
+                ["Platz", "St.-Nr.", "Name", "Verein", "Zeit", "Runden"],
+                rows, [1.3 * cm, 1.5 * cm, 5.4 * cm, 4.6 * cm, 2.2 * cm, 1.5 * cm]))
+
+doc = SimpleDocTemplate(str(OUT), pagesize=A4,
+                        topMargin=1.4 * cm, bottomMargin=1.4 * cm,
+                        leftMargin=1.6 * cm, rightMargin=1.6 * cm,
+                        title="Karli Krit + Karli Lauf 2026 — Gesamtergebnisse")
+doc.build(story)
+print(OUT)
