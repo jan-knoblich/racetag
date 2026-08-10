@@ -45,14 +45,14 @@ Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
 2. **Pro Rennen:** Rennen im Dropdown wählen → „Koppel-Modus" → Zirkel des Rennens eintragen (Tabelle oben) → „Auto-Zuweisung starten" → Fließband: schwenken → Piep → kleben → nächster. Immer erst schwenken, dann kleben, ein Tag zur Zeit; kaputte Plakette → „Überspringen". Beim Neustart bietet die Schleife nur freie Nummern an.
 3. **Fixed Gear (Plakette bleibt beim Fahrer über 3 Rennen):** 411-436 nur im **Quali-Rennen (16:00)** koppeln → dort „Export tags" → die Datei in **19:30** und **20:00** importieren (gleiche Plakette = gleicher Tag). FLINTA 441-446 zusätzlich direkt im 19:30-Rennen per Auto-Zuweisung.
 4. **Lauf-Papiere** (101-211, 301-416, 501-514) im Lauf-Rennen — fertig zu Ende koppeln.
-5. **Prüflauf:** `python3 docs/karli-krit-2026-08-08/pruefe_kopplung.py` — prüft alle 12 Rennen: Soll/Ist pro Zirkel, doppelte Nummern, Lauf↔Rad-Tag-Trennung, FG-Tag-Gleichheit, Formate, Start-Flags. Muss am Ende „KEINE strukturellen Fehler" sagen und überall voll gekoppelt zeigen.
+5. **Prüflauf:** `python3 docs/events/2026-08-08-karli-krit/pruefe_kopplung.py` — prüft alle 12 Rennen: Soll/Ist pro Zirkel, doppelte Nummern, Lauf↔Rad-Tag-Trennung, FG-Tag-Gleichheit, Formate, Start-Flags. Muss am Ende „KEINE strukturellen Fehler" sagen und überall voll gekoppelt zeigen.
 6. Backup: `cp -r ~/.racetag/data ~/Desktop/karli-vorabend.bak`
 
 **Sign-on morgen:** Anmeldeliste (`zuweisung/…-anmeldeliste.csv`, drucken) → Name abhaken → Plakette ausgeben. Namen kommen NICHT live in die App — Ergebnisse werden im Nachhinein gemerged (siehe unten). Falsch gekoppelte Plaketten-Gruppen repariert `fix_falsches_rennen.py --quelle … --ziel … --von … --bis …` (Dry-Run zuerst).
 
 ## Morgen früh (5 min)
 
-- Frische Meldelisten: `python3 docs/karli-krit-2026-08-08/fetch_meldelisten.py` (überschreibt `rennen/*.csv`, inkl. Lauf — gestern 199 Lauf- + 213 Rad-Meldungen).
+- Frische Meldelisten: `python3 docs/events/2026-08-08-karli-krit/fetch_meldelisten.py` (überschreibt `rennen/*.csv`, inkl. Lauf — gestern 199 Lauf- + 213 Rad-Meldungen).
 
 ## Pro Rennen (Friction-Minimum)
 
@@ -71,14 +71,14 @@ Neu erzeugen: `gen_startnummern.py --banner banner-strip.png`.
 
 Das Rennen läuft mit **total_laps = 10** — **NIEMALS während oder nach dem Lauf auf 5 zurückdrehen!** (Offener M3/M4-Bug: `finished` wird nicht neu berechnet, und 10-km-Läufer würden bei ihrer nächsten Überfahrt fälschlich bei 5 Runden eingefroren.) Die 5-km-Läufer brauchen auch kein Einfrieren: Jede Überfahrt liegt mit Zeitstempel im Audit-Trail.
 
-**Auswertung nach dem Lauf (End race, dann):** `python3 docs/karli-krit-2026-08-08/lauf_auswertung.py` — liest die DB read-only und nimmt pro Läufer exakt die N-te Überfahrt seines Blocks (100er → 10., 300er → 5.; Blöcke oben im Skript anpassen, sobald Erik sie bestätigt). Immun gegen Ziel-Schlenderer (Extra-Überfahrten werden ignoriert und ausgewiesen); Läufer mit zu wenigen Lesungen landen als „unvollständig" unter der Wertung statt mit falscher Zeit drin. Ausgabe: `ergebnis-lauf-<block>.csv` sortiert nach Zeit. Die Live-Standings während des Laufs zeigen für 5-km-Läufer kein „finished" — egal, die Wertung kommt aus dem Skript.
+**Auswertung nach dem Lauf (End race, dann):** `python3 docs/events/2026-08-08-karli-krit/lauf_auswertung.py` — liest die DB read-only und nimmt pro Läufer exakt die N-te Überfahrt seines Blocks (100er → 10., 300er → 5.; Blöcke oben im Skript anpassen, sobald Erik sie bestätigt). Immun gegen Ziel-Schlenderer (Extra-Überfahrten werden ignoriert und ausgewiesen); Läufer mit zu wenigen Lesungen landen als „unvollständig" unter der Wertung statt mit falscher Zeit drin. Ausgabe: `ergebnis-lauf-<block>.csv` sortiert nach Zeit. Die Live-Standings während des Laufs zeigen für 5-km-Läufer kein „finished" — egal, die Wertung kommt aus dem Skript.
 
 ### Eriks 15-Minuten-Liste: NICHTS tun müssen — Namen kommen im Nachhinein
 
 **Entschieden 07.08.: Tagsüber läuft alles nur über Nummern.** Eriks Liste pro Rennen einfach einsammeln/ablegen — eingeheiratet werden die Namen NACH dem Rennen:
 
 ```
-„Export results" → python3 docs/karli-krit-2026-08-08/ergebnis_merge.py export.csv erik-liste.csv
+„Export results" → python3 docs/events/2026-08-08-karli-krit/ergebnis_merge.py export.csv erik-liste.csv
 ```
 
 → schreibt `…-mit-namen.csv` (Excel-tauglich): Namen aus Eriks Liste (Erik gewinnt bei Konflikt mit Vorab-Namen), Warnung für Nummern ganz ohne Namen, No-Shows werden gelistet. Funktioniert genauso für die Lauf-Ergebnisse aus `lauf_auswertung.py`. Eriks Listenformat ist egal (Nummer;Name oder Name,Nummer, Kopfzeile ja/nein) — muss nur digital vorliegen (abtippen/abfotografieren+abtippen reicht abends).

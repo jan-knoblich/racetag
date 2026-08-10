@@ -1,0 +1,7 @@
+# Event-Daten enthalten Personennamen — bleiben lokal
+*.csv
+*.xls
+*.xlsx
+*.jpeg
+*.jpg
+*.pdf

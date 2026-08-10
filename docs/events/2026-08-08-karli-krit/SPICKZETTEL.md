@@ -1,6 +1,6 @@
 # Karli-Krit-Spickzettel — 08.08.2026 (offline-tauglich)
 
-Alle Skripte: `python3 docs/karli-krit-2026-08-08/<skript>` aus `~/Documents/git/racetag`.
+Alle Skripte: `python3 docs/events/2026-08-08-karli-krit/<skript>` aus `~/Documents/git/racetag`.
 „App läuft" = Racetag ist offen (Skripte finden den Port selbst).
 
 ## App starten
