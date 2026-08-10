@@ -14,17 +14,22 @@ Schreibt ergebnis-lauf-<block>.csv neben dieses Skript + Anomalie-Report.
 import argparse
 import csv
 import sqlite3
+import statistics
 from datetime import datetime
 from pathlib import Path
 
 # Nummernblöcke: (Label, von, bis, Ziel-Runden) — an Eriks Ansage anpassen!
 BLOCKS = [
     # inkl. +20%-Puffer-Verbreiterung (siehe nummern_zuweisung.py)
-    ("10km Erwachsene", 100, 220, 10),
-    ("5km Erwachsene", 300, 420, 5),
+    ("10km Erwachsene", 100, 220, 13),
+    ("5km Erwachsene", 300, 420, 7),
     ("5km-10km U18", 500, 599, None),  # None = Ziel unklar, nur Rohliste
 ]
 MIN_GAP_S = 15.0  # wie das Backend-Cooldown: Überfahrten dichter dran = 1 Pass
+# Läufer schaffen die ~770-m-Runde nie unter 100 s — alles darunter (nach der
+# ersten Überfahrt!) ist eine Phantom-Lesung (Linie doppelt gequert o. ä.).
+# Die ERSTE Überfahrt (Startsegment ~1/5 Runde) bleibt beim 15-s-Gate.
+LAUF_MIN_LAP_S = 100.0
 
 # Raceday 08.08.: Papiere 395-416/511-514 fehlten → vier 5-km-Läufer laufen
 # mit 10-km-Puffernummern. Diese Nummern werden im 5-km-Block gewertet!
@@ -73,15 +78,26 @@ def main() -> None:
         "SELECT tag_id, timestamp FROM tag_events "
         "WHERE race_id = ? AND event_type = 'arrive' ORDER BY timestamp, id;",
         (race["id"],))
+    phantome = []
     for row in rows:
         ts = parse_ts(row["timestamp"])
         if ts < start:
             continue
         lst = passes.setdefault(row["tag_id"], [])
         anchor = lst[-1] if lst else start
-        if (ts - anchor).total_seconds() < MIN_GAP_S:
+        gate = MIN_GAP_S if not lst else LAUF_MIN_LAP_S
+        delta = (ts - anchor).total_seconds()
+        if delta < gate:
+            if delta >= MIN_GAP_S:
+                phantome.append((row["tag_id"], ts, delta))
             continue
         lst.append(ts)
+    for tag_id, ts, delta in phantome:
+        r = riders.get(tag_id)
+        if r is None:
+            continue  # unregistrierte Dauerleser (Orga-Tags) nicht fluten
+        print(f"  ⚠ Phantom-Überfahrt verworfen: Nr. {r['bib']} {r['name']} um "
+              f"{ts.strftime('%H:%M:%S')} ({delta:.0f} s nach der vorigen)")
 
     outdir = Path(__file__).parent
     for label, lo, hi, target in BLOCKS:
@@ -101,20 +117,43 @@ def main() -> None:
                     continue  # zählt in seinem Override-Block, nicht hier
             elif not (lo <= bib <= hi):
                 continue
+            segs = [(lst[i] - (lst[i - 1] if i else start)).total_seconds()
+                    for i in range(len(lst))]
+            hinweise = []
             n = target or len(lst)
-            entry = {
-                "bib": bib,
-                "name": rider["name"],
-                "ueberfahrten": len(lst),
-            }
+            # Startüberfahrt verpasst? Das Startsegment (~1/5 Runde) muss
+            # STRIKT schneller sein als jede Folgerunde. Sonst ist die erste
+            # gezählte Überfahrt bereits Runde 1: virtuelle Startrunde vorne
+            # draufrechnen = Wertung auf Überfahrt N-1 verschieben.
+            if target and len(segs) >= 3 and segs[0] >= min(segs[1:]):
+                n = target - 1
+                hinweise.append(
+                    f"Startüberfahrt verpasst (Seg. 1 = {fmt_hms(segs[0])} nicht "
+                    f"schnellste) — Wertung auf Überfahrt {n}")
+            med = statistics.median(segs[1:]) if len(segs) > 2 else None
+            entry = {"bib": bib, "name": rider["name"], "ueberfahrten": len(lst)}
             if len(lst) >= n:
                 entry["zeit_s"] = (lst[n - 1] - start).total_seconds()
                 entry["zeit"] = fmt_hms(entry["zeit_s"])
-                if target and len(lst) != target:
-                    entry["hinweis"] = f"{len(lst)} statt {target} Überfahrten (Extra ignoriert)"
+                if target and len(lst) != target and not hinweise:
+                    hinweise.append(f"{len(lst)} statt {target} Überfahrten (Extra ignoriert)")
+                entry["hinweis"] = "; ".join(hinweise)
+                results.append(entry)
+            elif (target and med and len(lst) == n - 1
+                  and max(segs[1:]) >= 1.7 * med):
+                # Finisher mit genau EINER unterwegs verpassten Lesung: die
+                # letzte Überfahrt IST das Ziel (Beleg: eine ~2x-Runde).
+                k = segs.index(max(segs[1:]))
+                entry["zeit_s"] = (lst[-1] - start).total_seconds()
+                entry["zeit"] = fmt_hms(entry["zeit_s"])
+                hinweise.append(
+                    f"KORRIGIERT: 1 Lesung unterwegs verpasst (Runde {k + 1} = "
+                    f"{max(segs[1:]) / med:.1f}x Median) — Ziel = letzte Überfahrt")
+                entry["hinweis"] = "; ".join(hinweise)
                 results.append(entry)
             else:
-                entry["hinweis"] = f"nur {len(lst)} von {target} Überfahrten — Lesung fehlt? DNF?"
+                hinweise.append(f"nur {len(lst)} von {target} Überfahrten — Lesung fehlt? DNF?")
+                entry["hinweis"] = "; ".join(hinweise)
                 anomalies.append(entry)
 
         results.sort(key=lambda e: e["zeit_s"])
