@@ -101,14 +101,19 @@ for datei, titel in [
         ("ergebnis-lauf-10km-u18-weiblich.csv", "10 km U18 weiblich"),
         ("ergebnis-lauf-5km-u18-maennlich.csv", "5 km U18 männlich"),
         ("ergebnis-lauf-5km-u18-weiblich.csv", "5 km U18 weiblich")]:
-    rows_ok, rows_ng, korrigiert = [], [], 0
+    rows_ok, rows_ng, korrigiert, vermerke = [], [], 0, []
     with open(HERE / datei, encoding="utf-8-sig") as f:
         for r in csv.DictReader(f, delimiter=";"):
             if r["platz"].strip() == "-":
                 rows_ng.append(r)
             else:
                 stern = "*" if r["hinweis"].strip() else ""
-                korrigiert += bool(stern)
+                if "GEWERTET MIT VERMERK" in r["hinweis"]:
+                    vermerke.append(
+                        f"* Nr. {r['nummer']} {r['name']}: "
+                        + r["hinweis"].replace("GEWERTET MIT VERMERK: ", ""))
+                else:
+                    korrigiert += bool(stern)
                 rows_ok.append([r["platz"], r["nummer"], r["name"],
                                 r["zeit"] + stern])
     story.append(Paragraph(f"Lauf — {titel}", h2))
@@ -120,6 +125,8 @@ for datei, titel in [
             f"* {korrigiert}x Wertung korrigiert: Lesung(en) unterwegs nachweislich "
             "verpasst bzw. Startüberfahrt ergänzt — Ziel = letzte Überfahrt "
             "(Details in den ergebnis-CSVs)", note))
+    for v in vermerke:
+        story.append(Paragraph(v, note))
     if rows_ng:
         def kurz(r):
             if "nur die letzte fehlt" in r["hinweis"]:

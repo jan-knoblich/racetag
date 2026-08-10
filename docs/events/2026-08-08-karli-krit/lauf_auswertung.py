@@ -40,6 +40,15 @@ LAUF_MIN_LAP_S = 100.0
 BLOCK_OVERRIDE = {193: "5km Erwachsene", 194: "5km Erwachsene",
                   195: "5km Erwachsene"}
 
+# Einzelfall-Entscheidung 10.08.: Nr. 509 (einzige U18-10km-Starterin) hielt
+# nach Überfahrt 12 direkt an der Linie an — Beleg: zwei Verweil-Lesungen
+# +20 s und +87 s nach der 12. Überfahrt, danach nichts. Also kein Lesefehler,
+# sondern eine Runde zu früh gestoppt (verzählt, allein auf der Strecke).
+# Sportliche Wertung wie beim Rad: gewertet mit Rundenrückstand + Vermerk.
+SONDERWERTUNG = {509: "nach Überfahrt 12 an der Linie angehalten (Verweil-"
+                      "Lesungen +20 s/+87 s, danach keine) — eine Runde zu früh "
+                      "gestoppt; Wertung über 12 Überfahrten (≈9,2 km)"}
+
 
 def load_u18_bloecke() -> dict[int, tuple[str, int]]:
     """bib -> (Blocklabel, Ziel-Überfahrten) für alle U18-Meldungen."""
@@ -177,6 +186,13 @@ def main() -> None:
                 entry["zeit"] = fmt_hms(entry["zeit_s"])
                 if target and len(lst) != target and not hinweise:
                     hinweise.append(f"{len(lst)} statt {target} Überfahrten (Extra ignoriert)")
+                entry["hinweis"] = "; ".join(hinweise)
+                results.append(entry)
+                continue
+            if bib in SONDERWERTUNG:
+                entry["zeit_s"] = (lst[-1] - start).total_seconds()
+                entry["zeit"] = fmt_hms(entry["zeit_s"])
+                hinweise.append(f"GEWERTET MIT VERMERK: {SONDERWERTUNG[bib]}")
                 entry["hinweis"] = "; ".join(hinweise)
                 results.append(entry)
                 continue

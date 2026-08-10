@@ -39,7 +39,7 @@ SLOT_HINTS = [
 
 # ---- Amtliche Wertung (Abgleich 10.08. mit Kerstins Listen + Foto-Blättern) ----
 # Punkte aus Wertungssprints — racetag kennt sie nicht, Quelle: Amtliche
-# Ergebnisse. Platzierung in diesen Kategorien: Runden > Punkte > Zieleinlauf.
+# Ergebnisse. Platzierung in diesen Kategorien: Punkte > Runden > Zieleinlauf.
 PUNKTE = {
     "u15m": {"91": 40, "81": 18, "86": 15, "89": 9, "85": 6},
     "masters_2": {"293": 28, "289": 25, "285": 17, "283": 2, "286": 1},
@@ -184,7 +184,7 @@ def main():
                 else:
                     gewertet.append((laps, punkte.get(bib, 0),
                                      RANG_FIX.get((slot, bib), 50), idx, r))
-            gewertet.sort(key=lambda t: (-t[0], -t[1], t[2], t[3]))
+            gewertet.sort(key=lambda t: (-t[1], -t[0], t[2], t[3]))
             sieger_runden = gewertet[0][0] if gewertet else ""
             ws["E10"] = f"{sieger_runden} Runden"
 
