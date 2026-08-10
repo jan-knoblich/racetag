@@ -107,13 +107,14 @@ for datei, titel in [
             if r["platz"].strip() == "-":
                 rows_ng.append(r)
             else:
-                stern = "*" if r["hinweis"].strip() else ""
-                if "GEWERTET MIT VERMERK" in r["hinweis"]:
+                hinweis = r["hinweis"].strip()
+                stern = "*" if hinweis else ""
+                if "KORRIGIERT" in hinweis or "Startüberfahrt" in hinweis:
+                    korrigiert += 1
+                elif hinweis:
                     vermerke.append(
                         f"* Nr. {r['nummer']} {r['name']}: "
-                        + r["hinweis"].replace("GEWERTET MIT VERMERK: ", ""))
-                else:
-                    korrigiert += bool(stern)
+                        + hinweis.replace("GEWERTET MIT VERMERK: ", ""))
                 rows_ok.append([r["platz"], r["nummer"], r["name"],
                                 r["zeit"] + stern])
     story.append(Paragraph(f"Lauf — {titel}", h2))

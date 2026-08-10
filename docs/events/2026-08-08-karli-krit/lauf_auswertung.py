@@ -37,8 +37,17 @@ LAUF_MIN_LAP_S = 100.0
 # mit 10-km-Puffernummern. Diese Nummern werden im 5-km-Block gewertet!
 # 193 Till Winkel · 194 Christian Zoch · 195 Raphael Schmiedel
 # (196 Lenn Wilke ist lt. Meldung U18 → landet über die Kategorie im U18-Block)
+# Bestätigt Jan 10.08.: 198/199 (Nachmeldungen) und 132 sind 5-km-Läufer —
+# alle drei haben exakt 7 Überfahrten mit 5-km-typischen Zielzeiten.
 BLOCK_OVERRIDE = {193: "5km Erwachsene", 194: "5km Erwachsene",
-                  195: "5km Erwachsene"}
+                  195: "5km Erwachsene", 198: "5km Erwachsene",
+                  199: "5km Erwachsene", 132: "5km Erwachsene"}
+# Zusatz-Vermerk für umgehängte Nummern (erscheint in CSV + PDF-Fußnote).
+ZUSATZ_HINWEIS = {
+    132: "ursprünglich 10 km gemeldet, auf 5 km umgestiegen (bestätigt 10.08.)",
+    198: "10-km-Nachmeldenummer, lt. Orga 5-km-Läufer (Name lt. Papier-Nachmeldeliste)",
+    199: "10-km-Nachmeldenummer, lt. Orga 5-km-Läufer (Name lt. Papier-Nachmeldeliste)",
+}
 
 # Einzelfall-Entscheidung 10.08.: Nr. 509 (einzige U18-10km-Starterin) hielt
 # nach Überfahrt 12 direkt an der Linie an — Beleg: zwei Verweil-Lesungen
@@ -168,7 +177,7 @@ def main() -> None:
         for bib, rider, lst in g["riders"]:
             segs = [(lst[i] - (lst[i - 1] if i else start)).total_seconds()
                     for i in range(len(lst))]
-            hinweise = []
+            hinweise = [ZUSATZ_HINWEIS[bib]] if bib in ZUSATZ_HINWEIS else []
             n = target or len(lst)
             # Startüberfahrt verpasst? Das Startsegment (~1/5 Runde) muss
             # STRIKT schneller sein als jede Folgerunde. Sonst ist die erste
