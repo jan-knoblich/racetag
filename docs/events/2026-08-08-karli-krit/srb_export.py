@@ -37,6 +37,38 @@ SLOT_HINTS = [
     ("fixed gear b", "1930"), ("a final", "2000"),
 ]
 
+# ---- Amtliche Wertung (Abgleich 10.08. mit Kerstins Listen + Foto-Blättern) ----
+# Punkte aus Wertungssprints — racetag kennt sie nicht, Quelle: Amtliche
+# Ergebnisse. Platzierung in diesen Kategorien: Runden > Punkte > Zieleinlauf.
+PUNKTE = {
+    "u15m": {"91": 40, "81": 18, "86": 15, "89": 9, "85": 6},
+    "masters_2": {"293": 28, "289": 25, "285": 17, "283": 2, "286": 1},
+    "masters_3": {"342": 6},
+    "masters_4": {"319": 12, "321": 4, "322": 1},
+    "junioren": {"401": 22, "405": 13, "407": 7},
+}
+# Kerstin: 408/410 fahren Masters 3 (nicht Junioren); 92/302/303 fuhren als
+# Nachmeldungen das 12:10er-Rennen in der U17m (Tags gelesen, Runden gezählt).
+KATEGORIE_FIX = {
+    ("1300", "408"): "masters_3", ("1300", "410"): "masters_3",
+    ("1210", "92"): "u17m", ("1210", "302"): "u17m", ("1210", "303"): "u17m",
+}
+# Im 11:20er-Rennen sind 92/302/303 nie gestartet (fuhren 12:10) — raus.
+DROP = {("1120", "92"), ("1120", "302"), ("1120", "303")}
+# Überrundete: App zählt bis zum End-Klick weiter (84 hat 22 rohe Über-
+# fahrten!), amtlich gilt der Rückstand beim Abwinken.
+RUNDEN_AMTLICH = {("1120", "84"): 20, ("1120", "90"): 20, ("1120", "87"): 17}
+# Zieleinlauf-Korrektur der Kampfrichter: 90 vor 84 (beide −1 Rd., 0 Pkt.).
+RANG_FIX = {("1120", "90"): 0, ("1120", "84"): 1}
+HINWEISE = {
+    "u17m": ["Punktewertung (amtlich) ausstehend — Reihenfolge: Zieleinlauf racetag.",
+             "Kampfrichter-Notiz Podium: 1. Nr. 303, 2. Nr. 187, 3. Nr. 190."],
+    "masters_4": ["Nr. 317: amtlich −3 Rd. notiert; racetag zählt 28 lückenlose "
+                  "Überfahrten (vorzeitig beendet, keine Lücke im Signal)."],
+    "u15m": ["Runden Nr. 84/90/87 amtlich übernommen (App zählte nach dem "
+             "Abwinken weiter)."],
+}
+
 
 def req(base, method, path, body=None, raw=False):
     r = urllib.request.Request(
@@ -67,17 +99,17 @@ def load_kategorien(race_name):
     text = race_name.lower()
     slot = next((s for hint, s in SLOT_HINTS if hint in text), None)
     if slot is None:
-        return {}
+        return None, {}
     src = next((HERE / "zuweisung").glob(f"{slot}-*anmeldeliste.csv"), None)
     if src is None:
-        return {}
+        return slot, {}
     kat = {}
     with open(src, encoding="utf-8-sig") as f:
         for r in csv.DictReader(f, delimiter=";"):
             n, k = r.get("nummer", "").strip(), r.get("kategorie", "").strip()
             if n and k and k != "nachmelde-puffer":
                 kat[n] = k
-    return kat
+    return slot, kat
 
 
 def slugify(s):
@@ -108,13 +140,17 @@ def main():
         text = req(base, "GET", "/classification.csv", raw=True)
         body = "\n".join(l for l in text.splitlines() if l and not l.startswith("#"))
         rows = list(csv.DictReader(io.StringIO(body)))
-        kat = load_kategorien(race["name"])
+        slot, kat = load_kategorien(race["name"])
+        slot = slot or ""
         datum = race["scheduled_at"][:10] if race.get("scheduled_at") else ""
         datum = ".".join(reversed(datum.split("-"))) if datum else ""
 
         by_kat = {}
         for r in rows:
-            k = kat.get(r["bib"].strip(), "ergebnis")
+            bib = r["bib"].strip()
+            if (slot, bib) in DROP:
+                continue
+            k = KATEGORIE_FIX.get((slot, bib)) or kat.get(bib, "ergebnis")
             by_kat.setdefault(k, []).append(r)
 
         wb = Workbook()
@@ -127,8 +163,6 @@ def main():
             ws["A6"] = args.titel
             ws["F7"] = f"{args.ort}, {datum}"
             ws["F8"] = "Ort, Datum"
-            sieger_runden = krows[0]["laps"] if krows else ""
-            ws["E10"] = f"{sieger_runden} Runden"
             ws["A11"] = k
             header = (["Platz", "St.-Nr.", "Name, Vorname", "Verein",
                        "UCI-ID", "Punkte", "Runden"] if lizenz else
@@ -137,12 +171,28 @@ def main():
             for j, h in enumerate(header, 1):
                 ws.cell(row=14, column=j, value=h)
 
+            punkte = PUNKTE.get(k, {})
+            gewertet, mit_status = [], []
+            for idx, r in enumerate(krows):
+                bib = r["bib"].strip()
+                laps = RUNDEN_AMTLICH.get((slot, bib), int(r["laps"] or 0))
+                status = r["status"].strip().upper()
+                if not status and laps == 0 and not r["total_time_ms"].strip():
+                    status = "DNS"
+                if status:
+                    mit_status.append((status, laps, r))
+                else:
+                    gewertet.append((laps, punkte.get(bib, 0),
+                                     RANG_FIX.get((slot, bib), 50), idx, r))
+            gewertet.sort(key=lambda t: (-t[0], -t[1], t[2], t[3]))
+            sieger_runden = gewertet[0][0] if gewertet else ""
+            ws["E10"] = f"{sieger_runden} Runden"
+
             out_row = 15
             platz = 0
-            geordnet = ([r for r in krows if not r["status"].strip()]
-                        + [r for r in krows if r["status"].strip()])
-            for r in geordnet:
-                status = r["status"].strip().upper()
+            zeilen = ([(None, laps, pts, r) for laps, pts, _, _, r in gewertet]
+                      + [(st, laps, None, r) for st, laps, r in mit_status])
+            for status, laps, pts, r in zeilen:
                 if status:
                     ws.cell(row=out_row, column=1, value=status)
                 else:
@@ -155,15 +205,20 @@ def main():
                 ws.cell(row=out_row, column=4, value=rider.get("verein", ""))
                 if lizenz:
                     ws.cell(row=out_row, column=5, value=rider.get("uci_id", ""))
-                    ws.cell(row=out_row, column=7, value=int(r["laps"] or 0))
+                    if pts is not None and k in PUNKTE:
+                        ws.cell(row=out_row, column=6, value=pts)
+                    ws.cell(row=out_row, column=7, value=laps)
                 else:
                     if r["total_time_ms"].strip():
                         c = ws.cell(row=out_row, column=5,
                                     value=int(r["total_time_ms"]) / 86400000.0)
                         c.number_format = "h:mm:ss"
-                    ws.cell(row=out_row, column=6, value=int(r["laps"] or 0))
+                    ws.cell(row=out_row, column=6, value=laps)
                 out_row += 1
-            print(f"  {k}: {out_row - 15} Zeilen ({'Lizenz' if lizenz else 'Zeit'}-Format)")
+            for hinweis in HINWEISE.get(k, []):
+                out_row += 1
+                ws.cell(row=out_row, column=1, value=f"Hinweis: {hinweis}")
+            print(f"  {k}: {len(zeilen)} Zeilen ({'Lizenz' if lizenz else 'Zeit'}-Format)")
 
         out = HERE / f"srb-{slugify(race['name'])}.xlsx"
         wb.save(out)

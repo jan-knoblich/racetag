@@ -23,8 +23,10 @@ BLOCKS = [
     # inkl. +20%-Puffer-Verbreiterung (siehe nummern_zuweisung.py)
     ("10km Erwachsene", 100, 220, 13),
     ("5km Erwachsene", 300, 420, 7),
-    ("5km-10km U18", 500, 599, None),  # None = Ziel unklar, nur Rohliste
 ]
+# U18 (Block 500-599 + Nachmeldung 196) wird nach MELDEKATEGORIE gewertet
+# (lauf_[mw]_u18_[5|10]km aus zuweisung/0900-…-anmeldeliste.csv): gleiche
+# Strecke wie die Erwachsenen, 5 km = 7. Überfahrt, 10 km = 13. Überfahrt.
 MIN_GAP_S = 15.0  # wie das Backend-Cooldown: Überfahrten dichter dran = 1 Pass
 # Läufer schaffen die ~770-m-Runde nie unter 100 s — alles darunter (nach der
 # ersten Überfahrt!) ist eine Phantom-Lesung (Linie doppelt gequert o. ä.).
@@ -33,10 +35,28 @@ LAUF_MIN_LAP_S = 100.0
 
 # Raceday 08.08.: Papiere 395-416/511-514 fehlten → vier 5-km-Läufer laufen
 # mit 10-km-Puffernummern. Diese Nummern werden im 5-km-Block gewertet!
-# 193 Till Winkel · 194 Christian Zoch · 195 Raphael Schmiedel ·
-# 196 Lenn Wilke (U18!)
+# 193 Till Winkel · 194 Christian Zoch · 195 Raphael Schmiedel
+# (196 Lenn Wilke ist lt. Meldung U18 → landet über die Kategorie im U18-Block)
 BLOCK_OVERRIDE = {193: "5km Erwachsene", 194: "5km Erwachsene",
-                  195: "5km Erwachsene", 196: "5km Erwachsene"}
+                  195: "5km Erwachsene"}
+
+
+def load_u18_bloecke() -> dict[int, tuple[str, int]]:
+    """bib -> (Blocklabel, Ziel-Überfahrten) für alle U18-Meldungen."""
+    src = next((Path(__file__).parent / "zuweisung").glob("0900-*anmeldeliste.csv"), None)
+    out: dict[int, tuple[str, int]] = {}
+    if src is None:
+        return out
+    with open(src, encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f, delimiter=";"):
+            k = (r.get("kategorie") or "").strip()
+            n = (r.get("nummer") or "").strip()
+            if "u18" not in k or not n.isdigit():
+                continue
+            dist = "5km" if "5km" in k else "10km"
+            sex = "männlich" if "_m_" in k else "weiblich"
+            out[int(n)] = (f"{dist} U18 {sex}", 7 if dist == "5km" else 13)
+    return out
 
 
 def parse_ts(ts: str) -> datetime:
@@ -100,23 +120,43 @@ def main() -> None:
               f"{ts.strftime('%H:%M:%S')} ({delta:.0f} s nach der vorigen)")
 
     outdir = Path(__file__).parent
-    for label, lo, hi, target in BLOCKS:
+    u18 = load_u18_bloecke()
+
+    def block_von(bib: int):
+        if bib in u18:
+            return u18[bib]
+        ov = BLOCK_OVERRIDE.get(bib)
+        for label, lo, hi, target in BLOCKS:
+            if ov is not None:
+                if ov == label:
+                    return label, target
+            elif lo <= bib <= hi:
+                return label, target
+        return None
+
+    gruppen: dict[str, dict] = {}
+    for label, _, _, target in BLOCKS:
+        gruppen[label] = {"target": target, "riders": []}
+    for label, target in u18.values():
+        gruppen.setdefault(label, {"target": target, "riders": []})
+
+    for tag_id, lst in passes.items():
+        rider = riders.get(tag_id)
+        if rider is None:
+            continue
+        try:
+            bib = int(rider["bib"])
+        except (TypeError, ValueError):
+            continue
+        blk = block_von(bib)
+        if blk is not None:
+            gruppen[blk[0]]["riders"].append((bib, rider, lst))
+
+    for label, g in gruppen.items():
+        target = g["target"]
         results = []
         anomalies = []
-        for tag_id, lst in passes.items():
-            rider = riders.get(tag_id)
-            if rider is None:
-                continue
-            try:
-                bib = int(rider["bib"])
-            except (TypeError, ValueError):
-                continue
-            override = BLOCK_OVERRIDE.get(bib)
-            if override is not None:
-                if override != label:
-                    continue  # zählt in seinem Override-Block, nicht hier
-            elif not (lo <= bib <= hi):
-                continue
+        for bib, rider, lst in g["riders"]:
             segs = [(lst[i] - (lst[i - 1] if i else start)).total_seconds()
                     for i in range(len(lst))]
             hinweise = []
@@ -139,24 +179,56 @@ def main() -> None:
                     hinweise.append(f"{len(lst)} statt {target} Überfahrten (Extra ignoriert)")
                 entry["hinweis"] = "; ".join(hinweise)
                 results.append(entry)
-            elif (target and med and len(lst) == n - 1
-                  and max(segs[1:]) >= 1.7 * med):
-                # Finisher mit genau EINER unterwegs verpassten Lesung: die
-                # letzte Überfahrt IST das Ziel (Beleg: eine ~2x-Runde).
-                k = segs.index(max(segs[1:]))
+                continue
+            # Unvollständig: Defizit nur werten, wenn es lückenlos durch
+            # nachweisbare Fehllesungen erklärt ist (~2x-/~3x-Runden) —
+            # dann sind das Nachzügler mit voller Distanz, kein DNF.
+            defizit = n - len(lst)
+            erklaert, luecken = 0, []
+            if med:
+                for i, s in enumerate(segs[1:], start=2):
+                    ratio = s / med
+                    if 1.7 <= ratio < 2.55:
+                        erklaert += 1
+                        luecken.append(f"Runde {i} = {ratio:.1f}x Median")
+                    elif 2.55 <= ratio < 3.55:
+                        erklaert += 2
+                        luecken.append(f"Runde {i} = {ratio:.1f}x Median (2 Lesungen)")
+            if med and 0 < defizit <= erklaert:
+                mehrzahl = "en" if defizit > 1 else ""
                 entry["zeit_s"] = (lst[-1] - start).total_seconds()
                 entry["zeit"] = fmt_hms(entry["zeit_s"])
                 hinweise.append(
-                    f"KORRIGIERT: 1 Lesung unterwegs verpasst (Runde {k + 1} = "
-                    f"{max(segs[1:]) / med:.1f}x Median) — Ziel = letzte Überfahrt")
+                    f"KORRIGIERT: {defizit} Lesung{mehrzahl} unterwegs verpasst "
+                    f"({'; '.join(luecken)}) — Ziel = letzte Überfahrt")
                 entry["hinweis"] = "; ".join(hinweise)
                 results.append(entry)
             else:
-                hinweise.append(f"nur {len(lst)} von {target} Überfahrten — Lesung fehlt? DNF?")
+                if defizit == 1 and not luecken and len(lst) >= 3:
+                    # Alle Runden lückenlos, nur die allerletzte Überfahrt
+                    # fehlt: Ziellesung verpasst ODER auf der Schlussrunde
+                    # ausgestiegen — ohne Beleg nicht wertbar.
+                    hinweise.append(
+                        f"{len(lst)} lückenlose Überfahrten, nur die letzte fehlt "
+                        "— Ziellesung verpasst oder Ausstieg auf der Schlussrunde")
+                    entry["grenzfall"] = True
+                else:
+                    hinweise.append(f"nur {len(lst)} von {target} Überfahrten")
+                entry["letzte_s"] = (lst[-1] - start).total_seconds()
                 entry["hinweis"] = "; ".join(hinweise)
                 anomalies.append(entry)
 
         results.sort(key=lambda e: e["zeit_s"])
+        sieger_s = results[0]["zeit_s"] if results else None
+        for e in anomalies:
+            letzte = fmt_hms(e["letzte_s"])
+            if e.get("grenzfall"):
+                e["hinweis"] += f" — letzte Überfahrt {letzte}"
+            elif sieger_s is not None and e["letzte_s"] > sieger_s:
+                e["hinweis"] += (f" — letzte Überfahrt {letzte} (nach Siegerzeit): "
+                                 "volle Distanz nicht belegbar")
+            else:
+                e["hinweis"] += f" — letzte Überfahrt {letzte}: vermutlich DNF"
         slug = label.lower().replace(" ", "-").replace("ä", "ae").replace("ü", "ue")
         path = outdir / f"ergebnis-lauf-{slug}.csv"
         with open(path, "w", encoding="utf-8-sig", newline="") as f:

@@ -85,35 +85,49 @@ def tabelle(header, rows, widths):
     return t
 
 
-story = [
+story: list = [
     Paragraph("Karli Krit + Karli Lauf — Gesamtergebnisse", h1),
-    Paragraph("Leipzig, 08.08.2026 · Zeitnahme racetag (RFID) · Stand 10.08.2026 "
-              "inkl. aller vom Wettkampfgericht bestätigten Korrekturen", sub),
+    Paragraph("Leipzig, 08.08.2026 · Zeitnahme racetag (RFID) · Stand 10.08.2026 · "
+              "Runden/Zeiten: racetag inkl. aller vom Wettkampfgericht bestätigten "
+              "Korrekturen · Punkte und Überrundungen: Amtliche Ergebnislisten", sub),
 ]
 
 # ---- Lauf (09:00) ----
 story.append(Paragraph("09:00 Uhr — Karli Lauf", h2))
-for datei, titel, extra in [
-        ("ergebnis-lauf-10km-erwachsene.csv", "10 km Erwachsene", None),
-        ("ergebnis-lauf-5km-erwachsene.csv", "5 km Erwachsene", None),
-        ("ergebnis-lauf-5km-10km-u18.csv", "U18 (5/10 km)",
-         "Rohliste nach letzter Überfahrt — amtliche U18-Wertung per Kampfgericht")]:
-    rows_ok, rows_ng = [], []
+for datei, titel in [
+        ("ergebnis-lauf-10km-erwachsene.csv", "10 km Erwachsene"),
+        ("ergebnis-lauf-5km-erwachsene.csv", "5 km Erwachsene"),
+        ("ergebnis-lauf-10km-u18-maennlich.csv", "10 km U18 männlich"),
+        ("ergebnis-lauf-10km-u18-weiblich.csv", "10 km U18 weiblich"),
+        ("ergebnis-lauf-5km-u18-maennlich.csv", "5 km U18 männlich"),
+        ("ergebnis-lauf-5km-u18-weiblich.csv", "5 km U18 weiblich")]:
+    rows_ok, rows_ng, korrigiert = [], [], 0
     with open(HERE / datei, encoding="utf-8-sig") as f:
         for r in csv.DictReader(f, delimiter=";"):
             if r["platz"].strip() == "-":
                 rows_ng.append(r)
             else:
-                rows_ok.append([r["platz"], r["nummer"], r["name"], r["zeit"]])
+                stern = "*" if r["hinweis"].strip() else ""
+                korrigiert += bool(stern)
+                rows_ok.append([r["platz"], r["nummer"], r["name"],
+                                r["zeit"] + stern])
     story.append(Paragraph(f"Lauf — {titel}", h2))
-    story.append(tabelle(["Platz", "St.-Nr.", "Name", "Zeit"], rows_ok,
-                         [1.6 * cm, 1.8 * cm, 9.6 * cm, 2.6 * cm]))
+    if rows_ok:
+        story.append(tabelle(["Platz", "St.-Nr.", "Name", "Zeit"], rows_ok,
+                             [1.6 * cm, 1.8 * cm, 9.6 * cm, 2.6 * cm]))
+    if korrigiert:
+        story.append(Paragraph(
+            f"* {korrigiert}x Wertung korrigiert: Lesung(en) unterwegs nachweislich "
+            "verpasst bzw. Startüberfahrt ergänzt — Ziel = letzte Überfahrt "
+            "(Details in den ergebnis-CSVs)", note))
     if rows_ng:
-        ng = ", ".join(f"Nr. {r['nummer']} {r['name']} ({r['ueberfahrten']} Überf.)"
-                       for r in rows_ng)
-        story.append(Paragraph(f"Nicht gewertet: {ng}", note))
-    if extra:
-        story.append(Paragraph(extra, note))
+        def kurz(r):
+            if "nur die letzte fehlt" in r["hinweis"]:
+                return (f"Nr. {r['nummer']} {r['name']} ({r['ueberfahrten']} Überf., "
+                        "Ziellesung fehlt — nicht wertbar)")
+            return f"Nr. {r['nummer']} {r['name']} ({r['ueberfahrten']} Überf.)"
+        story.append(Paragraph(
+            "Nicht gewertet: " + ", ".join(kurz(r) for r in rows_ng), note))
 
 # ---- Rad ----
 for slot, datei, sheets in XLSX:
@@ -122,16 +136,19 @@ for slot, datei, sheets in XLSX:
         ws = wb[sheet]
         header = [c.value for c in ws[14] if c.value]
         lizenz = "UCI-ID" in header
-        rows = []
+        rows, hinweise = [], []
         for row in ws.iter_rows(min_row=15, values_only=True):
             if row[0] is None and row[1] is None:
+                continue
+            if isinstance(row[0], str) and row[0].startswith("Hinweis:"):
+                hinweise.append(row[0])
                 continue
             runden = row[6] if lizenz else row[5]
             if not runden:
                 continue  # 0 Runden = nie gestartet (Reserve-Plakette/DNS)
             if lizenz:
                 rows.append([row[0], row[1], row[2], row[3] or "", row[4] or "",
-                             row[5] or "", row[6]])
+                             "" if row[5] is None else row[5], row[6]])
             else:
                 rows.append([row[0], row[1], row[2], row[3] or "",
                              fmt_zeit(row[4]), row[5]])
@@ -145,6 +162,8 @@ for slot, datei, sheets in XLSX:
             story.append(tabelle(
                 ["Platz", "St.-Nr.", "Name", "Verein", "Zeit", "Runden"],
                 rows, [1.3 * cm, 1.5 * cm, 5.4 * cm, 4.6 * cm, 2.2 * cm, 1.5 * cm]))
+        for h in hinweise:
+            story.append(Paragraph(h, note))
 
 doc = SimpleDocTemplate(str(OUT), pagesize=A4,
                         topMargin=1.4 * cm, bottomMargin=1.4 * cm,
