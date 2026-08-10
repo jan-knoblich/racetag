@@ -144,6 +144,7 @@ for slot, datei, sheets in XLSX:
         ws = wb[sheet]
         header = [c.value for c in ws[14] if c.value]
         lizenz = "UCI-ID" in header
+        hat_punkte = "Punkte" in header
         rows, hinweise = [], []
         for row in ws.iter_rows(min_row=15, values_only=True):
             if row[0] is None and row[1] is None:
@@ -151,21 +152,28 @@ for slot, datei, sheets in XLSX:
             if isinstance(row[0], str) and row[0].startswith("Hinweis:"):
                 hinweise.append(row[0])
                 continue
-            runden = row[6] if lizenz else row[5]
+            runden = row[6] if (lizenz and hat_punkte) else row[5]
             if not runden:
                 continue  # 0 Runden = nie gestartet (Reserve-Plakette/DNS)
-            if lizenz:
+            if lizenz and hat_punkte:
                 rows.append([row[0], row[1], row[2], row[3] or "", row[4] or "",
                              "" if row[5] is None else row[5], row[6]])
+            elif lizenz:
+                rows.append([row[0], row[1], row[2], row[3] or "", row[4] or "",
+                             row[5]])
             else:
                 rows.append([row[0], row[1], row[2], row[3] or "",
                              fmt_zeit(row[4]), row[5]])
         story.append(Paragraph(f"{slot} — {LABELS.get(sheet, sheet)}", h2))
-        if lizenz:
+        if lizenz and hat_punkte:
             story.append(tabelle(
                 ["Platz", "St.-Nr.", "Name", "Verein", "UCI-ID", "Punkte", "Runden"],
                 rows, [1.3 * cm, 1.5 * cm, 4.6 * cm, 4.4 * cm, 2.5 * cm,
                        1.4 * cm, 1.5 * cm]))
+        elif lizenz:
+            story.append(tabelle(
+                ["Platz", "St.-Nr.", "Name", "Verein", "UCI-ID", "Runden"],
+                rows, [1.3 * cm, 1.5 * cm, 5.0 * cm, 5.0 * cm, 2.5 * cm, 1.5 * cm]))
         else:
             story.append(tabelle(
                 ["Platz", "St.-Nr.", "Name", "Verein", "Zeit", "Runden"],

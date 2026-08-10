@@ -47,6 +47,9 @@ PUNKTE = {
     "masters_4": {"319": 12, "321": 4, "322": 1},
     "junioren": {"401": 22, "405": 13, "407": 7},
 }
+# Jan 10.08.: die Frauen-Rennen liefen OHNE Wertungssprints — diese Sheets
+# bekommen (wie Kerstins 5.1-Blatt) gar keine Punkte-Spalte.
+OHNE_PUNKTE = {"frauen_elite", "juniorinnen"}
 # Kerstin: 408/410 fahren Masters 3 (nicht Junioren); 92/302/303 fuhren als
 # Nachmeldungen das 12:10er-Rennen in der U17m (Tags gelesen, Runden gezählt).
 KATEGORIE_FIX = {
@@ -67,6 +70,8 @@ HINWEISE = {
                   "Überfahrten (vorzeitig beendet, keine Lücke im Signal)."],
     "u15m": ["Runden Nr. 84/90/87 amtlich übernommen (App zählte nach dem "
              "Abwinken weiter)."],
+    "frauen_elite": ["Rennen ohne Wertungssprints — keine Punktewertung."],
+    "juniorinnen": ["Rennen ohne Wertungssprints — keine Punktewertung."],
 }
 
 
@@ -164,10 +169,16 @@ def main():
             ws["F7"] = f"{args.ort}, {datum}"
             ws["F8"] = "Ort, Datum"
             ws["A11"] = k
-            header = (["Platz", "St.-Nr.", "Name, Vorname", "Verein",
-                       "UCI-ID", "Punkte", "Runden"] if lizenz else
-                      ["Platz", "St.-Nr.", "Name, Vorname", "Verein",
-                       "Zeit", "Runden"])
+            hat_punkte = lizenz and k not in OHNE_PUNKTE
+            if lizenz and hat_punkte:
+                header = ["Platz", "St.-Nr.", "Name, Vorname", "Verein",
+                          "UCI-ID", "Punkte", "Runden"]
+            elif lizenz:
+                header = ["Platz", "St.-Nr.", "Name, Vorname", "Verein",
+                          "UCI-ID", "Runden"]
+            else:
+                header = ["Platz", "St.-Nr.", "Name, Vorname", "Verein",
+                          "Zeit", "Runden"]
             for j, h in enumerate(header, 1):
                 ws.cell(row=14, column=j, value=h)
 
@@ -203,11 +214,14 @@ def main():
                 ws.cell(row=out_row, column=3, value=r["name"].strip())
                 rider = riders.get(r["bib"].strip(), {})
                 ws.cell(row=out_row, column=4, value=rider.get("verein", ""))
-                if lizenz:
+                if lizenz and hat_punkte:
                     ws.cell(row=out_row, column=5, value=rider.get("uci_id", ""))
                     if pts is not None and k in PUNKTE:
                         ws.cell(row=out_row, column=6, value=pts)
                     ws.cell(row=out_row, column=7, value=laps)
+                elif lizenz:
+                    ws.cell(row=out_row, column=5, value=rider.get("uci_id", ""))
+                    ws.cell(row=out_row, column=6, value=laps)
                 else:
                     if r["total_time_ms"].strip():
                         c = ws.cell(row=out_row, column=5,
