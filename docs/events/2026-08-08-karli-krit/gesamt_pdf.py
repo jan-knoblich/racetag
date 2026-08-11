@@ -115,7 +115,7 @@ for datei, titel in [
             else:
                 hinweis = r["hinweis"].strip()
                 stern = "*" if hinweis else ""
-                if "KORRIGIERT" in hinweis or "Startüberfahrt" in hinweis:
+                if "KORRIGIERT" in hinweis or "Startmessung" in hinweis:
                     korrigiert += 1
                 elif hinweis:
                     vermerke.append(
@@ -130,16 +130,16 @@ for datei, titel in [
     if korrigiert:
         story.append(Paragraph(
             f"* {korrigiert}x Wertung korrigiert: Lesung(en) unterwegs nachweislich "
-            "verpasst bzw. Startüberfahrt ergänzt — Ziel = letzte Überfahrt "
+            "verpasst bzw. Startmessung ergänzt — Ziel = letzte Messung "
             "(Details in den ergebnis-CSVs)", note))
     for v in vermerke:
         story.append(Paragraph(v, note))
     if rows_ng:
         def kurz(r):
-            if "nur die letzte fehlt" in r["hinweis"]:
-                return (f"Nr. {r['nummer']} {r['name']} ({r['ueberfahrten']} Überf., "
-                        "Ziellesung fehlt — nicht wertbar)")
-            return f"Nr. {r['nummer']} {r['name']} ({r['ueberfahrten']} Überf.)"
+            if "keine Zielmessung" in r["hinweis"]:
+                return (f"Nr. {r['nummer']} {r['name']} ({r['runden']} Runden, "
+                        "Zielmessung fehlt — nicht wertbar)")
+            return f"Nr. {r['nummer']} {r['name']} ({r['runden']} Runden)"
         story.append(Paragraph(
             "Nicht gewertet: " + ", ".join(kurz(r) for r in rows_ng), note))
 

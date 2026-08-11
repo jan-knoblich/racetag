@@ -62,10 +62,13 @@ DROP = {("1120", "92"), ("1120", "302"), ("1120", "303")}
 # fahrten!), amtlich gilt der Rückstand beim Abwinken.
 RUNDEN_AMTLICH = {("1120", "84"): 20, ("1120", "90"): 20, ("1120", "87"): 17}
 # Zieleinlauf-Korrektur der Kampfrichter: 90 vor 84 (beide −1 Rd., 0 Pkt.).
-RANG_FIX = {("1120", "90"): 0, ("1120", "84"): 1}
+# U17m (Jan 11.08.): Kampfrichter-Podium übernommen — 190 vor die übrigen
+# 31-Runden-Fahrer (1./2. = 303/187 stimmen per Rundenzahl ohnehin).
+RANG_FIX = {("1120", "90"): 0, ("1120", "84"): 1, ("1210", "190"): 0}
 HINWEISE = {
-    "u17m": ["Punktewertung (amtlich) ausstehend — Reihenfolge: Zieleinlauf racetag.",
-             "Kampfrichter-Notiz Podium: 1. Nr. 303, 2. Nr. 187, 3. Nr. 190."],
+    "u17m": ["Platzierung: Kampfrichter-Podium übernommen (1. Nr. 303, 2. Nr. 187, "
+             "3. Nr. 190); übrige Reihenfolge = Zieleinlauf racetag.",
+             "Amtliche Punktewertung ausstehend."],
     "masters_4": ["Nr. 317: amtlich −3 Rd. notiert; racetag zählt 28 lückenlose "
                   "Überfahrten (vorzeitig beendet, keine Lücke im Signal)."],
     "u15m": ["Runden Nr. 84/90/87 amtlich übernommen (App zählte nach dem "

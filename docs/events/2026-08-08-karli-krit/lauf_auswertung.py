@@ -54,9 +54,9 @@ ZUSATZ_HINWEIS = {
 # +20 s und +87 s nach der 12. Überfahrt, danach nichts. Also kein Lesefehler,
 # sondern eine Runde zu früh gestoppt (verzählt, allein auf der Strecke).
 # Sportliche Wertung wie beim Rad: gewertet mit Rundenrückstand + Vermerk.
-SONDERWERTUNG = {509: "nach Überfahrt 12 an der Linie angehalten (Verweil-"
+SONDERWERTUNG = {509: "nach Runde 12 an der Linie angehalten (Verweil-"
                       "Lesungen +20 s/+87 s, danach keine) — eine Runde zu früh "
-                      "gestoppt; Wertung über 12 Überfahrten (≈9,2 km)"}
+                      "gestoppt; Wertung über 12 Runden (≈9,2 km)"}
 # Entscheidung Jan 11.08.: Nr. 391 hat das Ziel nicht erreicht — DNF
 # (6 lückenlose Überfahrten, keine Verweil-Lesungen, Runden 3:23→4:27).
 DNF_ENTSCHIEDEN = {391: "DNF (Entscheidung Orga 11.08.)"}
@@ -189,15 +189,15 @@ def main() -> None:
             if target and len(segs) >= 3 and segs[0] >= min(segs[1:]):
                 n = target - 1
                 hinweise.append(
-                    f"Startüberfahrt verpasst (Seg. 1 = {fmt_hms(segs[0])} nicht "
-                    f"schnellste) — Wertung auf Überfahrt {n}")
+                    f"Startmessung verpasst (Startsegment {fmt_hms(segs[0])} nicht "
+                    f"das schnellste) — Wertung auf Runde {n}")
             med = statistics.median(segs[1:]) if len(segs) > 2 else None
-            entry = {"bib": bib, "name": rider["name"], "ueberfahrten": len(lst)}
+            entry = {"bib": bib, "name": rider["name"], "runden": len(lst)}
             if len(lst) >= n:
                 entry["zeit_s"] = (lst[n - 1] - start).total_seconds()
                 entry["zeit"] = fmt_hms(entry["zeit_s"])
                 if target and len(lst) != target and not hinweise:
-                    hinweise.append(f"{len(lst)} statt {target} Überfahrten (Extra ignoriert)")
+                    hinweise.append(f"{len(lst)} statt {target} Messungen (Extra ignoriert)")
                 entry["hinweis"] = "; ".join(hinweise)
                 results.append(entry)
                 continue
@@ -228,12 +228,12 @@ def main() -> None:
                 entry["zeit"] = fmt_hms(entry["zeit_s"])
                 hinweise.append(
                     f"KORRIGIERT: {defizit} Lesung{mehrzahl} unterwegs verpasst "
-                    f"({'; '.join(luecken)}) — Ziel = letzte Überfahrt")
+                    f"({'; '.join(luecken)}) — Ziel = letzte Messung")
                 entry["hinweis"] = "; ".join(hinweise)
                 results.append(entry)
             else:
                 if bib in DNF_ENTSCHIEDEN:
-                    hinweise.append(f"nur {len(lst)} von {target} Überfahrten — "
+                    hinweise.append(f"nur {len(lst)} von {target} Runden — "
                                     + DNF_ENTSCHIEDEN[bib])
                     entry["grenzfall"] = True  # Verdikt steht, kein Zusatz-Urteil
                 elif defizit == 1 and not luecken and len(lst) >= 3:
@@ -241,11 +241,11 @@ def main() -> None:
                     # fehlt: Ziellesung verpasst ODER auf der Schlussrunde
                     # ausgestiegen — ohne Beleg nicht wertbar.
                     hinweise.append(
-                        f"{len(lst)} lückenlose Überfahrten, nur die letzte fehlt "
-                        "— Ziellesung verpasst oder Ausstieg auf der Schlussrunde")
+                        f"{len(lst)} Runden lückenlos, dann keine Zielmessung "
+                        "— Lesung verpasst oder Ausstieg auf der Schlussrunde")
                     entry["grenzfall"] = True
                 else:
-                    hinweise.append(f"nur {len(lst)} von {target} Überfahrten")
+                    hinweise.append(f"nur {len(lst)} von {target} Runden")
                 entry["letzte_s"] = (lst[-1] - start).total_seconds()
                 entry["hinweis"] = "; ".join(hinweise)
                 anomalies.append(entry)
@@ -255,22 +255,22 @@ def main() -> None:
         for e in anomalies:
             letzte = fmt_hms(e["letzte_s"])
             if e.get("grenzfall"):
-                e["hinweis"] += f" — letzte Überfahrt {letzte}"
+                e["hinweis"] += f" — letzte Messung {letzte}"
             elif sieger_s is not None and e["letzte_s"] > sieger_s:
-                e["hinweis"] += (f" — letzte Überfahrt {letzte} (nach Siegerzeit): "
+                e["hinweis"] += (f" — letzte Messung {letzte} (nach Siegerzeit): "
                                  "volle Distanz nicht belegbar")
             else:
-                e["hinweis"] += f" — letzte Überfahrt {letzte}: vermutlich DNF"
+                e["hinweis"] += f" — letzte Messung {letzte}: vermutlich DNF"
         slug = label.lower().replace(" ", "-").replace("ä", "ae").replace("ü", "ue")
         path = outdir / f"ergebnis-lauf-{slug}.csv"
         with open(path, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f, delimiter=";", lineterminator="\n")
-            w.writerow(["platz", "nummer", "name", "zeit", "ueberfahrten", "hinweis"])
+            w.writerow(["platz", "nummer", "name", "zeit", "runden", "hinweis"])
             for i, e in enumerate(results, 1):
                 w.writerow([i, e["bib"], e["name"], e["zeit"],
-                            e["ueberfahrten"], e.get("hinweis", "")])
+                            e["runden"], e.get("hinweis", "")])
             for e in sorted(anomalies, key=lambda x: x["bib"]):
-                w.writerow(["-", e["bib"], e["name"], "", e["ueberfahrten"], e["hinweis"]])
+                w.writerow(["-", e["bib"], e["name"], "", e["runden"], e["hinweis"]])
         print(f"{label}: {len(results)} gewertet, {len(anomalies)} unvollständig -> {path.name}")
 
 
