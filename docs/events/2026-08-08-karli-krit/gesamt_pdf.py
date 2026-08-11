@@ -20,7 +20,8 @@ from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate,
                                 Spacer, Table, TableStyle)
 
 HERE = Path(__file__).parent
-OUT = Path.home() / "Downloads/karli-krit-ergebnisse-gesamt.pdf"
+OUT_LAUF = Path.home() / "Downloads/karli-lauf-ergebnisse.pdf"
+OUT_RAD = Path.home() / "Downloads/karli-krit-ergebnisse.pdf"
 
 LABELS = {
     "u15m": "Schüler U15 männlich", "u17w": "Jugend U17 weiblich",
@@ -85,15 +86,20 @@ def tabelle(header, rows, widths):
     return t
 
 
-story: list = [
-    Paragraph("Karli Krit + Karli Lauf — Gesamtergebnisse", h1),
-    Paragraph("Leipzig, 08.08.2026 · Zeitnahme racetag (RFID) · Stand 10.08.2026 · "
-              "Runden/Zeiten: racetag inkl. aller vom Wettkampfgericht bestätigten "
-              "Korrekturen · Punkte und Überrundungen: Amtliche Ergebnislisten", sub),
+STAND = ("Leipzig, 08.08.2026 · Zeitnahme racetag (RFID) · Stand 11.08.2026 · "
+         "Runden/Zeiten: racetag inkl. aller vom Wettkampfgericht bestätigten "
+         "Korrekturen · Punkte und Überrundungen: Amtliche Ergebnislisten")
+story_lauf: list = [
+    Paragraph("Karli Lauf — Ergebnisse", h1),
+    Paragraph(STAND + " · Start 09:00 Uhr", sub),
+]
+story_rad: list = [
+    Paragraph("Karli Krit — Ergebnisse (Rad)", h1),
+    Paragraph(STAND, sub),
 ]
 
 # ---- Lauf (09:00) ----
-story.append(Paragraph("09:00 Uhr — Karli Lauf", h2))
+story = story_lauf
 for datei, titel in [
         ("ergebnis-lauf-10km-erwachsene.csv", "10 km Erwachsene"),
         ("ergebnis-lauf-5km-erwachsene.csv", "5 km Erwachsene"),
@@ -138,6 +144,7 @@ for datei, titel in [
             "Nicht gewertet: " + ", ".join(kurz(r) for r in rows_ng), note))
 
 # ---- Rad ----
+story = story_rad
 for slot, datei, sheets in XLSX:
     wb = load_workbook(HERE / datei)
     for sheet in sheets:
@@ -181,9 +188,11 @@ for slot, datei, sheets in XLSX:
         for h in hinweise:
             story.append(Paragraph(h, note))
 
-doc = SimpleDocTemplate(str(OUT), pagesize=A4,
-                        topMargin=1.4 * cm, bottomMargin=1.4 * cm,
-                        leftMargin=1.6 * cm, rightMargin=1.6 * cm,
-                        title="Karli Krit + Karli Lauf 2026 — Gesamtergebnisse")
-doc.build(story)
-print(OUT)
+for out, titel, st in [(OUT_LAUF, "Karli Lauf 2026 — Ergebnisse", story_lauf),
+                       (OUT_RAD, "Karli Krit 2026 — Ergebnisse (Rad)", story_rad)]:
+    doc = SimpleDocTemplate(str(out), pagesize=A4,
+                            topMargin=1.4 * cm, bottomMargin=1.4 * cm,
+                            leftMargin=1.6 * cm, rightMargin=1.6 * cm,
+                            title=titel)
+    doc.build(st)
+    print(out)
