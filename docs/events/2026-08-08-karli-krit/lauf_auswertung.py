@@ -57,6 +57,9 @@ ZUSATZ_HINWEIS = {
 SONDERWERTUNG = {509: "nach Überfahrt 12 an der Linie angehalten (Verweil-"
                       "Lesungen +20 s/+87 s, danach keine) — eine Runde zu früh "
                       "gestoppt; Wertung über 12 Überfahrten (≈9,2 km)"}
+# Entscheidung Jan 11.08.: Nr. 391 hat das Ziel nicht erreicht — DNF
+# (6 lückenlose Überfahrten, keine Verweil-Lesungen, Runden 3:23→4:27).
+DNF_ENTSCHIEDEN = {391: "DNF (Entscheidung Orga 11.08.)"}
 
 
 def load_u18_bloecke() -> dict[int, tuple[str, int]]:
@@ -229,7 +232,11 @@ def main() -> None:
                 entry["hinweis"] = "; ".join(hinweise)
                 results.append(entry)
             else:
-                if defizit == 1 and not luecken and len(lst) >= 3:
+                if bib in DNF_ENTSCHIEDEN:
+                    hinweise.append(f"nur {len(lst)} von {target} Überfahrten — "
+                                    + DNF_ENTSCHIEDEN[bib])
+                    entry["grenzfall"] = True  # Verdikt steht, kein Zusatz-Urteil
+                elif defizit == 1 and not luecken and len(lst) >= 3:
                     # Alle Runden lückenlos, nur die allerletzte Überfahrt
                     # fehlt: Ziellesung verpasst ODER auf der Schlussrunde
                     # ausgestiegen — ohne Beleg nicht wertbar.
