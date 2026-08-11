@@ -171,7 +171,7 @@ for slot, datei, sheets in XLSX:
             if isinstance(row[0], str) and row[0].startswith("Hinweis:"):
                 hinweise.append(row[0])
                 continue
-            runden = row[6] if (lizenz and hat_punkte) else row[5]
+            runden = row[6] if lizenz else row[5]
             if not runden:
                 continue  # 0 Runden = nie gestartet (Reserve-Plakette/DNS)
             if lizenz and hat_punkte:
@@ -179,7 +179,7 @@ for slot, datei, sheets in XLSX:
                              "" if row[5] is None else row[5], row[6]])
             elif lizenz:
                 rows.append([row[0], row[1], row[2], row[3] or "", row[4] or "",
-                             row[5]])
+                             fmt_zeit(row[5]), row[6]])
             else:
                 rows.append([row[0], row[1], row[2], row[3] or "",
                              fmt_zeit(row[4]), row[5]])
@@ -190,7 +190,8 @@ for slot, datei, sheets in XLSX:
                  "Runden"], rows))
         elif lizenz:
             rad_body.append(tabelle(
-                ["Platz", "St.-Nr.", "Name", "Verein", "UCI-ID", "Runden"], rows))
+                ["Platz", "St.-Nr.", "Name", "Verein", "UCI-ID", "Zeit",
+                 "Runden"], rows))
         else:
             rad_body.append(tabelle(
                 ["Platz", "St.-Nr.", "Name", "Verein", "Zeit", "Runden"], rows))

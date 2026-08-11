@@ -177,8 +177,9 @@ def main():
                 header = ["Platz", "St.-Nr.", "Name, Vorname", "Verein",
                           "UCI-ID", "Punkte", "Runden"]
             elif lizenz:
+                # ohne Punktewertung: dafür Schlusszeit ausweisen
                 header = ["Platz", "St.-Nr.", "Name, Vorname", "Verein",
-                          "UCI-ID", "Runden"]
+                          "UCI-ID", "Zeit", "Runden"]
             else:
                 header = ["Platz", "St.-Nr.", "Name, Vorname", "Verein",
                           "Zeit", "Runden"]
@@ -224,7 +225,11 @@ def main():
                     ws.cell(row=out_row, column=7, value=laps)
                 elif lizenz:
                     ws.cell(row=out_row, column=5, value=rider.get("uci_id", ""))
-                    ws.cell(row=out_row, column=6, value=laps)
+                    if r["total_time_ms"].strip():
+                        c = ws.cell(row=out_row, column=6,
+                                    value=int(r["total_time_ms"]) / 86400000.0)
+                        c.number_format = "h:mm:ss"
+                    ws.cell(row=out_row, column=7, value=laps)
                 else:
                     if r["total_time_ms"].strip():
                         c = ws.cell(row=out_row, column=5,
