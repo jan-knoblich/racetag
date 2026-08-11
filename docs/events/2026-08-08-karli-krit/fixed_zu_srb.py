@@ -5,8 +5,8 @@ Erzeugt fixed-ergebnisse-srb.xlsx mit je einem Sheet pro Wertung im Layout
 der Jedermann-Sheets aus "Karli Krit 08.08.26 Start und Ergebnislisten.xls":
 Kopfblock (SRB / Amtliches Ergebnis / Veranstaltung / Ort, Datum / Runden),
 Spalten Platz | St.-Nr. | Name, Vorname | Verein | Zeit | Runden.
-Zeit = total_time_ms als echte Excel-Zeit (h:mm:ss), Verein bleibt leer
-(racetag kennt noch keine Vereine — siehe TODO SRB-Export).
+Zeit = total_time_ms als echte Excel-Zeit (h:mm:ss); Verein/Team kommt
+aus den Fixed-Rennen der racetag-DB (Portal-Teams, nachgetragen 11.08.).
 """
 import csv
 import io
@@ -37,6 +37,24 @@ def read_export(path):
                        if "Total laps" in c), "")
     return rows, total_laps
 
+
+def lade_vereine() -> dict:
+    """bib -> Verein/Team aus den Fixed-Rennen (19:30 + 20:00) der racetag-DB."""
+    import sqlite3
+    db = Path.home() / ".racetag/data/racetag.db"
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    out: dict = {}
+    for pat in ("19:30%", "20:00%"):
+        race = con.execute("SELECT id FROM races WHERE name LIKE ?", (pat,)).fetchone()
+        if race:
+            for bib, verein in con.execute(
+                    "SELECT bib, verein FROM riders WHERE race_id=? AND verein != ''",
+                    (race[0],)):
+                out.setdefault(str(bib), verein)
+    return out
+
+
+VEREINE = lade_vereine()
 
 wb = Workbook()
 wb.remove(wb.active)
@@ -71,7 +89,7 @@ for src, sheets in SOURCES:
             ws.cell(row=out_row, column=2, value=int(r["bib"]))
             name = r["name"].strip()
             ws.cell(row=out_row, column=3, value=name)
-            ws.cell(row=out_row, column=4, value="")  # Verein: unbekannt
+            ws.cell(row=out_row, column=4, value=VEREINE.get(r["bib"].strip(), ""))
             if r["total_time_ms"].strip():
                 c = ws.cell(row=out_row, column=5,
                             value=int(r["total_time_ms"]) / 86400000.0)
