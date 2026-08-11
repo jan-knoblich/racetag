@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
-"""Gesamt-Ergebnis-PDF: alle Wertungen des Tages in einem Dokument.
+"""Ergebnis-PDFs (Lauf + Rad) im kami-Design (~/.claude/skills/kami).
 
 Quellen: die srb-*.xlsx (Rad, inkl. bestätigter Korrekturen), die
 fixed-ergebnisse-srb.xlsx (Fixed-Gear-Finals) und die ergebnis-lauf-*.csv
 (Lauf, inkl. geretteter Finisher). Reihenfolge = Tagesplan.
 
-Usage: e2e-venv/bin/python gesamt_pdf.py  ->  ~/Downloads/karli-krit-ergebnisse-gesamt.pdf
+Rendering: WeasyPrint + long-doc-en-Template des kami-Skills — dessen CSS
+wird zur Laufzeit unverändert übernommen (nur Fontpfade absolutiert +
+Ergebnislisten-Addendum: lange Tabellen dürfen über Seiten laufen).
+Start ggf. mit DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib (pango).
+
+Usage: e2e-venv/bin/python gesamt_pdf.py
+   ->  ~/Downloads/karli-lauf-ergebnisse.pdf + karli-krit-ergebnisse.pdf
 """
 import csv
 import datetime as dt
+import html
+import re
 from pathlib import Path
 
 from openpyxl import load_workbook
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate,
-                                Spacer, Table, TableStyle)
 
 HERE = Path(__file__).parent
+KAMI = Path.home() / ".claude/skills/kami"
 OUT_LAUF = Path.home() / "Downloads/karli-lauf-ergebnisse.pdf"
 OUT_RAD = Path.home() / "Downloads/karli-krit-ergebnisse.pdf"
 
@@ -51,16 +54,34 @@ XLSX = [
      ["Fixed Gear B", "FLINTA", "Fixed Gear A"]),
 ]
 
-h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=17, leading=21,
-                    spaceAfter=2)
-sub = ParagraphStyle("sub", fontName="Helvetica", fontSize=10.5, leading=13,
-                     textColor=colors.HexColor("#555555"), spaceAfter=10)
-h2 = ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=13, leading=16,
-                    spaceBefore=10, spaceAfter=4,
-                    textColor=colors.HexColor("#b03090"))
-note = ParagraphStyle("note", fontName="Helvetica", fontSize=8, leading=10,
-                      textColor=colors.HexColor("#666666"), spaceBefore=2)
-cell = ParagraphStyle("cell", fontName="Helvetica", fontSize=8.5, leading=10.5)
+STAND = ("Zeitnahme racetag (RFID) · Stand 11.08.2026 · Runden/Zeiten: racetag "
+         "inkl. aller vom Wettkampfgericht bestätigten Korrekturen · Punkte und "
+         "Überrundungen: Amtliche Ergebnislisten")
+
+# Ergebnislisten-Addendum zum unveränderten kami-Template-CSS.
+ADDENDUM = """
+/* Addendum Ergebnislisten: lange Tabellen laufen über Seiten (thead
+   wiederholt WeasyPrint automatisch), Zeilen bleiben ganz. */
+table { break-inside: auto; }
+tr { break-inside: avoid; }
+td, th { font-variant-numeric: tabular-nums; }
+h2 { break-after: avoid; }
+.dok-kopf { margin-bottom: 22pt; }
+.fussnote { font-family: var(--sans); font-size: 8.5pt; color: var(--stone);
+            line-height: 1.5; margin: -6pt 0 12pt 0; }
+"""
+
+
+def kami_css(doc_title: str) -> str:
+    tpl = (KAMI / "assets/templates/long-doc-en.html").read_text()
+    css = re.search(r"<style>(.*?)</style>", tpl, re.S).group(1)
+    css = css.replace("../fonts/", (KAMI / "assets/fonts").as_uri() + "/")
+    css = css.replace("{{DOC_TITLE}}", doc_title)
+    return css + ADDENDUM
+
+
+def esc(v) -> str:
+    return html.escape(str(v)) if v is not None else ""
 
 
 def fmt_zeit(v):
@@ -69,37 +90,27 @@ def fmt_zeit(v):
     return str(v) if v is not None else ""
 
 
-def tabelle(header, rows, widths):
-    data = [[Paragraph(f"<b>{h}</b>", cell) for h in header]]
-    for r in rows:
-        data.append([Paragraph(str(c) if c is not None else "", cell) for c in r])
-    t = Table(data, colWidths=widths, repeatRows=1)
-    t.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#aaaaaa")),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f2d9ec")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
-    ]))
-    return t
+def tabelle(header: list[str], rows: list[list]) -> str:
+    th = "".join(f"<th>{esc(h)}</th>" for h in header)
+    trs = "".join(
+        "<tr>" + "".join(f"<td>{esc(c)}</td>" for c in r) + "</tr>" for r in rows)
+    return f"<table><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table>"
 
 
-STAND = ("Leipzig, 08.08.2026 · Zeitnahme racetag (RFID) · Stand 11.08.2026 · "
-         "Runden/Zeiten: racetag inkl. aller vom Wettkampfgericht bestätigten "
-         "Korrekturen · Punkte und Überrundungen: Amtliche Ergebnislisten")
-story_lauf: list = [
-    Paragraph("Karli Lauf — Ergebnisse", h1),
-    Paragraph(STAND + " · Start 09:00 Uhr", sub),
-]
-story_rad: list = [
-    Paragraph("Karli Krit — Ergebnisse (Rad)", h1),
-    Paragraph(STAND, sub),
-]
+def fussnote(text: str) -> str:
+    return f'<p class="fussnote">{esc(text)}</p>'
+
+
+def kopf(titel: str, meta: str) -> str:
+    return (f'<div class="dok-kopf">'
+            f'<div class="cover-eyebrow">Amtliches Ergebnis</div>'
+            f'<h1>{esc(titel)}</h1>'
+            f'<p class="cover-meta">{esc(meta)}</p></div>')
+
 
 # ---- Lauf (09:00) ----
-story = story_lauf
+lauf_body = [kopf("Karli Lauf 2026",
+                  f"Leipzig, 08.08.2026 · Start 09:00 Uhr · {STAND}")]
 for datei, titel in [
         ("ergebnis-lauf-10km-erwachsene.csv", "10 km Erwachsene"),
         ("ergebnis-lauf-5km-erwachsene.csv", "5 km Erwachsene"),
@@ -123,17 +134,16 @@ for datei, titel in [
                         + hinweis.replace("GEWERTET MIT VERMERK: ", ""))
                 rows_ok.append([r["platz"], r["nummer"], r["name"],
                                 r["zeit"] + stern])
-    story.append(Paragraph(f"Lauf — {titel}", h2))
+    lauf_body.append(f"<h2>{esc(titel)}</h2>")
     if rows_ok:
-        story.append(tabelle(["Platz", "St.-Nr.", "Name", "Zeit"], rows_ok,
-                             [1.6 * cm, 1.8 * cm, 9.6 * cm, 2.6 * cm]))
+        lauf_body.append(tabelle(["Platz", "St.-Nr.", "Name", "Zeit"], rows_ok))
     if korrigiert:
-        story.append(Paragraph(
-            f"* {korrigiert}x Wertung korrigiert: Lesung(en) unterwegs nachweislich "
-            "verpasst bzw. Startmessung ergänzt — Ziel = letzte Messung "
-            "(Details in den ergebnis-CSVs)", note))
+        lauf_body.append(fussnote(
+            f"* {korrigiert}x Wertung korrigiert: Lesung(en) unterwegs "
+            "nachweislich verpasst bzw. Startmessung ergänzt — Ziel = letzte "
+            "Messung (Details in den ergebnis-CSVs)"))
     for v in vermerke:
-        story.append(Paragraph(v, note))
+        lauf_body.append(fussnote(v))
     if rows_ng:
         def kurz(r):
             rd = f"{r['runden']} Runde" + ("" if r["runden"] == "1" else "n")
@@ -141,13 +151,14 @@ for datei, titel in [
                 return (f"Nr. {r['nummer']} {r['name']} ({rd}, "
                         "Zielmessung fehlt — nicht wertbar)")
             return f"Nr. {r['nummer']} {r['name']} ({rd})"
-        story.append(Paragraph(
-            "Nicht gewertet: " + ", ".join(kurz(r) for r in rows_ng), note))
+        lauf_body.append(fussnote(
+            "Nicht gewertet: " + ", ".join(kurz(r) for r in rows_ng)))
 
 # ---- Rad ----
-story = story_rad
+rad_body = [kopf("Karli Krit 2026", f"Leipzig, 08.08.2026 · {STAND}")]
 for slot, datei, sheets in XLSX:
     wb = load_workbook(HERE / datei)
+    rad_body.append(f'<div class="chapter-num" style="margin-top:18pt">{esc(slot)}</div>')
     for sheet in sheets:
         ws = wb[sheet]
         header = [c.value for c in ws[14] if c.value]
@@ -172,28 +183,27 @@ for slot, datei, sheets in XLSX:
             else:
                 rows.append([row[0], row[1], row[2], row[3] or "",
                              fmt_zeit(row[4]), row[5]])
-        story.append(Paragraph(f"{slot} — {LABELS.get(sheet, sheet)}", h2))
+        rad_body.append(f"<h2>{esc(LABELS.get(sheet, sheet))}</h2>")
         if lizenz and hat_punkte:
-            story.append(tabelle(
-                ["Platz", "St.-Nr.", "Name", "Verein", "UCI-ID", "Punkte", "Runden"],
-                rows, [1.3 * cm, 1.5 * cm, 4.6 * cm, 4.4 * cm, 2.5 * cm,
-                       1.4 * cm, 1.5 * cm]))
+            rad_body.append(tabelle(
+                ["Platz", "St.-Nr.", "Name", "Verein", "UCI-ID", "Punkte",
+                 "Runden"], rows))
         elif lizenz:
-            story.append(tabelle(
-                ["Platz", "St.-Nr.", "Name", "Verein", "UCI-ID", "Runden"],
-                rows, [1.3 * cm, 1.5 * cm, 5.0 * cm, 5.0 * cm, 2.5 * cm, 1.5 * cm]))
+            rad_body.append(tabelle(
+                ["Platz", "St.-Nr.", "Name", "Verein", "UCI-ID", "Runden"], rows))
         else:
-            story.append(tabelle(
-                ["Platz", "St.-Nr.", "Name", "Verein", "Zeit", "Runden"],
-                rows, [1.3 * cm, 1.5 * cm, 5.4 * cm, 4.6 * cm, 2.2 * cm, 1.5 * cm]))
+            rad_body.append(tabelle(
+                ["Platz", "St.-Nr.", "Name", "Verein", "Zeit", "Runden"], rows))
         for h in hinweise:
-            story.append(Paragraph(h, note))
+            rad_body.append(fussnote(h))
 
-for out, titel, st in [(OUT_LAUF, "Karli Lauf 2026 — Ergebnisse", story_lauf),
-                       (OUT_RAD, "Karli Krit 2026 — Ergebnisse (Rad)", story_rad)]:
-    doc = SimpleDocTemplate(str(out), pagesize=A4,
-                            topMargin=1.4 * cm, bottomMargin=1.4 * cm,
-                            leftMargin=1.6 * cm, rightMargin=1.6 * cm,
-                            title=titel)
-    doc.build(st)
+from weasyprint import HTML  # noqa: E402 (Import nach Datenaufbau ok)
+
+for out, doc_title, body in [
+        (OUT_LAUF, "Karli Lauf 2026 — Ergebnisse", lauf_body),
+        (OUT_RAD, "Karli Krit 2026 — Ergebnisse (Rad)", rad_body)]:
+    page = (f'<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">'
+            f"<title>{esc(doc_title)}</title><style>{kami_css(doc_title)}</style>"
+            f"</head><body>{''.join(body)}</body></html>")
+    HTML(string=page).write_pdf(str(out))
     print(out)
