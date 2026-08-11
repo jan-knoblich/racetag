@@ -136,10 +136,11 @@ for datei, titel in [
         story.append(Paragraph(v, note))
     if rows_ng:
         def kurz(r):
+            rd = f"{r['runden']} Runde" + ("" if r["runden"] == "1" else "n")
             if "keine Zielmessung" in r["hinweis"]:
-                return (f"Nr. {r['nummer']} {r['name']} ({r['runden']} Runden, "
+                return (f"Nr. {r['nummer']} {r['name']} ({rd}, "
                         "Zielmessung fehlt — nicht wertbar)")
-            return f"Nr. {r['nummer']} {r['name']} ({r['runden']} Runden)"
+            return f"Nr. {r['nummer']} {r['name']} ({rd})"
         story.append(Paragraph(
             "Nicht gewertet: " + ", ".join(kurz(r) for r in rows_ng), note))
 
