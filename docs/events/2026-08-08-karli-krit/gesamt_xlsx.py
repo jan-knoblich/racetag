@@ -8,6 +8,9 @@ Der Lauf bleibt bewusst draußen (eigenes Format: CSVs + Lauf-PDF).
 
 Quellen: srb-*.xlsx + fixed-ergebnisse-srb.xlsx (werden 1:1 kopiert).
 
+Zusätzlich entsteht je Wertung eine Einzeldatei (Fixed Gear gebündelt:
+Quali + B + FLINTA + A in einer Datei) unter ~/Downloads/karli-einzelergebnisse/.
+
 Usage: e2e-venv/bin/python gesamt_xlsx.py  ->  ~/Downloads/karli-ergebnisse-gesamt.xlsx
 """
 from pathlib import Path
@@ -34,23 +37,44 @@ RAD = [  # (Datei, [(Quell-Sheet, Blattname)])
 ]
 
 
+def kopiere(src, ws) -> None:
+    for row in src.iter_rows():
+        for cell in row:
+            if cell.value is None:
+                continue
+            ziel = ws.cell(row=cell.row, column=cell.column, value=cell.value)
+            if cell.number_format != "General":
+                ziel.number_format = cell.number_format
+    spalten = sum(1 for c in src[14] if c.value)
+    formatiere(ws, spalten or 6)
+
+
 wb = Workbook()
 wb.remove(wb.active)
-
+quellen: dict = {}
 for datei, sheets in RAD:
     src_wb = load_workbook(HERE / datei)
     for quelle, blatt in sheets:
-        src = src_wb[quelle]
-        ws = wb.create_sheet(blatt)
-        for row in src.iter_rows():
-            for cell in row:
-                if cell.value is None:
-                    continue
-                ziel = ws.cell(row=cell.row, column=cell.column, value=cell.value)
-                if cell.number_format != "General":
-                    ziel.number_format = cell.number_format
-        spalten = sum(1 for c in src[14] if c.value)
-        formatiere(ws, spalten or 6)
-
+        quellen[blatt] = src_wb[quelle]
+        kopiere(quellen[blatt], wb.create_sheet(blatt))
 wb.save(OUT)
 print(f"{OUT}  ({len(wb.sheetnames)} Blätter)")
+
+# Einzeldateien: eine je Wertung; die vier Fixed-Gear-Wertungen in einer Datei.
+EINZEL = Path.home() / "Downloads/karli-einzelergebnisse"
+EINZEL.mkdir(exist_ok=True)
+FIXED = {"Fixed Quali", "Fixed B", "FLINTA", "Fixed A"}
+fx = Workbook()
+fx.remove(fx.active)
+n = 0
+for blatt, src in quellen.items():
+    if blatt in FIXED:
+        kopiere(src, fx.create_sheet(blatt))
+    else:
+        ew = Workbook()
+        ew.remove(ew.active)
+        kopiere(src, ew.create_sheet(blatt))
+        ew.save(EINZEL / f"{blatt}.xlsx")
+        n += 1
+fx.save(EINZEL / "Fixed Gear.xlsx")
+print(f"{EINZEL}: {n} Einzeldateien + Fixed Gear.xlsx (4 Blätter)")
