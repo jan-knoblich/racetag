@@ -83,6 +83,8 @@ for src, sheets in SOURCES:
         for r in [x for x in wertung if not x["status"].strip()] + \
                  [x for x in wertung if x["status"].strip()]:
             status = r["status"].strip().upper()
+            if status == "DNS":
+                continue  # Nichtstarter erscheinen gar nicht
             if status:
                 ws.cell(row=out_row, column=1, value=status)
             else:

@@ -216,6 +216,8 @@ def main():
                 status = r["status"].strip().upper()
                 if not status and laps == 0 and not r["total_time_ms"].strip():
                     status = "DNS"
+                if status == "DNS":
+                    continue  # Nichtstarter erscheinen gar nicht (Wunsch 12.08.)
                 if status:
                     mit_status.append((status, laps, r))
                 else:
