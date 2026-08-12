@@ -52,9 +52,6 @@ PUNKTE = {
     # 190 vor 192 bei Punktgleichheit: Kampfrichter-Reihung (RANG_FIX unten).
     "u17m": {"303": 40, "187": 27, "190": 7, "192": 7, "182": 3},
 }
-# Amtlich "vakant": 92/302 (Nachmeldungen) bekommen im Blatt keinen Platz —
-# sie erscheinen ohne Platzziffer mit Runden lt. racetag.
-STATUS_FIX = {("1210", "92"): "VAKANT", ("1210", "302"): "VAKANT"}
 # Jan 10.08.: die Frauen-Rennen liefen OHNE Wertungssprints — diese Sheets
 # bekommen (wie Kerstins 5.1-Blatt) gar keine Punkte-Spalte.
 OHNE_PUNKTE = {"frauen_elite", "juniorinnen"}
@@ -76,8 +73,9 @@ RANG_FIX = {("1120", "90"): 0, ("1120", "84"): 1, ("1210", "190"): 0}
 HINWEISE = {
     "u17m": ["Punkte lt. Amtlichem Ergebnis; bei Punktgleichheit (190/192) "
              "Kampfrichter-Reihung.",
-             "Nr. 92 und Nr. 302 (Nachmeldungen): Platzierung amtlich vakant — "
-             "Runden lt. racetag."],
+             "Nr. 92 und Nr. 302 (Nachmeldungen) sind im amtlichen Blatt ohne "
+             "Platz notiert (\u201evakant\u201c) — hier regulär nach Zieleinlauf "
+             "racetag eingereiht."],
     "masters_4": ["Nr. 317: amtlich −3 Rd. notiert; racetag zählt 28 lückenlose "
                   "Überfahrten (vorzeitig beendet, keine Lücke im Signal)."],
     "u15m": ["Runden Nr. 84/90/87 amtlich übernommen (App zählte nach dem "
@@ -215,7 +213,7 @@ def main():
             for idx, r in enumerate(krows):
                 bib = r["bib"].strip()
                 laps = RUNDEN_AMTLICH.get((slot, bib), int(r["laps"] or 0))
-                status = STATUS_FIX.get((slot, bib)) or r["status"].strip().upper()
+                status = r["status"].strip().upper()
                 if not status and laps == 0 and not r["total_time_ms"].strip():
                     status = "DNS"
                 if status:
