@@ -18,6 +18,8 @@ from openpyxl.utils import get_column_letter
 _DUENN = Side(style="thin")
 RAHMEN = Border(top=_DUENN, bottom=_DUENN, left=_DUENN, right=_DUENN)
 BREITEN = [5.5, 6, 22.5, 32, 14, 9, 9]
+# Zeilenhöhen 1-15 (pt) aus der Vorlage — sonst quetscht der 26-pt-Kopf.
+HOEHEN = [33, 8, 8, 25, 12, 29.25, 13, 16, 6, 6, 13, 13, 6, 18, 16]
 ZENTRIERT = Alignment(horizontal="center")
 
 
@@ -30,6 +32,8 @@ def formatiere(ws, spalten: int) -> None:
     ende = get_column_letter(spalten)
     for i, breite in enumerate(BREITEN[:max(spalten, 7)], 1):
         ws.column_dimensions[get_column_letter(i)].width = breite
+    for i, hoehe in enumerate(HOEHEN, 1):
+        ws.row_dimensions[i].height = hoehe
 
     for zelle, ab, bis in (("A1", "A1", f"{ende}1"), ("A4", "A4", f"{ende}4"),
                            ("A6", "A6", f"{ende}6")):
