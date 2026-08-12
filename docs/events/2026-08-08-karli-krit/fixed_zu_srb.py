@@ -15,6 +15,8 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
+from srb_stil import formatiere
+
 HERE = Path(__file__).parent
 OUT = HERE / "fixed-ergebnisse-srb.xlsx"
 
@@ -67,7 +69,7 @@ for src, sheets in SOURCES:
         ws["A6"] = "Karli Krit- 3. Lauf Revolution Crit"
         ws["F7"] = "Leipzig, 08.08.2026"
         ws["F8"] = "Ort, Datum"
-        ws["E10"] = f"{total_laps} Runden = {total_laps} km"
+        ws["D10"] = f"{total_laps} Runden = {total_laps} km"
         ws["A11"] = titel
         header = ["Platz", "St.-Nr.", "Name, Vorname", "Verein", "Zeit", "Runden"]
         for j, h in enumerate(header, 1):
@@ -96,6 +98,7 @@ for src, sheets in SOURCES:
                 c.number_format = "h:mm:ss"
             ws.cell(row=out_row, column=6, value=int(r["laps"] or 0))
             out_row += 1
+        formatiere(ws, len(header))
         print(f"{sheet_name}: {out_row - 15} Zeilen ({titel}, {total_laps} Runden)")
 
 wb.save(OUT)

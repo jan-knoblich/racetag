@@ -183,7 +183,7 @@ for slot, datei, sheets in XLSX:
             else:
                 rows.append([row[0], row[1], row[2], row[3] or "",
                              fmt_zeit(row[4]), row[5]])
-        distanz = ws["E10"].value or ""
+        distanz = ws["D10"].value or ws["E10"].value or ""
         titel_h2 = LABELS.get(sheet, sheet) + (f" · {distanz}" if distanz else "")
         rad_body.append(f"<h2>{esc(titel_h2)}</h2>")
         if lizenz and hat_punkte:

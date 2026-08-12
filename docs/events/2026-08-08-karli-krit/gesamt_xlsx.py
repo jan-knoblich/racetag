@@ -16,6 +16,8 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
+from srb_stil import formatiere
+
 HERE = Path(__file__).parent
 OUT = Path.home() / "Downloads/karli-ergebnisse-gesamt.xlsx"
 
@@ -40,7 +42,6 @@ RAD = [  # (Datei, [(Quell-Sheet, Blattname)])
     ("srb-18-15-jedermann-schwer-60-min.xlsx", [("jedermann_schwer", "Jedermann schwer")]),
     ("fixed-ergebnisse-srb.xlsx", [("Fixed Gear B", "Fixed B"), ("FLINTA", "FLINTA"), ("Fixed Gear A", "Fixed A")]),
 ]
-BREITEN = {"A": 8, "B": 8, "C": 26, "D": 30, "E": 14, "F": 9, "G": 9}
 
 
 def lauf_vereine() -> dict[str, str]:
@@ -56,7 +57,7 @@ def kopfblock(ws, klasse: str, distanz: str) -> None:
     ws["A6"] = "Karli Krit + Karli Lauf — Revolution Crit"
     ws["F7"] = "Leipzig, 08.08.2026"
     ws["F8"] = "Ort, Datum"
-    ws["E10"] = distanz
+    ws["D10"] = distanz
     ws["A11"] = klasse
 
 
@@ -75,8 +76,6 @@ vereine = lauf_vereine()
 for datei, blatt, klasse, distanz in LAUF:
     ws = wb.create_sheet(blatt)
     kopfblock(ws, klasse, distanz)
-    for spalte, breite in BREITEN.items():
-        ws.column_dimensions[spalte].width = breite
     for j, h in enumerate(["Platz", "St.-Nr.", "Name, Vorname", "Verein",
                            "Zeit", "Runden", "Hinweis"], 1):
         ws.cell(row=14, column=j, value=h)
@@ -94,14 +93,14 @@ for datei, blatt, klasse, distanz in LAUF:
             ws.cell(row=out_row, column=6, value=int(r["runden"]))
             ws.cell(row=out_row, column=7, value=r["hinweis"])
             out_row += 1
+    formatiere(ws, 7)
+    ws.column_dimensions["G"].width = 44  # Hinweis-Spalte lesbar
 
 for datei, sheets in RAD:
     src_wb = load_workbook(HERE / datei)
     for quelle, blatt in sheets:
         src = src_wb[quelle]
         ws = wb.create_sheet(blatt)
-        for spalte, breite in BREITEN.items():
-            ws.column_dimensions[spalte].width = breite
         for row in src.iter_rows():
             for cell in row:
                 if cell.value is None:
@@ -109,6 +108,8 @@ for datei, sheets in RAD:
                 ziel = ws.cell(row=cell.row, column=cell.column, value=cell.value)
                 if cell.number_format != "General":
                     ziel.number_format = cell.number_format
+        spalten = sum(1 for c in src[14] if c.value)
+        formatiere(ws, spalten or 6)
 
 wb.save(OUT)
 print(f"{OUT}  ({len(wb.sheetnames)} Blätter)")

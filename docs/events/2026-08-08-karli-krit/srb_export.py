@@ -26,6 +26,8 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
+from srb_stil import formatiere
+
 HERE = Path(__file__).parent
 
 LIZENZ = {"u15m", "u15w", "u17w", "u17m", "masters_2", "masters_3", "masters_4",
@@ -224,7 +226,7 @@ def main():
             gewertet.sort(key=lambda t: (-t[1], -t[0], t[2], t[3]))
             sieger_runden = gewertet[0][0] if gewertet else ""
             # Renndistanz (Kerstin-Vorlage): 1-km-Runde -> Runden = km
-            ws["E10"] = (f"{sieger_runden} Runden = {sieger_runden} km"
+            ws["D10"] = (f"{sieger_runden} Runden = {sieger_runden} km"
                          if sieger_runden != "" else "")
 
             out_row = 15
@@ -264,6 +266,7 @@ def main():
             for hinweis in HINWEISE.get(k, []):
                 out_row += 1
                 ws.cell(row=out_row, column=1, value=f"Hinweis: {hinweis}")
+            formatiere(ws, len(header))
             print(f"  {k}: {len(zeilen)} Zeilen ({'Lizenz' if lizenz else 'Zeit'}-Format)")
 
         out = HERE / f"srb-{slugify(race['name'])}.xlsx"
