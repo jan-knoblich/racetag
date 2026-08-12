@@ -21,6 +21,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from srb_export import HINWEISE
+
 HERE = Path(__file__).parent
 KAMI = Path.home() / ".claude/skills/kami"
 OUT_LAUF = Path.home() / "Downloads/karli-lauf-ergebnisse.pdf"
@@ -164,12 +166,10 @@ for slot, datei, sheets in XLSX:
         header = [c.value for c in ws[14] if c.value]
         lizenz = "UCI-ID" in header
         hat_punkte = "Punkte" in header
-        rows, hinweise = [], []
+        rows = []
+        hinweise = [f"Hinweis: {h}" for h in HINWEISE.get(sheet, [])]
         for row in ws.iter_rows(min_row=15, values_only=True):
             if row[0] is None and row[1] is None:
-                continue
-            if isinstance(row[0], str) and row[0].startswith("Hinweis:"):
-                hinweise.append(row[0])
                 continue
             runden = row[6] if lizenz else row[5]
             if not runden:

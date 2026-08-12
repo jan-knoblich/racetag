@@ -261,9 +261,8 @@ def main():
                         c.number_format = "h:mm:ss"
                     ws.cell(row=out_row, column=6, value=laps)
                 out_row += 1
-            for hinweis in HINWEISE.get(k, []):
-                out_row += 1
-                ws.cell(row=out_row, column=1, value=f"Hinweis: {hinweis}")
+            # HINWEISE landen bewusst NUR im PDF (gesamt_pdf importiert das
+            # Dict) — die Excel-Blätter bleiben clean für Kerstins Bearbeitung.
             formatiere(ws, len(header))
             print(f"  {k}: {len(zeilen)} Zeilen ({'Lizenz' if lizenz else 'Zeit'}-Format)")
 
