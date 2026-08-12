@@ -46,7 +46,13 @@ PUNKTE = {
     "masters_3": {"342": 6},
     "masters_4": {"319": 12, "321": 4, "322": 1},
     "junioren": {"401": 22, "405": 13, "407": 7},
+    # U17m lt. Amtlichem Ergebnis (Blatt "U17 männl.", nachgereicht 12.08.);
+    # 190 vor 192 bei Punktgleichheit: Kampfrichter-Reihung (RANG_FIX unten).
+    "u17m": {"303": 40, "187": 27, "190": 7, "192": 7, "182": 3},
 }
+# Amtlich "vakant": 92/302 (Nachmeldungen) bekommen im Blatt keinen Platz —
+# sie erscheinen ohne Platzziffer mit Runden lt. racetag.
+STATUS_FIX = {("1210", "92"): "VAKANT", ("1210", "302"): "VAKANT"}
 # Jan 10.08.: die Frauen-Rennen liefen OHNE Wertungssprints — diese Sheets
 # bekommen (wie Kerstins 5.1-Blatt) gar keine Punkte-Spalte.
 OHNE_PUNKTE = {"frauen_elite", "juniorinnen"}
@@ -66,9 +72,10 @@ RUNDEN_AMTLICH = {("1120", "84"): 20, ("1120", "90"): 20, ("1120", "87"): 17}
 # 31-Runden-Fahrer (1./2. = 303/187 stimmen per Rundenzahl ohnehin).
 RANG_FIX = {("1120", "90"): 0, ("1120", "84"): 1, ("1210", "190"): 0}
 HINWEISE = {
-    "u17m": ["Platzierung: Kampfrichter-Podium übernommen (1. Nr. 303, 2. Nr. 187, "
-             "3. Nr. 190); übrige Reihenfolge = Zieleinlauf racetag.",
-             "Amtliche Punktewertung ausstehend."],
+    "u17m": ["Punkte lt. Amtlichem Ergebnis; bei Punktgleichheit (190/192) "
+             "Kampfrichter-Reihung.",
+             "Nr. 92 und Nr. 302 (Nachmeldungen): Platzierung amtlich vakant — "
+             "Runden lt. racetag."],
     "masters_4": ["Nr. 317: amtlich −3 Rd. notiert; racetag zählt 28 lückenlose "
                   "Überfahrten (vorzeitig beendet, keine Lücke im Signal)."],
     "u15m": ["Runden Nr. 84/90/87 amtlich übernommen (App zählte nach dem "
@@ -118,6 +125,21 @@ def load_kategorien(race_name):
             if n and k and k != "nachmelde-puffer":
                 kat[n] = k
     return slot, kat
+
+
+# Klassenbezeichnungen nach Kerstins Vorlage (Nummerierung der SRB-Blätter).
+KLASSEN = {
+    "u15m": "1.1 Schüler U15", "u15w": "1.2 Schülerinnen U15",
+    "u17w": "1.3 Jugend U17 weiblich", "masters_4": "2.1 Masters 4",
+    "u17m": "2.2 Jugend U17 männlich", "masters_2": "3.1 Masters 2",
+    "masters_3": "3.2 Masters 3", "junioren": "3.3 Junioren U19",
+    "jedermann_leicht": "4.1 Jedermann leicht",
+    "jedermann_mittel": "4.2 Jedermann mittel",
+    "jedermann_schwer": "4.3 Jedermann schwer",
+    "frauen_elite": "5.1 Frauen Elite (WT, CPT, CT)",
+    "juniorinnen": "5.2 Juniorinnen U19", "jedefrau": "6.1 Jederfrau",
+    "fixed_gear_men": "Fixed Gear Qualifying",
+}
 
 
 def slugify(s):
@@ -171,7 +193,7 @@ def main():
             ws["A6"] = args.titel
             ws["F7"] = f"{args.ort}, {datum}"
             ws["F8"] = "Ort, Datum"
-            ws["A11"] = k
+            ws["A11"] = KLASSEN.get(k, k)
             hat_punkte = lizenz and k not in OHNE_PUNKTE
             if lizenz and hat_punkte:
                 header = ["Platz", "St.-Nr.", "Name, Vorname", "Verein",
@@ -191,7 +213,7 @@ def main():
             for idx, r in enumerate(krows):
                 bib = r["bib"].strip()
                 laps = RUNDEN_AMTLICH.get((slot, bib), int(r["laps"] or 0))
-                status = r["status"].strip().upper()
+                status = STATUS_FIX.get((slot, bib)) or r["status"].strip().upper()
                 if not status and laps == 0 and not r["total_time_ms"].strip():
                     status = "DNS"
                 if status:
@@ -201,7 +223,9 @@ def main():
                                      RANG_FIX.get((slot, bib), 50), idx, r))
             gewertet.sort(key=lambda t: (-t[1], -t[0], t[2], t[3]))
             sieger_runden = gewertet[0][0] if gewertet else ""
-            ws["E10"] = f"{sieger_runden} Runden"
+            # Renndistanz (Kerstin-Vorlage): 1-km-Runde -> Runden = km
+            ws["E10"] = (f"{sieger_runden} Runden = {sieger_runden} km"
+                         if sieger_runden != "" else "")
 
             out_row = 15
             platz = 0

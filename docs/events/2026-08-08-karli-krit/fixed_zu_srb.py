@@ -67,7 +67,7 @@ for src, sheets in SOURCES:
         ws["A6"] = "Karli Krit- 3. Lauf Revolution Crit"
         ws["F7"] = "Leipzig, 08.08.2026"
         ws["F8"] = "Ort, Datum"
-        ws["E10"] = f"{total_laps} Runden"
+        ws["E10"] = f"{total_laps} Runden = {total_laps} km"
         ws["A11"] = titel
         header = ["Platz", "St.-Nr.", "Name, Vorname", "Verein", "Zeit", "Runden"]
         for j, h in enumerate(header, 1):
