@@ -114,10 +114,14 @@ def kopf(titel: str, meta: str) -> str:
 lauf_body = [kopf("Karli Lauf 2026",
                   f"Leipzig, 08.08.2026 · Start 09:00 Uhr · {STAND}")]
 for datei, titel in [
-        ("ergebnis-lauf-10km-erwachsene.csv", "10 km Erwachsene"),
+        ("ergebnis-lauf-10km-maennlich.csv", "10 km männlich"),
+        ("ergebnis-lauf-10km-weiblich.csv", "10 km weiblich"),
         ("ergebnis-lauf-10km-u18-maennlich.csv", "10 km U18 männlich"),
         ("ergebnis-lauf-10km-u18-weiblich.csv", "10 km U18 weiblich"),
-        ("ergebnis-lauf-5km-erwachsene.csv", "5 km Erwachsene"),
+        ("ergebnis-lauf-10km-offen.csv", "10 km Nachmeldungen (Zuordnung offen)"),
+        ("ergebnis-lauf-5km-maennlich.csv", "5 km männlich"),
+        ("ergebnis-lauf-5km-weiblich.csv", "5 km weiblich"),
+        ("ergebnis-lauf-5km-offen.csv", "5 km Nachmeldungen (Zuordnung offen)"),
         ("ergebnis-lauf-5km-u18-maennlich.csv", "5 km U18 männlich"),
         ("ergebnis-lauf-5km-u18-weiblich.csv", "5 km U18 weiblich")]:
     rows_ok, rows_ng, korrigiert, vermerke = [], [], 0, []

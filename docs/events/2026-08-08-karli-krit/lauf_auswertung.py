@@ -18,15 +18,10 @@ import statistics
 from datetime import datetime
 from pathlib import Path
 
-# Nummernblöcke: (Label, von, bis, Ziel-Runden) — an Eriks Ansage anpassen!
-BLOCKS = [
-    # inkl. +20%-Puffer-Verbreiterung (siehe nummern_zuweisung.py)
-    ("10km Erwachsene", 100, 220, 13),
-    ("5km Erwachsene", 300, 420, 7),
-]
-# U18 (Block 500-599 + Nachmeldung 196) wird nach MELDEKATEGORIE gewertet
-# (lauf_[mw]_u18_[5|10]km aus zuweisung/0900-…-anmeldeliste.csv): gleiche
-# Strecke wie die Erwachsenen, 5 km = 7. Überfahrt, 10 km = 13. Überfahrt.
+# Nummernblöcke: 100-220 = 10 km, 300-420 = 5 km (Distanz); das Geschlecht
+# kommt aus der MELDEKATEGORIE (lauf_[mw]_[u18_][5|10]km aus
+# zuweisung/0900-…-anmeldeliste.csv) — Wertung seit 14.08. getrennt m/w.
+# 5 km = 7. Messung, 10 km = 13. Messung (gleiche Strecke).
 MIN_GAP_S = 15.0  # wie das Backend-Cooldown: Überfahrten dichter dran = 1 Pass
 # Läufer schaffen die ~770-m-Runde nie unter 100 s — alles darunter (nach der
 # ersten Überfahrt!) ist eine Phantom-Lesung (Linie doppelt gequert o. ä.).
@@ -39,9 +34,8 @@ LAUF_MIN_LAP_S = 100.0
 # (196 Lenn Wilke ist lt. Meldung U18 → landet über die Kategorie im U18-Block)
 # Bestätigt Jan 10.08.: 198/199 (Nachmeldungen) und 132 sind 5-km-Läufer —
 # alle drei haben exakt 7 Überfahrten mit 5-km-typischen Zielzeiten.
-BLOCK_OVERRIDE = {193: "5km Erwachsene", 194: "5km Erwachsene",
-                  195: "5km Erwachsene", 198: "5km Erwachsene",
-                  199: "5km Erwachsene", 132: "5km Erwachsene"}
+BLOCK_OVERRIDE = {193: "5km", 194: "5km", 195: "5km",
+                  198: "5km", 199: "5km", 132: "5km"}
 # Zusatz-Vermerk für umgehängte Nummern (erscheint in CSV + PDF-Fußnote).
 ZUSATZ_HINWEIS = {
     132: "ursprünglich 10 km gemeldet, auf 5 km umgestiegen (bestätigt 10.08.)",
@@ -62,21 +56,18 @@ SONDERWERTUNG = {509: "nach Runde 12 an der Linie angehalten (Verweil-"
 DNF_ENTSCHIEDEN = {391: "DNF (Entscheidung Orga 11.08.)"}
 
 
-def load_u18_bloecke() -> dict[int, tuple[str, int]]:
-    """bib -> (Blocklabel, Ziel-Überfahrten) für alle U18-Meldungen."""
+def load_kategorien() -> dict[int, str]:
+    """bib -> Meldekategorie (lauf_[mw]_[u18_][5|10]km) aus der Zuweisung."""
     src = next((Path(__file__).parent / "zuweisung").glob("0900-*anmeldeliste.csv"), None)
-    out: dict[int, tuple[str, int]] = {}
+    out: dict[int, str] = {}
     if src is None:
         return out
     with open(src, encoding="utf-8-sig") as f:
         for r in csv.DictReader(f, delimiter=";"):
             k = (r.get("kategorie") or "").strip()
             n = (r.get("nummer") or "").strip()
-            if "u18" not in k or not n.isdigit():
-                continue
-            dist = "5km" if "5km" in k else "10km"
-            sex = "männlich" if "_m_" in k else "weiblich"
-            out[int(n)] = (f"{dist} U18 {sex}", 7 if dist == "5km" else 13)
+            if k.startswith("lauf") and n.isdigit():
+                out[int(n)] = k
     return out
 
 
@@ -141,25 +132,41 @@ def main() -> None:
               f"{ts.strftime('%H:%M:%S')} ({delta:.0f} s nach der vorigen)")
 
     outdir = Path(__file__).parent
-    u18 = load_u18_bloecke()
+    kategorien = load_kategorien()
 
     def block_von(bib: int):
-        if bib in u18:
-            return u18[bib]
+        """Blocklabel + Ziel: Distanz aus Override/Nummernblock, Geschlecht
+        aus der Meldekategorie (Nachmelder ohne Meldung -> "offen")."""
+        k = kategorien.get(bib, "")
+        if "u18" in k:
+            dist = "5km" if "5km" in k else "10km"
+            sex = "männlich" if "_m_" in k else "weiblich"
+            return f"{dist} U18 {sex}", 7 if dist == "5km" else 13
         ov = BLOCK_OVERRIDE.get(bib)
-        for label, lo, hi, target in BLOCKS:
-            if ov is not None:
-                if ov == label:
-                    return label, target
-            elif lo <= bib <= hi:
-                return label, target
-        return None
+        if ov is not None:
+            dist = "5km" if "5km" in ov else "10km"
+        elif 100 <= bib <= 220:
+            dist = "10km"
+        elif 300 <= bib <= 420:
+            dist = "5km"
+        else:
+            return None
+        if "_m_" in k:
+            sex = "männlich"
+        elif "_w_" in k:
+            sex = "weiblich"
+        else:
+            sex = "offen"  # Papier-Nachmeldung: Zuordnung folgt mit Klarname
+        return f"{dist} {sex}", 13 if dist == "10km" else 7
 
+    # Feste Reihenfolge der Ausgabeblöcke (auch wenn leer)
     gruppen: dict[str, dict] = {}
-    for label, _, _, target in BLOCKS:
+    for label, target in [("10km männlich", 13), ("10km weiblich", 13),
+                          ("10km U18 männlich", 13), ("10km U18 weiblich", 13),
+                          ("5km männlich", 7), ("5km weiblich", 7),
+                          ("5km offen", 7),
+                          ("5km U18 männlich", 7), ("5km U18 weiblich", 7)]:
         gruppen[label] = {"target": target, "riders": []}
-    for label, target in u18.values():
-        gruppen.setdefault(label, {"target": target, "riders": []})
 
     for tag_id, lst in passes.items():
         rider = riders.get(tag_id)
@@ -171,6 +178,7 @@ def main() -> None:
             continue
         blk = block_von(bib)
         if blk is not None:
+            gruppen.setdefault(blk[0], {"target": blk[1], "riders": []})
             gruppen[blk[0]]["riders"].append((bib, rider, lst))
 
     for label, g in gruppen.items():

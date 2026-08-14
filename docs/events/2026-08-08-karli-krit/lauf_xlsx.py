@@ -19,10 +19,14 @@ HERE = Path(__file__).parent
 OUT = Path.home() / "Downloads/karli-lauf-ergebnisse.xlsx"
 
 LAUF = [  # (Datei, Blattname, Klasse, Distanz)
-    ("ergebnis-lauf-10km-erwachsene.csv", "10km", "Lauf 10 km Erwachsene", "13 Runden = 10 km"),
+    ("ergebnis-lauf-10km-maennlich.csv", "10km m", "Lauf 10 km männlich", "13 Runden = 10 km"),
+    ("ergebnis-lauf-10km-weiblich.csv", "10km w", "Lauf 10 km weiblich", "13 Runden = 10 km"),
     ("ergebnis-lauf-10km-u18-maennlich.csv", "10km U18m", "Lauf 10 km U18 männlich", "13 Runden = 10 km"),
     ("ergebnis-lauf-10km-u18-weiblich.csv", "10km U18w", "Lauf 10 km U18 weiblich", "13 Runden = 10 km"),
-    ("ergebnis-lauf-5km-erwachsene.csv", "5km", "Lauf 5 km Erwachsene", "7 Runden = 5 km"),
+    ("ergebnis-lauf-10km-offen.csv", "10km offen", "Lauf 10 km Nachmeldungen (offen)", "13 Runden = 10 km"),
+    ("ergebnis-lauf-5km-maennlich.csv", "5km m", "Lauf 5 km männlich", "7 Runden = 5 km"),
+    ("ergebnis-lauf-5km-weiblich.csv", "5km w", "Lauf 5 km weiblich", "7 Runden = 5 km"),
+    ("ergebnis-lauf-5km-offen.csv", "5km offen", "Lauf 5 km Nachmeldungen (offen)", "7 Runden = 5 km"),
     ("ergebnis-lauf-5km-u18-maennlich.csv", "5km U18m", "Lauf 5 km U18 männlich", "7 Runden = 5 km"),
     ("ergebnis-lauf-5km-u18-weiblich.csv", "5km U18w", "Lauf 5 km U18 weiblich", "7 Runden = 5 km"),
 ]
