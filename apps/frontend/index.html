@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -10,19 +10,20 @@
     <header>
       <h1>Racetag Live</h1>
       <div class="controls">
-        <label>Backend URL
+        <!-- Hidden in the desktop build (D4): the backend is always same-origin. -->
+        <label id="backendUrlControl">Server-Adresse
           <input id="backendUrl" type="text" />
         </label>
-        <button id="connectBtn">Connect</button>
+        <button id="connectBtn">Verbinden</button>
         <input id="csvFile" type="file" accept=".csv,.txt" style="display: none;" />
-        <button id="importCsvBtn">Import CSV</button>
+        <button id="importCsvBtn">CSV importieren</button>
         <!-- Tag inventory: wave tags in a scratch race, download an
              import-ready start-list template of everything that was read -->
         <button id="exportTagsBtn"
-          title="Download every tag read in this race as a start-list CSV template (wave tags, then export)">
-          Export tags</button>
+          title="Alle in diesem Rennen gelesenen Tags als Startlisten-Vorlage (CSV) speichern">
+          Tags exportieren</button>
         <!-- W-012: Register rider button -->
-        <button id="coupleTagBtn">Couple tag &#x2192; rider</button>
+        <button id="coupleTagBtn">Tag &#x2192; Fahrer koppeln</button>
         <!-- W-075: serial coupling mode toggle -->
         <button id="coupleModeBtn"
           title="Serien-Kopplung: Tag scannen, Nummer tippen, Enter — viele Tags nacheinander">
@@ -34,41 +35,65 @@
           Fahrer</button>
         <!-- Multi-race: race selector + create -->
         <label class="toggle-control race-select-control">
-          Race:
+          Rennen:
           <select id="raceSelect"></select>
-          <button id="newRaceBtn" title="Create a new race">+</button>
+          <button id="newRaceBtn" title="Neues Rennen anlegen" aria-label="Neues Rennen anlegen">+</button>
         </label>
         <!-- Race start (explicit-start model) -->
-        <button id="startRaceBtn" class="btn-primary">Start race</button>
+        <button id="startRaceBtn" class="btn-primary">Rennen starten</button>
         <!-- End race (multi-race) -->
-        <button id="endRaceBtn" class="btn-warn">End race</button>
+        <button id="endRaceBtn" class="btn-warn">Rennen beenden</button>
         <!-- Reopen (undo accidental End race) — hidden unless race ended -->
-        <button id="reopenRaceBtn" hidden>Reopen race</button>
+        <button id="reopenRaceBtn" hidden>Rennen wieder öffnen</button>
         <!-- Export CSV results -->
-        <button id="exportCsvBtn">Export results</button>
+        <button id="exportCsvBtn">Ergebnisse exportieren</button>
         <!-- W-036: Reset race -->
-        <button id="resetRaceBtn" class="btn-warn">Reset race</button>
+        <button id="resetRaceBtn" class="btn-warn">Rennen zurücksetzen</button>
         <!-- W-074: Settings -->
-        <button id="settingsBtn" class="btn-icon" title="Settings" aria-label="Open settings">&#9881;</button>
+        <button id="settingsBtn" class="btn-icon" title="Einstellungen" aria-label="Einstellungen öffnen">&#9881;</button>
         <!-- W-036: Total laps -->
         <label class="toggle-control laps-control">
-          Total laps:
+          Rundenzahl:
           <input id="totalLapsInput" type="number" min="1" max="999" value="5" />
-          <button id="applyLapsBtn">Apply</button>
+          <button id="applyLapsBtn">Übernehmen</button>
         </label>
-        <label class="toggle-control">
+        <!-- Desktop build: moved into Settings → Erweitert (script.js applyAppMode) -->
+        <label id="tagColumnControl" class="toggle-control">
           <input id="tagColumnToggle" type="checkbox" checked />
-          Show Tag
+          Tag anzeigen
         </label>
       </div>
-      <div class="status" id="status">Disconnected</div>
-      <div class="race-status" id="raceStatus">Race: not started</div>
+      <!-- D1: status bar. Three pills (colour + hover detail, rewritten live by
+           script.js via data-tip) plus a transient message area for
+           setStatus() texts such as CSV import progress. -->
+      <div id="statusBar" class="status-bar">
+        <button id="pillReader" type="button" class="status-pill status-pill--neutral">
+          <span class="status-pill-dot" aria-hidden="true"></span>
+          <span class="status-pill-label">Reader</span>
+          <span id="pillReaderText" class="status-pill-text">&ndash;</span>
+        </button>
+        <button id="pillAntennas" type="button" class="status-pill status-pill--neutral">
+          <span class="status-pill-dot" aria-hidden="true"></span>
+          <span class="status-pill-label">Antennen</span>
+          <span id="pillAntennasText" class="status-pill-text">&ndash;</span>
+        </button>
+        <button id="pillConnection" type="button" class="status-pill status-pill--warn">
+          <span class="status-pill-dot" aria-hidden="true"></span>
+          <span class="status-pill-label">Verbindung</span>
+          <span id="pillConnectionText" class="status-pill-text">verbinde&hellip;</span>
+        </button>
+        <span id="statusMessage" class="status-message" role="status" aria-live="polite" hidden></span>
+        <!-- D7: shown only when GitHub has a newer release than /config version -->
+        <a id="updateNotice" class="update-notice" href="https://github.com/jan-knoblich/racetag/releases/latest"
+           target="_blank" rel="noopener noreferrer" hidden></a>
+      </div>
+      <div class="race-status" id="raceStatus">Rennen: nicht gestartet</div>
     </header>
 
     <main>
       <!-- W-013: CSV import errors collapsible -->
       <div id="importErrors" hidden>
-        <button id="importErrorsToggle" class="import-errors-toggle">Show import errors</button>
+        <button id="importErrorsToggle" class="import-errors-toggle">Importfehler anzeigen</button>
         <ul id="importErrorList" class="import-error-list" hidden></ul>
       </div>
 
@@ -78,7 +103,7 @@
         <div class="couple-panel-header">
           <h2>Koppel-Modus</h2>
           <span id="coupleCounter" class="couple-counter">0 gekoppelt</span>
-          <label class="toggle-control">
+          <label id="coupleBeepControl" class="toggle-control">
             <input id="coupleBeepToggle" type="checkbox" checked /> Ton
           </label>
           <button id="coupleModeCloseBtn">Beenden</button>
@@ -119,37 +144,40 @@
       </section>
 
       <section>
-        <h2>Standings</h2>
+        <h2>Rangliste</h2>
+        <!-- Narrow windows scroll the table sideways instead of the page. -->
+        <div class="table-scroll">
         <table id="standingsTable">
           <thead>
             <tr>
-              <th>#</th>
-              <th class="tag-col">Tag</th>
-              <th>Bib</th>
-              <th>Name</th>
-              <th>Laps</th>
-              <th>Finished</th>
-              <th>Last pass</th>
-              <th>Gap</th>
-              <th>Total time (s)</th>
+              <th id="standingsColPos">#</th>
+              <th id="standingsColTag" class="tag-col">Tag</th>
+              <th id="standingsColBib">Nr.</th>
+              <th id="standingsColName">Name</th>
+              <th id="standingsColLaps">Runden</th>
+              <th id="standingsColFinished">Im Ziel</th>
+              <th id="standingsColLastPass">Letzter Durchgang</th>
+              <th id="standingsColGap">Abstand</th>
+              <th id="standingsColTotal">Gesamtzeit (s)</th>
               <th id="netTimeHeader" class="sortable-header"
-                  title="Click to sort by net time (TT result) — click again for official order">Net time</th>
-              <th>Laps&nbsp;±</th>
+                  title="Klick sortiert nach Netto-Zeit (Zeitfahren) – nochmal Klick: offizielle Reihenfolge">Netto-Zeit</th>
+              <th id="standingsColLapActions">Runden&nbsp;±</th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
+        </div>
       </section>
 
       <!-- W-051: Antenna diagnostics panel (collapsed by default) -->
       <details id="diagnosticsPanel" class="diagnostics-panel">
-        <summary>Antenna diagnostics</summary>
+        <summary id="diagnosticsSummary">Antennen-Diagnose</summary>
         <div class="diagnostics-body">
           <table id="diagnosticsTable">
             <thead>
               <tr>
-                <th>Antenna</th>
-                <th>Reads (last 60 s)</th>
+                <th id="diagnosticsColAntenna">Antenne</th>
+                <th id="diagnosticsColPasses">Durchgänge (letzte 60 s)</th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -162,7 +190,7 @@
          DOM structure:
            #registerModal (backdrop, role=dialog, aria-modal=true)
              .modal-box
-               h2 "Register rider"
+               h2 "Fahrer koppeln"
                .modal-field  label + #modalTagId (readonly)
                .modal-field  label + #modalBib (number input)
                .modal-field  label + #modalName (text input)
@@ -210,6 +238,7 @@
         <div class="modal-checkbox-row">
           <input id="riderEditAllRaces" type="checkbox" />
           <label for="riderEditAllRaces">In allen Rennen übernehmen (nur wenn Tag+Nummer den ganzen Tag behalten!)</label>
+          <button type="button" id="riderEditAllRacesInfo" class="rt-info" aria-label="Erklärung: In allen Rennen übernehmen">i</button>
         </div>
         <div id="riderEditError" class="modal-error" hidden></div>
         <div class="modal-actions">
@@ -222,29 +251,29 @@
     <div id="registerModal" class="modal-backdrop" role="dialog" aria-modal="true"
          aria-labelledby="registerModalTitle" hidden>
       <div class="modal-box">
-        <h2 id="registerModalTitle" class="modal-title">Register rider</h2>
+        <h2 id="registerModalTitle" class="modal-title">Fahrer koppeln</h2>
 
         <div class="modal-field">
-          <label for="modalTagId">Tag ID</label>
+          <label for="modalTagId">Tag-ID</label>
           <input id="modalTagId" type="text" readonly />
         </div>
 
         <div class="modal-field">
-          <label for="modalBib">Bib number</label>
-          <input id="modalBib" type="number" min="1" placeholder="e.g. 42" />
+          <label for="modalBib">Startnummer</label>
+          <input id="modalBib" type="number" min="1" placeholder="z. B. 42" />
         </div>
 
         <div class="modal-field">
-          <label for="modalName">Rider name</label>
-          <input id="modalName" type="text" placeholder="e.g. Jane Doe" />
+          <label for="modalName">Name des Fahrers</label>
+          <input id="modalName" type="text" placeholder="z. B. Erika Mustermann" />
         </div>
 
         <div id="modalError" class="modal-error" hidden></div>
 
         <div class="modal-actions">
-          <button id="modalSaveBtn" class="btn-primary">Save</button>
-          <button id="modalCancelBtn">Cancel</button>
-          <button id="modalRetryBtn" class="btn-warn" hidden>Retry</button>
+          <button id="modalSaveBtn" class="btn-primary">Speichern</button>
+          <button id="modalCancelBtn">Abbrechen</button>
+          <button id="modalRetryBtn" class="btn-warn" hidden>Erneut versuchen</button>
         </div>
       </div>
     </div>
@@ -253,112 +282,174 @@
     <div id="newRaceModal" class="modal-backdrop" role="dialog" aria-modal="true"
          aria-labelledby="newRaceModalTitle" hidden>
       <div class="modal-box">
-        <h2 id="newRaceModalTitle" class="modal-title">Create race</h2>
+        <h2 id="newRaceModalTitle" class="modal-title">Rennen anlegen</h2>
 
         <div class="modal-field">
-          <label for="newRaceName">Race name</label>
-          <input id="newRaceName" type="text" placeholder="e.g. Volksradrennen Sonntag" />
+          <label for="newRaceName">Name des Rennens</label>
+          <input id="newRaceName" type="text" placeholder="z. B. Volksradrennen Sonntag" />
         </div>
 
         <div class="modal-field">
-          <label for="newRaceScheduled">Scheduled date / time</label>
+          <label for="newRaceScheduled">Geplanter Start (Datum / Uhrzeit)</label>
           <input id="newRaceScheduled" type="datetime-local" />
         </div>
 
         <div class="modal-field">
-          <label for="newRaceFormat">Race format</label>
+          <div class="modal-field-head">
+            <label for="newRaceFormat">Rennformat</label>
+            <button type="button" id="newRaceFormatInfo" class="rt-info" aria-label="Erklärung: Rennformat">i</button>
+          </div>
           <select id="newRaceFormat">
-            <option value="laps" selected>Fixed laps</option>
-            <option value="time">Time + final laps</option>
+            <option value="laps" selected>Feste Rundenzahl</option>
+            <option value="time">Zeit + Schlussrunden</option>
           </select>
         </div>
 
         <div class="modal-field" id="newRaceLapsField">
-          <label for="newRaceTotalLaps">Total laps</label>
+          <label for="newRaceTotalLaps">Rundenzahl</label>
           <input id="newRaceTotalLaps" type="number" min="1" max="999" value="5" />
         </div>
 
         <div class="modal-field" id="newRaceDurationField" hidden>
-          <label for="newRaceDurationMin">Duration (minutes)</label>
+          <label for="newRaceDurationMin">Dauer (Minuten)</label>
           <input id="newRaceDurationMin" type="number" min="1" max="1440" value="30" />
         </div>
 
         <div class="modal-field" id="newRaceFinalLapsField" hidden>
-          <label for="newRaceFinalLaps">Final laps after the bell</label>
+          <div class="modal-field-head">
+            <label for="newRaceFinalLaps">Schlussrunden nach der Glocke</label>
+            <button type="button" id="newRaceFinalLapsInfo" class="rt-info" aria-label="Erklärung: Schlussrunden">i</button>
+          </div>
           <input id="newRaceFinalLaps" type="number" min="0" max="99" value="3" />
         </div>
 
         <div class="modal-checkbox-row">
           <input id="newRacePerRider" type="checkbox" />
           <label for="newRacePerRider">
-            Per-rider finish (each finishes independently — off = criterium)
+            Einzelwertung (jeder Fahrer beendet sein Rennen selbst – aus = Kriterium)
           </label>
+          <button type="button" id="newRacePerRiderInfo" class="rt-info" aria-label="Erklärung: Einzelwertung">i</button>
         </div>
 
         <div class="modal-field">
-          <label for="newRaceSnapshotInterval">
-            Auto-snapshot interval (seconds) &mdash; 0 disables
-          </label>
+          <div class="modal-field-head">
+            <label for="newRaceSnapshotInterval">
+              Auto-Snapshot-Intervall (Sekunden) &ndash; 0 = aus
+            </label>
+            <button type="button" id="newRaceSnapshotIntervalInfo" class="rt-info" aria-label="Erklärung: Auto-Snapshot-Intervall">i</button>
+          </div>
           <input id="newRaceSnapshotInterval" type="number" min="0" max="3600" value="120" />
         </div>
 
         <div class="modal-checkbox-row">
           <input id="newRaceActivate" type="checkbox" checked />
-          <label for="newRaceActivate">Activate this race after creating</label>
+          <label for="newRaceActivate">Dieses Rennen nach dem Anlegen aktivieren</label>
         </div>
 
         <div id="newRaceError" class="modal-error" hidden></div>
 
         <div class="modal-actions">
-          <button id="newRaceSaveBtn" class="btn-primary">Create</button>
-          <button id="newRaceCancelBtn">Cancel</button>
+          <button id="newRaceSaveBtn" class="btn-primary">Anlegen</button>
+          <button id="newRaceCancelBtn">Abbrechen</button>
         </div>
       </div>
     </div>
 
-    <!-- W-074: Settings modal
-         Fields: Reader IP, Minimum lap interval, Total laps.
-         DOM structure mirrors W-012 register-rider modal.
+    <!-- W-074: Settings modal (C4, D4, D6)
+         Sections: Reader (live status, discovery, reconnect, IP, power),
+         Rennen (lap interval, total laps, snapshot interval), Erweitert
+         (desktop only; receives the tag-column toggle), Hilfe & Support
+         (assistant, desktop-only data folder + support bundle, version).
+         Only the input fields are applied by "Speichern" (sticky footer); the
+         action buttons act immediately.
     -->
     <div id="settingsModal" class="modal-backdrop" role="dialog" aria-modal="true"
          aria-labelledby="settingsModalTitle" hidden>
-      <div class="modal-box">
-        <h2 id="settingsModalTitle" class="modal-title">Settings</h2>
+      <div class="modal-box settings-box">
+        <h2 id="settingsModalTitle" class="modal-title">Einstellungen</h2>
 
-        <div class="modal-field">
-          <label for="settingsReaderIp">Reader IP</label>
-          <input id="settingsReaderIp" type="text" placeholder="e.g. 192.168.1.100" />
-        </div>
+        <section class="settings-section" aria-labelledby="settingsReaderHeading">
+          <h3 id="settingsReaderHeading" class="settings-section-title">Reader</h3>
+          <div id="settingsReaderStatus" class="settings-reader-status settings-reader-status--neutral">&ndash;</div>
+          <div class="settings-button-row">
+            <button id="readerDiscoverBtn" type="button"
+              title="Sucht den Reader automatisch im Netzwerk">Reader suchen</button>
+            <button id="readerRestartBtn" type="button"
+              title="Verbindung zum Reader neu aufbauen">Reader neu verbinden</button>
+          </div>
+          <div id="readerDiscoverStatus" class="inline-status" hidden></div>
+          <ul id="readerCandidates" class="reader-candidates" hidden></ul>
 
-        <div class="modal-field">
-          <label for="settingsMinLap">Minimum lap interval (s)</label>
-          <input id="settingsMinLap" type="number" min="0" max="60" step="0.5" placeholder="8.0" />
-        </div>
+          <div class="modal-field">
+            <div class="modal-field-head">
+              <label for="settingsReaderIp">Reader-Adresse (IP)</label>
+              <button type="button" id="settingsReaderIpInfo" class="rt-info" aria-label="Erklärung: Reader-Adresse">i</button>
+            </div>
+            <input id="settingsReaderIp" type="text" placeholder="z. B. 192.168.178.22" />
+          </div>
 
-        <div class="modal-field">
-          <label for="settingsTotalLaps">Total laps</label>
-          <input id="settingsTotalLaps" type="number" min="1" max="999" step="1" placeholder="5" />
-        </div>
+          <div class="modal-field">
+            <div class="modal-field-head">
+              <label for="settingsAntennaPower">Antennenleistung (0,1 dBm, 100&ndash;300)</label>
+              <button type="button" id="settingsAntennaPowerInfo" class="rt-info" aria-label="Erklärung: Antennenleistung">i</button>
+            </div>
+            <input id="settingsAntennaPower" type="number" min="100" max="300" step="10" placeholder="300" />
+          </div>
+        </section>
 
-        <div class="modal-field">
-          <label for="settingsSnapshotInterval">
-            Auto-snapshot interval (s) &mdash; active race; 0 disables
-          </label>
-          <input id="settingsSnapshotInterval" type="number" min="0" max="3600" step="1" placeholder="120" />
-        </div>
+        <section class="settings-section" aria-labelledby="settingsRaceHeading">
+          <h3 id="settingsRaceHeading" class="settings-section-title">Rennen</h3>
+          <div class="modal-field">
+            <div class="modal-field-head">
+              <label for="settingsMinLap">Mindest-Rundenabstand (s)</label>
+              <button type="button" id="settingsMinLapInfo" class="rt-info" aria-label="Erklärung: Mindest-Rundenabstand">i</button>
+            </div>
+            <input id="settingsMinLap" type="number" min="0" max="60" step="0.5" placeholder="8.0" />
+          </div>
 
-        <div class="modal-field">
-          <label for="settingsAntennaPower">
-            Antenna power (0.1 dBm, 100&ndash;300; applied on next app restart)
-          </label>
-          <input id="settingsAntennaPower" type="number" min="100" max="300" step="10" placeholder="300" />
-        </div>
+          <div class="modal-field">
+            <div class="modal-field-head">
+              <label for="settingsTotalLaps">Rundenzahl</label>
+              <button type="button" id="settingsTotalLapsInfo" class="rt-info" aria-label="Erklärung: Rundenzahl">i</button>
+            </div>
+            <input id="settingsTotalLaps" type="number" min="1" max="999" step="1" placeholder="5" />
+          </div>
 
-        <div id="settingsError" class="modal-error" hidden></div>
+          <div class="modal-field">
+            <div class="modal-field-head">
+              <label for="settingsSnapshotInterval">
+                Auto-Snapshot-Intervall (s) &ndash; aktives Rennen; 0 = aus
+              </label>
+              <button type="button" id="settingsSnapshotIntervalInfo" class="rt-info" aria-label="Erklärung: Auto-Snapshot-Intervall">i</button>
+            </div>
+            <input id="settingsSnapshotInterval" type="number" min="0" max="3600" step="1" placeholder="120" />
+          </div>
+        </section>
 
-        <div class="modal-actions">
-          <button id="settingsSaveBtn" class="btn-primary">Save</button>
-          <button id="settingsCancelBtn">Cancel</button>
+        <details id="settingsAdvanced" class="settings-details" hidden>
+          <summary id="settingsAdvancedSummary">Erweitert</summary>
+          <div id="settingsAdvancedBody" class="settings-details-body"></div>
+        </details>
+
+        <section class="settings-section" aria-labelledby="settingsSupportHeading">
+          <h3 id="settingsSupportHeading" class="settings-section-title">Hilfe &amp; Support</h3>
+          <div class="settings-button-row">
+            <button id="assistantOpenBtn" type="button">Einrichtungs-Assistent</button>
+            <button id="openDataFolderBtn" type="button" hidden>Datenordner öffnen</button>
+            <button id="supportBundleBtn" type="button" hidden>Support-Paket erstellen</button>
+          </div>
+          <div id="supportStatus" class="inline-status" hidden></div>
+          <div id="settingsVersion" class="settings-meta">Version unbekannt</div>
+          <div id="settingsDataDir" class="settings-meta" hidden></div>
+        </section>
+
+        <!-- Sticky so Save/Cancel stay reachable while the box scrolls. -->
+        <div class="settings-footer">
+          <div id="settingsError" class="modal-error" hidden></div>
+          <div class="modal-actions">
+            <button id="settingsSaveBtn" class="btn-primary">Speichern</button>
+            <button id="settingsCancelBtn">Abbrechen</button>
+          </div>
         </div>
       </div>
     </div>
@@ -367,44 +458,132 @@
     <div id="lapEditModal" class="modal-backdrop" role="dialog" aria-modal="true"
          aria-labelledby="lapEditModalTitle" hidden>
       <div class="modal-box">
-        <h2 id="lapEditModalTitle" class="modal-title">Edit lap</h2>
+        <h2 id="lapEditModalTitle" class="modal-title">Runde bearbeiten</h2>
 
         <div class="modal-field">
-          <label>Rider</label>
+          <label for="lapEditRider">Fahrer</label>
           <input id="lapEditRider" type="text" readonly />
         </div>
 
         <div class="modal-field">
-          <label>Current laps</label>
+          <label for="lapEditCurrentLaps">Aktuelle Runden</label>
           <input id="lapEditCurrentLaps" type="text" readonly />
         </div>
 
         <div class="modal-field">
-          <label for="lapEditTimestamp">
-            Timestamp (UTC, leave empty for server now)
-          </label>
+          <div class="modal-field-head">
+            <label for="lapEditTimestamp">
+              Zeitstempel (UTC, leer = jetzt)
+            </label>
+            <button type="button" id="lapEditTimestampInfo" class="rt-info" aria-label="Erklärung: Zeitstempel">i</button>
+          </div>
           <input id="lapEditTimestamp" type="text"
                  placeholder="2026-06-25T18:30:00.000Z" />
         </div>
 
         <div class="modal-field">
-          <label>Result status</label>
+          <label>Ergebnis-Status</label>
           <div class="status-actions">
-            <button type="button" class="status-btn" data-status="dnf">DNF</button>
-            <button type="button" class="status-btn" data-status="dns">DNS</button>
-            <button type="button" class="status-btn" data-status="dsq">DSQ</button>
-            <button type="button" class="status-btn" data-status="">Clear</button>
+            <button type="button" id="lapEditStatusDnf" class="status-btn" data-status="dnf">DNF</button>
+            <button type="button" id="lapEditStatusDns" class="status-btn" data-status="dns">DNS</button>
+            <button type="button" id="lapEditStatusDsq" class="status-btn" data-status="dsq">DSQ</button>
+            <button type="button" id="lapEditStatusClear" class="status-btn" data-status="">Kein Status</button>
           </div>
         </div>
 
         <div id="lapEditError" class="modal-error" hidden></div>
 
         <div class="modal-actions">
-          <button id="lapEditAddBtn" class="btn-primary">Add lap (+1)</button>
-          <button id="lapEditRemoveBtn" class="btn-warn">Remove last lap (&minus;1)</button>
+          <button id="lapEditAddBtn" class="btn-primary">Runde hinzufügen (+1)</button>
+          <button id="lapEditRemoveBtn" class="btn-warn">Letzte Runde entfernen (&minus;1)</button>
           <button id="lapEditResetBtn" class="btn-warn"
-                  title="Delete ALL passes of this rider — fresh attempt">Reset rider</button>
-          <button id="lapEditCancelBtn">Close</button>
+                  title="ALLE Durchgänge dieses Fahrers löschen – frischer Versuch">Fahrer zurücksetzen</button>
+          <button id="lapEditCancelBtn">Schließen</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- D5: first-run assistant (desktop build; re-open from Settings).
+         Three steps, each skippable: find reader -> antenna test -> first race. -->
+    <div id="assistantModal" class="modal-backdrop" role="dialog" aria-modal="true"
+         aria-labelledby="assistantTitle" hidden>
+      <div class="modal-box assistant-box">
+        <div class="assistant-header">
+          <h2 id="assistantTitle" class="modal-title">Einrichtung</h2>
+          <span id="assistantStepLabel" class="assistant-step-label">Schritt 1 von 3</span>
+        </div>
+        <ol id="assistantProgress" class="assistant-progress" aria-hidden="true">
+          <li data-step="1">Reader finden</li>
+          <li data-step="2">Antennentest</li>
+          <li data-step="3">Erstes Rennen</li>
+        </ol>
+
+        <section id="assistantStep1" class="assistant-step" aria-labelledby="assistantStep1Title">
+          <h3 id="assistantStep1Title" class="settings-section-title">Reader finden</h3>
+          <p class="assistant-text">
+            Reader einschalten und mit einem Netzwerkkabel am Router anschließen.
+            Nach dem Einschalten braucht der Reader etwa 30&nbsp;Sekunden &ndash;
+            Racetag sucht ihn automatisch.
+          </p>
+          <div id="assistantReaderStatus" class="settings-reader-status settings-reader-status--neutral">&ndash;</div>
+          <div class="settings-button-row">
+            <button id="assistantDiscoverBtn" type="button">Reader suchen</button>
+          </div>
+          <div id="assistantDiscoverStatus" class="inline-status" hidden></div>
+          <ul id="assistantCandidates" class="reader-candidates" hidden></ul>
+        </section>
+
+        <section id="assistantStep2" class="assistant-step" aria-labelledby="assistantStep2Title" hidden>
+          <h3 id="assistantStep2Title" class="settings-section-title">Antennentest</h3>
+          <p class="assistant-text">
+            Halte einen Tag nacheinander vor jede Antenne. Eine Antenne wird grün,
+            sobald sie den Tag gelesen hat.
+          </p>
+          <div id="assistantAntennaGrid" class="antenna-grid"></div>
+          <div id="assistantAntennaHint" class="inline-status"></div>
+          <div class="settings-button-row">
+            <button id="assistantAntennaResetBtn" type="button">Test neu starten</button>
+          </div>
+        </section>
+
+        <section id="assistantStep3" class="assistant-step" aria-labelledby="assistantStep3Title" hidden>
+          <h3 id="assistantStep3Title" class="settings-section-title">Erstes Rennen anlegen</h3>
+          <p class="assistant-text">
+            Name und Rundenzahl genügen. Weitere Varianten (z.&nbsp;B. Zeitrennen)
+            gibt es später über &bdquo;+&ldquo; neben der Rennauswahl.
+          </p>
+          <p class="assistant-text assistant-start-hint">
+            Gestartet wird das Rennen erst später mit dem Knopf &bdquo;Rennen starten&ldquo; &ndash;
+            vorher werden keine Runden gezählt.
+          </p>
+          <!-- Shown when the active race is not started yet but already has
+               riders (script.js loadAssistantRaceContext). -->
+          <div id="assistantReuseBox" class="assistant-reuse" hidden>
+            <p id="assistantReuseText" class="assistant-text"></p>
+            <label class="assistant-choice">
+              <input id="assistantReuseKeep" type="radio" name="assistantRaceMode" value="keep" checked />
+              <span>Dieses Rennen weiterverwenden (die Fahrer bleiben erhalten)</span>
+            </label>
+            <label class="assistant-choice">
+              <input id="assistantReuseNew" type="radio" name="assistantRaceMode" value="new" />
+              <span>Neues, leeres Rennen anlegen</span>
+            </label>
+          </div>
+          <div class="modal-field">
+            <label for="assistantRaceName">Name des Rennens</label>
+            <input id="assistantRaceName" type="text" placeholder="z. B. Volksradrennen Sonntag" />
+          </div>
+          <div class="modal-field">
+            <label for="assistantRaceLaps">Rundenzahl</label>
+            <input id="assistantRaceLaps" type="number" min="1" max="999" step="1" value="5" />
+          </div>
+          <div id="assistantRaceError" class="modal-error" hidden></div>
+        </section>
+
+        <div class="modal-actions assistant-actions">
+          <button id="assistantSkipBtn" type="button" class="assistant-skip">Überspringen</button>
+          <button id="assistantBackBtn" type="button" hidden>Zurück</button>
+          <button id="assistantNextBtn" type="button" class="btn-primary">Weiter</button>
         </div>
       </div>
     </div>
@@ -412,7 +591,11 @@
     <!-- W-012: Toast notification container (bottom-right) -->
     <div id="toastContainer" class="toast" aria-live="polite" aria-atomic="true"></div>
 
+    <!-- Load order matters: strings.js defines window.RT for everything after
+         it; tooltips.js runs last so it sees the final DOM and RT. -->
+    <script src="./strings.js"></script>
     <script src="./api.js"></script>
     <script src="./script.js"></script>
+    <script src="./tooltips.js"></script>
   </body>
 </html>

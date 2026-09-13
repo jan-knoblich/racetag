@@ -7,6 +7,25 @@ const __RACETAG_BACKEND_URL__ = "__RACETAG_FRONTEND_BACKEND_URL__";
 
 const isPlaceholder = (v) => typeof v === 'string' && v.startsWith('__RACETAG_');
 
+// localStorage can throw (blocked site data, some embedded WebViews). Several
+// reads run while this script loads, where an exception would kill the whole
+// page, so every access goes through these helpers.
+function rtStorageGet(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch (_e) {
+    return null;
+  }
+}
+
+function rtStorageSet(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch (_e) {
+    // storage unavailable — the setting just isn't remembered
+  }
+}
+
 // Migrate a stale localStorage value that was the old hardcoded default
 // ('http://localhost:8600' / '127.0.0.1:8600') written by earlier builds
 // before same-origin defaulting. If we're being served from a different
@@ -38,7 +57,7 @@ const isPlaceholder = (v) => typeof v === 'string' && v.startsWith('__RACETAG_')
 //      is somehow unavailable, which shouldn't happen in a browser context).
 const state = {
   backend:
-    localStorage.getItem('racetag.backend')
+    rtStorageGet('racetag.backend')
     || (!isPlaceholder(__RACETAG_BACKEND_URL__) && __RACETAG_BACKEND_URL__)
     || (typeof window !== 'undefined' && window.location && window.location.origin)
     || 'http://localhost:8600',
@@ -46,7 +65,7 @@ const state = {
   lastStandings: [],
   // TT view: 'official' (backend order) or 'net' (sorted by net time).
   // Persisted so a mid-session app restart keeps the TT result view.
-  sortMode: localStorage.getItem('racetag.sortMode') === 'net' ? 'net' : 'official',
+  sortMode: rtStorageGet('racetag.sortMode') === 'net' ? 'net' : 'official',
   es: null,
   // W-012: registration flow state
   awaitingRead: false,
@@ -63,6 +82,30 @@ const state = {
   raceEnded: false,
   raceEndedAt: null,
 };
+
+// German operator message for a failed API response (body read best-effort).
+// `fallbackKey` names the RT.S prefix ("… fehlgeschlagen"). Network failures
+// use RT.apiError(0, null, key) directly; the English exception text is only
+// logged, never shown.
+async function rtResponseError(res, fallbackKey) {
+  const body = await res.text().catch(() => '');
+  return RT.apiError(res.status, body, fallbackKey);
+}
+
+// Race name for display: the backend's bootstrap race is named in English.
+function rtRaceDisplayName(name) {
+  return name === BOOTSTRAP_RACE_NAME ? RT.S.raceDefaultName : name;
+}
+
+// "1 Runde" / "N Runden"
+function rtLapsText(n) {
+  return Number(n) === 1 ? RT.S.lapsCountOne : RT.fmt('lapsCountMany', { n });
+}
+
+// "Nr. 42 – Name" (name falls back to a dash)
+function rtRiderLabel(bib, name) {
+  return RT.fmt('riderLabel', { bib, name: name || RT.S.riderNoName });
+}
 
 // ---------------------------------------------------------------------------
 // W-035 — Robust CSV tokenizer
@@ -189,10 +232,11 @@ async function importCSVToBackend(csvText) {
   const delimiter = detectDelimiter(csvText);
   const rows = parseCSVRobust(csvText, delimiter);
   if (rows.length < 2) {
-    setStatus('CSV file is empty or has no data rows');
+    setStatus(RT.S.csvEmpty);
     return;
   }
-  const delimName = delimiter === ';' ? 'semicolon' : delimiter === '\t' ? 'tab' : 'comma';
+  const delimName = delimiter === ';' ? RT.S.csvDelimiterSemicolon
+    : delimiter === '\t' ? RT.S.csvDelimiterTab : RT.S.csvDelimiterComma;
 
   // First row is header — skip it. Optional Stammdaten columns are matched
   // BY HEADER NAME so legacy templates (col 4 = "kategorie (Import
@@ -203,7 +247,7 @@ async function importCSVToBackend(csvText) {
   const dataRows = rows.slice(1).filter(r => r.some(cell => cell !== ''));
   const total = dataRows.length;
   if (total === 0) {
-    setStatus('No data rows found in CSV');
+    setStatus(RT.S.csvNoDataRows);
     return;
   }
 
@@ -224,14 +268,14 @@ async function importCSVToBackend(csvText) {
     // to produce "Imported 0/57" with no explanation).
     if (row.length < 3) {
       errors.push({
-        tag_id: (row[0] || `(row ${i + 2})`).slice(0, 40),
-        reason: `only ${row.length} column(s) — expected tag_id,bib,name (detected ${delimName} delimiter)`,
+        tag_id: (row[0] || RT.fmt('csvRowLabel', { n: i + 2 })).slice(0, 40),
+        reason: RT.fmt('csvTooFewColumns', { n: row.length, delimiter: delimName }),
       });
       continue;
     }
     const [tag_id, bib, name] = row;
     if (!tag_id) {
-      errors.push({ tag_id: `(row ${i + 2})`, reason: 'empty tag_id' });
+      errors.push({ tag_id: RT.fmt('csvRowLabel', { n: i + 2 }), reason: RT.S.csvEmptyTagId });
       continue;
     }
     // A tag-pool template row nobody filled in (no bib, no name) carries zero
@@ -242,7 +286,7 @@ async function importCSVToBackend(csvText) {
       continue;
     }
 
-    setStatus(`Importing ${i + 1}/${total} riders (${errors.length} errors)\u2026`);
+    setStatus(RT.fmt('csvImporting', { i: i + 1, total, errors: errors.length }));
 
     try {
       const body = { tag_id, bib, name };
@@ -256,18 +300,19 @@ async function importCSVToBackend(csvText) {
       if (res.ok) {
         imported++;
       } else {
-        const errText = await res.text().catch(() => `HTTP ${res.status}`);
-        errors.push({ tag_id, reason: `HTTP ${res.status}: ${errText}` });
+        errors.push({ tag_id, reason: await rtResponseError(res) });
       }
     } catch (err) {
-      errors.push({ tag_id, reason: err.message });
+      console.warn('CSV import request failed:', err);
+      errors.push({ tag_id, reason: RT.apiError(0, null) });
     }
   }
 
   // Summary toast
-  const skippedNote = skippedEmpty ? `, ${skippedEmpty} empty skipped` : '';
-  showToast(`Imported ${imported}/${total} riders${skippedNote}${errors.length ? ` (${errors.length} errors)` : ''}`);
-  setStatus(`Import complete: ${imported}/${total} riders${skippedNote}`);
+  const skippedNote = skippedEmpty ? RT.fmt('csvSkippedNote', { n: skippedEmpty }) : '';
+  const errorsNote = errors.length ? RT.fmt('csvErrorsNote', { n: errors.length }) : '';
+  showToast(RT.fmt('csvImportedToast', { imported, total, skipped: skippedNote, errors: errorsNote }));
+  setStatus(RT.fmt('csvImportComplete', { imported, total, skipped: skippedNote }));
 
   // Show per-row errors in collapsible list
   if (errors.length > 0 && errContainer && errList) {
@@ -331,24 +376,22 @@ async function submitRegisterModal() {
       // fresh wave instead.
       state.lastUnknownTag = null;
       closeRegisterModal();
-      showToast(`Registered bib ${bib} \u2013 ${name}`);
-    } else if (res.status === 401) {
-      if (errBanner) {
-        errBanner.textContent = 'Authorisation failed (401). Check API key configuration.';
-        errBanner.hidden = false;
-      }
-      // Keep modal open — show Retry button
-      const retryBtn = $('#modalRetryBtn');
-      if (retryBtn) retryBtn.hidden = false;
+      showToast(RT.fmt('toastRiderRegistered', { bib, name: name || RT.S.riderNoName }));
     } else {
       if (errBanner) {
-        errBanner.textContent = `Error ${res.status}. Please try again.`;
+        errBanner.textContent = await rtResponseError(res, 'saveFailed');
         errBanner.hidden = false;
+      }
+      // 401: keep the modal open and offer the Retry button
+      if (res.status === 401) {
+        const retryBtn = $('#modalRetryBtn');
+        if (retryBtn) retryBtn.hidden = false;
       }
     }
   } catch (err) {
+    console.warn('Register rider failed:', err);
     if (errBanner) {
-      errBanner.textContent = `Network error: ${err.message}`;
+      errBanner.textContent = RT.apiError(0, null, 'saveFailed');
       errBanner.hidden = false;
     }
   }
@@ -379,7 +422,7 @@ const couple = {
   sessionCount: 0,
   pendingConfirmBib: null, // duplicate-bib two-step confirm latch
   saving: false,
-  muted: localStorage.getItem('racetag.coupleBeep') === 'off',
+  muted: rtStorageGet('racetag.coupleBeep') === 'off',
   audioCtx: null,
   // W-077 auto-assign loop state
   auto: { running: false, queue: [], current: null, done: 0, total: 0 },
@@ -450,8 +493,8 @@ function coupleRenderQueueNote() {
     return;
   }
   note.textContent = couple.queue.length === 1
-    ? '1 weiterer neuer Tag wartet'
-    : `${couple.queue.length} weitere neue Tags warten`;
+    ? RT.S.coupleQueueOne
+    : RT.fmt('coupleQueueMany', { n: couple.queue.length });
   note.hidden = false;
 }
 
@@ -481,7 +524,7 @@ function coupleToIdle() {
   $('#coupleName').value = '';
   coupleClearWarn();
   coupleSetInputsEnabled(false);
-  coupleSetCard('waiting', 'Tag an die Antenne halten…', '', null);
+  coupleSetCard('waiting', RT.S.holdTagNearAntenna, '', null);
   coupleRenderQueueNote();
 }
 
@@ -496,11 +539,12 @@ function coupleArm(tagId, opts = {}) {
   $('#coupleRecoupleBtn').hidden = true;
   coupleClearWarn();
   if (opts.recouple) {
-    coupleSetCard('recouple', 'NEU KOPPELN', opts.prefillBib ? `Nr. ${opts.prefillBib}` : '', tagId);
+    coupleSetCard('recouple', RT.S.coupleStateRecouple,
+      opts.prefillBib ? RT.fmt('bibLabel', { bib: opts.prefillBib }) : '', tagId);
     $('#coupleBib').value = opts.prefillBib || '';
     $('#coupleName').value = opts.prefillName || '';
   } else {
-    coupleSetCard('new', 'NEUER TAG', 'Nummer eingeben', tagId);
+    coupleSetCard('new', RT.S.coupleStateNew, RT.S.coupleEnterNumber, tagId);
     $('#coupleBib').value = '';
     $('#coupleName').value = '';
     coupleBeep('new');
@@ -514,17 +558,17 @@ function coupleArm(tagId, opts = {}) {
 function coupleShowInfo(data) {
   couple.phase = 'info';
   couple.infoTag = { tag_id: data.tag_id, bib: data.bib, name: data.name };
-  coupleSetCard(
-    'known',
-    'Bereits gekoppelt',
-    `Nr. ${data.bib}${data.name ? ` – ${data.name}` : ''}`,
-    data.tag_id,
-  );
+  coupleSetCard('known', RT.S.coupleStateKnown, coupleRiderText(data), data.tag_id);
   $('#coupleRecoupleBtn').hidden = false;
   if (couple.infoTimer) clearTimeout(couple.infoTimer);
   couple.infoTimer = setTimeout(() => {
     if (couple.phase === 'info') coupleToIdle();
   }, COUPLE_INFO_CLEAR_MS);
+}
+
+// "Nr. 42 – Name", or just "Nr. 42" when the rider has no name.
+function coupleRiderText(rider) {
+  return rider.name ? rtRiderLabel(rider.bib, rider.name) : RT.fmt('bibLabel', { bib: rider.bib });
 }
 
 function onCoupleTagSeen(data) {
@@ -539,7 +583,7 @@ function onCoupleTagSeen(data) {
     if (tagId === couple.armedTag.tag_id) return; // re-read of the armed tag
     if (data.registered) {
       // Verification info in passing — never disturbs the armed tag.
-      showToast(`Bereits gekoppelt: Nr. ${data.bib}${data.name ? ` – ${data.name}` : ''}`);
+      showToast(RT.fmt('toastAlreadyCoupled', { rider: coupleRiderText(data) }));
       coupleBeep('known');
       return;
     }
@@ -578,8 +622,7 @@ function coupleLogEntry(bib, name, tagId) {
   const mm = String(t.getMinutes()).padStart(2, '0');
   const tagSpan = `<span class="tag-id-copyable" data-tag-id="${htmlEscape(tagId)}"`
     + ` title="${htmlEscape(tagId)}">${htmlEscape(coupleShortTag(tagId))}</span>`;
-  li.innerHTML = `${hh}:${mm} · Nr. ${htmlEscape(bib)} – `
-    + `${htmlEscape(name || '—')} · ${tagSpan}`;
+  li.innerHTML = `${hh}:${mm} · ${htmlEscape(rtRiderLabel(bib, name))} · ${tagSpan}`;
   const log = $('#coupleLog');
   log.insertBefore(li, log.firstChild);
 }
@@ -595,8 +638,9 @@ async function coupleSave() {
   const holder = couple.ridersByBib.get(bib);
   if (holder && holder.tag_id !== tagId && couple.pendingConfirmBib !== bib) {
     const warn = $('#coupleWarn');
-    warn.textContent = `Nr. ${bib} ist bereits an ${holder.name || coupleShortTag(holder.tag_id)}`
-      + ' vergeben – nochmal Enter/Speichern zum trotzdem Koppeln';
+    warn.textContent = RT.fmt('coupleDuplicateBib', {
+      bib, holder: holder.name || coupleShortTag(holder.tag_id),
+    });
     warn.hidden = false;
     couple.pendingConfirmBib = bib;
     return;
@@ -613,7 +657,7 @@ async function coupleSave() {
     if (res.ok) {
       coupleLogEntry(bib, name, tagId);
       couple.sessionCount += 1;
-      $('#coupleCounter').textContent = `${couple.sessionCount} gekoppelt`;
+      $('#coupleCounter').textContent = RT.fmt('coupleCounter', { n: couple.sessionCount });
       // Optimistic cache insert so the dup-bib guard and the queue staleness
       // check see the new rider immediately; full refresh in the background.
       const rider = { tag_id: tagId, bib, name };
@@ -623,16 +667,14 @@ async function coupleSave() {
       coupleBeep('known');
       couplePopQueue();
     } else {
-      const txt = await res.text().catch(() => '');
       const warn = $('#coupleWarn');
-      warn.textContent = res.status === 401
-        ? 'Authorisation failed (401). Check API key configuration.'
-        : `Fehler ${res.status}: ${txt.slice(0, 120)}`;
+      warn.textContent = await rtResponseError(res, 'coupleSaveFailed');
       warn.hidden = false;
     }
   } catch (err) {
+    console.warn('Coupling save failed:', err);
     const warn = $('#coupleWarn');
-    warn.textContent = `Netzwerkfehler: ${err.message}`;
+    warn.textContent = RT.apiError(0, null, 'coupleSaveFailed');
     warn.hidden = false;
   } finally {
     couple.saving = false;
@@ -665,7 +707,7 @@ function coupleModeOn() {
   $('#coupleBeepToggle').checked = !couple.muted;
   const rangesInput = $('#coupleAutoRanges');
   if (rangesInput && !rangesInput.value) {
-    rangesInput.value = localStorage.getItem('racetag.autoRanges') || '';
+    rangesInput.value = rtStorageGet('racetag.autoRanges') || '';
   }
   $('#couplePanel').hidden = false;
   $('#coupleModeBtn').classList.add('couple-mode-active');
@@ -677,7 +719,7 @@ function coupleModeOn() {
 
 function coupleModeOff() {
   if (couple.phase === 'armed' && $('#coupleBib').value.trim()) {
-    if (!window.confirm('Ungespeicherte Kopplung verwerfen?')) return;
+    if (!window.confirm(RT.S.confirmDiscardCoupling)) return;
   }
   if (couple.auto.running) coupleAutoStop();
   couple.active = false;
@@ -690,16 +732,16 @@ function coupleModeOff() {
 
 function onCoupleRaceChanged() {
   if (!couple.active) return;
-  if (couple.auto.running) coupleAutoStop('Auto-Zuweisung gestoppt — Rennen gewechselt');
+  if (couple.auto.running) coupleAutoStop(RT.S.coupleAutoStoppedRaceChanged);
   couple.queue = [];
   const divider = document.createElement('li');
   divider.className = 'couple-log-divider';
-  divider.textContent = '— Rennen gewechselt —';
+  divider.textContent = RT.S.coupleLogRaceChanged;
   const log = $('#coupleLog');
   log.insertBefore(divider, log.firstChild);
   coupleToIdle();
   refreshCoupleRiders();
-  showToast('Koppel-Modus: Rennen gewechselt');
+  showToast(RT.S.toastCoupleRaceChanged);
 }
 
 // ---- W-077: auto-assign loop ----------------------------------------------
@@ -735,21 +777,21 @@ function parseNumberRanges(text) {
 
 function coupleAutoRender() {
   const a = couple.auto;
-  coupleSetCard('new', 'AUTO — TAG SCHWENKEN', `Nr. ${a.current}`, null);
-  $('#coupleCardTag').textContent = `${a.done} vergeben · noch ${a.queue.length + 1} Nummern`;
+  coupleSetCard('new', RT.S.coupleStateAuto, RT.fmt('bibLabel', { bib: a.current }), null);
+  $('#coupleCardTag').textContent = RT.fmt('coupleAutoProgress', { done: a.done, left: a.queue.length + 1 });
 }
 
 function coupleAutoStart() {
   const raw = $('#coupleAutoRanges').value;
   const nums = parseNumberRanges(raw);
   if (!nums || !nums.length) {
-    showToast('Zirkel unlesbar — Format: 1-75 oder 101-175,181-190');
+    showToast(RT.S.coupleRangesInvalid);
     return;
   }
-  localStorage.setItem('racetag.autoRanges', raw);
+  rtStorageSet('racetag.autoRanges', raw);
   const free = nums.filter((n) => !couple.ridersByBib.has(String(n)));
   if (!free.length) {
-    showToast('Alle Nummern dieses Zirkels sind schon vergeben');
+    showToast(RT.S.coupleRangesAllTaken);
     return;
   }
   couple.auto.running = true;
@@ -770,7 +812,7 @@ function coupleAutoStart() {
   $('#coupleAutoStartBtn').hidden = true;
   $('#coupleAutoStopBtn').hidden = false;
   coupleAutoRender();
-  showToast(`Auto-Zuweisung: ${free.length} freie Nummern`);
+  showToast(RT.fmt('toastCoupleAutoStarted', { n: free.length }));
 }
 
 function coupleAutoStop(message) {
@@ -788,14 +830,14 @@ function coupleAutoAdvance() {
     couple.auto.current = couple.auto.queue.shift();
     coupleAutoRender();
   } else {
-    coupleAutoStop(`Zirkel komplett: ${couple.auto.done} Nummern vergeben`);
+    coupleAutoStop(RT.fmt('toastCoupleAutoComplete', { n: couple.auto.done }));
   }
 }
 
 let _coupleAutoSaving = false;
 async function onCoupleAutoTagSeen(data) {
   if (data.registered) {
-    showToast(`Tag ist schon Nr. ${data.bib}${data.name ? ` – ${data.name}` : ''} — anderen Tag nehmen`);
+    showToast(RT.fmt('toastCoupleAutoTagKnown', { rider: coupleRiderText(data) }));
     coupleBeep('known');
     return;
   }
@@ -813,7 +855,7 @@ async function onCoupleAutoTagSeen(data) {
       coupleLogEntry(bib, '', tagId);
       couple.sessionCount += 1;
       couple.auto.done += 1;
-      $('#coupleCounter').textContent = `${couple.sessionCount} gekoppelt`;
+      $('#coupleCounter').textContent = RT.fmt('coupleCounter', { n: couple.sessionCount });
       const rider = { tag_id: tagId, bib, name: '' };
       couple.ridersByTag.set(tagId, rider);
       couple.ridersByBib.set(bib, rider);
@@ -821,10 +863,12 @@ async function onCoupleAutoTagSeen(data) {
       coupleBeep('known'); // audible "saved — next number is up"
       coupleAutoAdvance();
     } else {
-      showToast(`Fehler ${res.status} beim Koppeln von Nr. ${bib}`);
+      const reason = await rtResponseError(res);
+      showToast(`${RT.fmt('coupleAutoSaveFailed', { bib })}: ${reason}`, 'error');
     }
   } catch (err) {
-    showToast(`Netzwerkfehler: ${err.message}`);
+    console.warn('Auto-assign save failed:', err);
+    showToast(`${RT.fmt('coupleAutoSaveFailed', { bib })}: ${RT.S.errNetwork}`, 'error');
   } finally {
     _coupleAutoSaving = false;
   }
@@ -876,15 +920,15 @@ function renderRidersUiList() {
     const li = document.createElement('li');
     li.dataset.tagId = r.tag_id;
     if (r.tag_id === ridersUi.selectedTag) li.classList.add('riders-list--selected');
-    li.innerHTML = `<strong>Nr. ${htmlEscape(r.bib)}</strong> ${htmlEscape(r.name || '—')}`
+    li.title = RT.S.ridersListItemTip;
+    li.innerHTML = `<strong>${htmlEscape(RT.fmt('bibLabel', { bib: r.bib }))}</strong> ${htmlEscape(r.name || RT.S.riderNoName)}`
       + ` <span class="riders-list-tag">${htmlEscape(coupleShortTag(r.tag_id))}</span>`;
     list.appendChild(li);
   }
   if (!filtered.length) {
     const li = document.createElement('li');
     li.className = 'riders-list-empty';
-    li.textContent = ridersUi.items.length
-      ? 'Kein Treffer' : 'Keine Fahrer im aktiven Rennen (Master importiert?)';
+    li.textContent = ridersUi.items.length ? RT.S.ridersNoMatch : RT.S.ridersNoneInRace;
     list.appendChild(li);
   }
 }
@@ -950,18 +994,21 @@ async function saveRiderEdit() {
     if (res.ok) {
       const dto = await res.json().catch(() => ({}));
       const n = dto.races_updated;
-      showToast(`Nr. ${bib} – ${name || '—'} gespeichert${
-        typeof n === 'number' ? ` (${n} Rennen)` : ''}`);
+      showToast(RT.fmt('toastRiderSaved', {
+        bib,
+        name: name || RT.S.riderNoName,
+        races: typeof n === 'number' ? RT.fmt('toastRiderSavedRaces', { n }) : '',
+      }));
       err.hidden = true;
       refreshRidersUiList();
       if (couple.active) refreshCoupleRiders();
     } else {
-      const txt = await res.text().catch(() => '');
-      err.textContent = `Fehler ${res.status}: ${txt.slice(0, 120)}`;
+      err.textContent = await rtResponseError(res, 'saveFailed');
       err.hidden = false;
     }
   } catch (e) {
-    err.textContent = `Netzwerkfehler: ${e.message}`;
+    console.warn('Rider save failed:', e);
+    err.textContent = RT.apiError(0, null, 'saveFailed');
     err.hidden = false;
   }
 }
@@ -981,11 +1028,35 @@ async function openSettingsModal() {
   const errBanner = $('#settingsError');
   if (errBanner) errBanner.hidden = true;
 
+  // Reader section: live status + the most recent discovery result (e.g. the
+  // reader-service found several readers and needs the operator to choose).
+  renderReaderStatusBox('#settingsReaderStatus');
+  hideInlineStatus('#readerDiscoverStatus');
+  const lastCandidates = readerUi.status && Array.isArray(readerUi.status.candidates)
+    ? readerUi.status.candidates : [];
+  if (lastCandidates.length) {
+    setInlineStatus('#readerDiscoverStatus', 'info', RT.S.discoverLastResult);
+    renderReaderCandidates('#readerCandidates', lastCandidates);
+  } else {
+    renderReaderCandidates('#readerCandidates', []);
+  }
+  hideInlineStatus('#supportStatus');
+  renderSettingsMeta();
+
   try {
     const res = await fetch(`${state.backend}/config`, { headers: getApiHeaders() });
-    if (!res.ok) throw new Error(`GET /config failed: ${res.status}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const failure = new Error(`GET /config failed: ${res.status}`);
+      failure.operatorMessage = RT.apiError(res.status, body);
+      throw failure;
+    }
     const cfg = await res.json();
     _settingsOriginal = cfg;
+    rememberAppConfig(cfg);
+    renderSettingsMeta();
+    // The candidate list marks the configured IP; refresh it with fresh config.
+    if (lastCandidates.length) renderReaderCandidates('#readerCandidates', lastCandidates);
 
     const ipInput = $('#settingsReaderIp');
     const minLapInput = $('#settingsMinLap');
@@ -1013,7 +1084,7 @@ async function openSettingsModal() {
         const activeId = raceData ? raceData.id : null;
         if (!activeId) {
           snapInput.disabled = true;
-          snapInput.placeholder = 'No active race';
+          snapInput.placeholder = RT.S.settingsNoActiveRace;
         } else {
           const r2 = await fetch(`${state.backend}/races/${activeId}`, { headers: getApiHeaders() });
           if (r2.ok) {
@@ -1023,18 +1094,18 @@ async function openSettingsModal() {
             snapInput.value = raceRow.snapshot_interval_s ?? '';
           } else {
             snapInput.disabled = true;
-            snapInput.placeholder = 'Could not load race';
+            snapInput.placeholder = RT.S.settingsRaceLoadFailed;
           }
         }
       } catch (_e) {
         snapInput.disabled = true;
-        snapInput.placeholder = 'Network error';
+        snapInput.placeholder = RT.S.settingsNetworkError;
       }
     }
   } catch (err) {
     _settingsOriginal = {};
     if (errBanner) {
-      errBanner.textContent = `Could not load config: ${err.message}`;
+      errBanner.textContent = `${RT.S.settingsLoadFailed}: ${err.operatorMessage || RT.S.errNetwork}`;
       errBanner.hidden = false;
     }
   }
@@ -1093,6 +1164,12 @@ async function submitSettingsModal() {
     return;
   }
 
+  // Cancel keeps the dialog open with every edit intact.
+  if (('reader_ip' in patch || 'antenna_power' in patch)
+      && !confirmReaderInterruption('confirmReaderSettingsRace')) {
+    return;
+  }
+
   try {
     if (Object.keys(patch).length > 0) {
       const res = await fetch(`${state.backend}/config`, {
@@ -1101,13 +1178,14 @@ async function submitSettingsModal() {
         body: JSON.stringify(patch),
       });
       if (!res.ok) {
-        const body = await res.text().catch(() => `HTTP ${res.status}`);
+        const body = await res.text().catch(() => '');
         if (errBanner) {
-          errBanner.textContent = `Save failed (${res.status}): ${body}`;
+          errBanner.textContent = RT.apiError(res.status, body, 'settingsSaveFailed');
           errBanner.hidden = false;
         }
         return;
       }
+      rememberAppConfig(await res.json().catch(() => null));
     }
 
     if (snapChanged && activeRaceId) {
@@ -1117,9 +1195,9 @@ async function submitSettingsModal() {
         body: JSON.stringify({ snapshot_interval_s: newSnap }),
       });
       if (!r2.ok) {
-        const body = await r2.text().catch(() => `HTTP ${r2.status}`);
+        const body = await r2.text().catch(() => '');
         if (errBanner) {
-          errBanner.textContent = `Snapshot interval save failed (${r2.status}): ${body}`;
+          errBanner.textContent = RT.apiError(r2.status, body, 'settingsSnapshotSaveFailed');
           errBanner.hidden = false;
         }
         return;
@@ -1127,44 +1205,65 @@ async function submitSettingsModal() {
     }
 
     closeSettingsModal();
-    showToast('Settings saved');
-
-    // If reader IP / antenna power changed, show a non-blocking note via a
-    // second toast with delay — both are consumed by the reader-service at
-    // spawn time, so they take effect on the next app restart.
-    if ('reader_ip' in patch || 'antenna_power' in patch) {
-      setTimeout(() => showToast('Reader IP / antenna power changes take effect on next app restart'), 3200);
-    }
-  } catch (err) {
+    // The reader-service picks up a changed reader IP / antenna power from
+    // its next heartbeat reply (≤ 2 s) and reconnects by itself — no app
+    // restart, but the reader session is rebuilt (hence the confirm above).
+    showToast(('reader_ip' in patch || 'antenna_power' in patch)
+      ? RT.S.toastSettingsSavedReconnect
+      : RT.S.toastSettingsSaved);
+  } catch (_err) {
     if (errBanner) {
-      errBanner.textContent = `Network error: ${err.message}`;
+      errBanner.textContent = `${RT.S.settingsSaveFailed}: ${RT.S.errNetwork}`;
       errBanner.hidden = false;
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Toast notification (bottom-right, auto-dismiss after 3 s)
+// Toast notification (bottom-right, auto-dismiss)
+//
+// showToast(message) keeps its original behaviour (green, 3 s). Recovery and
+// failure messages pass a severity: 'warn' (amber, 5 s) or 'error' (red, 7 s).
 // ---------------------------------------------------------------------------
-function showToast(message) {
-  let toast = $('#toastContainer');
+const TOAST_DURATION_MS = { info: 3000, warn: 5000, error: 7000 };
+
+function showToast(message, severity, durationMs) {
+  const toast = $('#toastContainer');
   if (!toast) return;
+  const level = severity === 'warn' || severity === 'error' ? severity : 'info';
   toast.textContent = message;
+  toast.classList.toggle('toast--warn', level === 'warn');
+  toast.classList.toggle('toast--error', level === 'error');
+  toast.setAttribute('role', level === 'error' ? 'alert' : 'status');
   toast.classList.add('toast--visible');
   clearTimeout(toast._timer);
-  toast._timer = setTimeout(() => toast.classList.remove('toast--visible'), 3000);
+  toast._timer = setTimeout(() => toast.classList.remove('toast--visible'), durationMs || TOAST_DURATION_MS[level]);
 }
 
 // ---------------------------------------------------------------------------
 // Standings helpers
 // ---------------------------------------------------------------------------
+
+// Transient operator messages (CSV import progress, "hold a tag…") shown in
+// the status bar next to the pills. Connection state has its own pill and no
+// longer goes through here. Messages fade after STATUS_MESSAGE_MS.
+const STATUS_MESSAGE_MS = 30000;
+let _statusMessageTimer = null;
+
 function setStatus(text) {
-  $('#status').textContent = text;
+  const el = $('#statusMessage');
+  if (!el) return;
+  clearTimeout(_statusMessageTimer);
+  el.textContent = text || '';
+  el.hidden = !text;
+  if (text) {
+    _statusMessageTimer = setTimeout(() => { el.hidden = true; }, STATUS_MESSAGE_MS);
+  }
 }
 
 function saveBackend(url) {
   state.backend = url.replace(/\/$/, '');
-  localStorage.setItem('racetag.backend', state.backend);
+  rtStorageSet('racetag.backend', state.backend);
 }
 
 function applyTagColumnVisibility() {
@@ -1229,16 +1328,16 @@ function renderStandings(items) {
     // empty gap cell. Same-lap riders keep the time gap to the leader.
     let gap;
     if (typeof p.laps_behind === 'number' && p.laps_behind > 0) {
-      gap = `+${p.laps_behind} Rd.`;
+      gap = RT.fmt('standingsGapLaps', { n: p.laps_behind });
     } else if (typeof p.gap_ms === 'number') {
       gap = formatMs(p.gap_ms);
     } else {
       gap = '';
     }
-    // W-012: prefer bib/name from server standings; fall back to 'N/A'/'Unknown'
+    // W-012: prefer bib/name from server standings; fall back to placeholders
     const bibRaw = p.bib;
-    const bib = (bibRaw != null && bibRaw !== '') ? htmlEscape(bibRaw) : 'N/A';
-    const name = p.name ? htmlEscape(p.name) : 'Unknown';
+    const bib = (bibRaw != null && bibRaw !== '') ? htmlEscape(bibRaw) : RT.S.standingsNoBib;
+    const name = p.name ? htmlEscape(p.name) : RT.S.standingsUnknownName;
     const tagId = htmlEscape(p.tag_id);
     const tr = document.createElement('tr');
     const total = typeof p.total_time_ms === 'number' ? secondsWithMs(p.total_time_ms) : '';
@@ -1256,15 +1355,17 @@ function renderStandings(items) {
       ? ''
       : (netMode && typeof p.net_time_ms !== 'number') ? '' : (idx + 1);
     if (!isClassified) tr.classList.add('status-row');
+    const statusTipKey = { dnf: 'rowTipStatusDnf', dns: 'rowTipStatusDns', dsq: 'rowTipStatusDsq' }[status];
+    const statusTitle = statusTipKey ? ` title="${htmlEscape(RT.S[statusTipKey])}"` : '';
     const statusBadge = status
-      ? ` <span class="status-badge status-${status}">${status.toUpperCase()}</span>`
+      ? ` <span class="status-badge status-${htmlEscape(status)}"${statusTitle}>${htmlEscape(status.toUpperCase())}</span>`
       : '';
 
     // F5: missed-read annotation. A warning marker on the row invites the
     // operator to fix it with the (pre-filled) manual +1 — never automatic.
     const missed = p.suspected_missed_reads || 0;
     const missedMarker = missed > 0
-      ? ` <span class="missed-read" title="${missed} Runde(n) evtl. vom Reader verpasst — klick +1 zum Nachtragen">⚠︎${missed > 1 ? '×' + missed : ''}</span>`
+      ? ` <span class="missed-read" title="${htmlEscape(RT.fmt('rowTipMissedReads', { n: missed }))}">⚠︎${missed > 1 ? '×' + missed : ''}</span>`
       : '';
 
     // Manual-lap-correction buttons. Disabled when the row has NO registered
@@ -1272,23 +1373,25 @@ function renderStandings(items) {
     // a valid bib — the explicit null-check guards bib zero. (Review #22.)
     const noRider = (bibRaw == null);
     const disabledAttr = noRider ? 'disabled' : '';
+    // Disabled buttons explain why instead of what they would do.
+    const tipAttr = (key) => `title="${htmlEscape(noRider ? RT.S.rowTipNoRider : RT.S[key])}"`;
     const lapActions = `
       <div class="lap-actions">
         <button class="lap-plus" data-tag-id="${tagId}" data-action="add"
-                title="Credit one lap (server timestamp)" ${disabledAttr}>+1</button>
+                ${tipAttr('rowTipLapAdd')} ${disabledAttr}>+1</button>
         <button class="lap-minus" data-tag-id="${tagId}" data-action="remove"
-                title="Revoke the most recent lap" ${disabledAttr}>&minus;1</button>
+                ${tipAttr('rowTipLapRemove')} ${disabledAttr}>&minus;1</button>
         <button class="lap-edit" data-tag-id="${tagId}" data-action="edit"
-                title="Edit lap / set status (DNF/DNS/DSQ)" ${disabledAttr}>&#9998;</button>
+                ${tipAttr('rowTipLapEdit')} ${disabledAttr}>&#9998;</button>
       </div>`;
     // W-030: route last_pass_time through formatTimestampForDisplay
     tr.innerHTML = `
       <td>${posCell}</td>
-      <td class="tag-col"><span class="tag-id-copyable" data-tag-id="${tagId}" title="Click to copy tag ID">${tagId}</span></td>
+      <td class="tag-col"><span class="tag-id-copyable" data-tag-id="${tagId}" title="${htmlEscape(RT.S.rowTipCopyTag)}">${tagId}</span></td>
       <td>${bib}</td>
       <td>${name}${statusBadge}</td>
       <td>${p.laps}${missedMarker}</td>
-      <td class="${p.finished ? 'finished' : ''}">${p.finished ? 'Yes' : 'No'}</td>
+      <td class="${p.finished ? 'finished' : ''}">${p.finished ? RT.S.standingsFinishedYes : RT.S.standingsFinishedNo}</td>
       <td>${formatTimestampForDisplay(p.last_pass_time)}</td>
       <td>${gap}</td>
       <td>${total}</td>
@@ -1314,13 +1417,13 @@ async function manualLapAdd(tag_id, timestamp = null) {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const txt = await res.text();
-      showToast(`Add-lap failed (${res.status}): ${txt}`);
+      showToast(await rtResponseError(res, 'lapAddFailed'), 'error');
       return null;
     }
     return await res.json();
   } catch (err) {
-    showToast(`Add-lap network error: ${err.message}`);
+    console.warn('Manual lap add failed:', err);
+    showToast(RT.apiError(0, null, 'lapAddFailed'), 'error');
     return null;
   }
 }
@@ -1332,13 +1435,13 @@ async function manualLapRemove(tag_id) {
       headers: getApiHeaders(),
     });
     if (!res.ok) {
-      const txt = await res.text();
-      showToast(`Remove-lap failed (${res.status}): ${txt}`);
+      showToast(await rtResponseError(res, 'lapRemoveFailed'), 'error');
       return null;
     }
     return await res.json();
   } catch (err) {
-    showToast(`Remove-lap network error: ${err.message}`);
+    console.warn('Manual lap remove failed:', err);
+    showToast(RT.apiError(0, null, 'lapRemoveFailed'), 'error');
     return null;
   }
 }
@@ -1375,13 +1478,13 @@ async function setRiderStatus(tag_id, status) {
       body: JSON.stringify({ status: status || null }),
     });
     if (!res.ok) {
-      const txt = await res.text();
-      showToast(`Status failed (${res.status}): ${txt}`);
+      showToast(await rtResponseError(res, 'statusSetFailed'), 'error');
       return null;
     }
     return await res.json();
   } catch (err) {
-    showToast(`Status network error: ${err.message}`);
+    console.warn('Set rider status failed:', err);
+    showToast(RT.apiError(0, null, 'statusSetFailed'), 'error');
     return null;
   }
 }
@@ -1398,7 +1501,7 @@ async function submitLapEditAdd() {
   const ts = $('#lapEditTimestamp').value.trim();
   const result = await manualLapAdd(modal.dataset.tagId, ts || null);
   if (result) {
-    showToast(`Lap added — now ${result.laps} laps`);
+    showToast(RT.fmt('toastLapAdded', { laps: rtLapsText(result.laps) }));
     if (errBanner) errBanner.hidden = true;
     closeLapEditModal();
   }
@@ -1408,10 +1511,10 @@ async function submitLapEditRemove() {
   const modal = $('#lapEditModal');
   const errBanner = $('#lapEditError');
   if (!modal || !modal.dataset.tagId) return;
-  if (!confirm('Remove the most recent lap for this rider?')) return;
+  if (!confirm(RT.S.confirmRemoveLap)) return;
   const result = await manualLapRemove(modal.dataset.tagId);
   if (result) {
-    showToast(`Lap removed — now ${result.laps} laps`);
+    showToast(RT.fmt('toastLapRemoved', { laps: rtLapsText(result.laps) }));
     if (errBanner) errBanner.hidden = true;
     closeLapEditModal();
   }
@@ -1424,28 +1527,28 @@ async function submitLapEditReset() {
   if (!modal || !modal.dataset.tagId) return;
   const tag_id = modal.dataset.tagId;
   const label = _bibLabelFor(tag_id);
-  if (!confirm(`ALLE Durchgänge von ${label} löschen? Der Fahrer startet danach einen frischen Versuch.`)) return;
+  if (!confirm(RT.fmt('confirmResetRider', { label }))) return;
   try {
     const res = await fetch(`${state.backend}/riders/${encodeURIComponent(tag_id)}/passes`, {
       method: 'DELETE',
       headers: getApiHeaders(),
     });
     if (!res.ok) {
-      const txt = await res.text();
-      showToast(`Reset failed (${res.status}): ${txt}`);
+      showToast(await rtResponseError(res, 'riderResetFailed'), 'error');
       return;
     }
     const data = await res.json();
-    showToast(`${label} zurückgesetzt (${data.deleted_events} Durchgänge gelöscht)`);
+    showToast(RT.fmt('toastRiderReset', { label, n: data.deleted_events }));
     closeLapEditModal();
   } catch (err) {
-    showToast(`Reset network error: ${err.message}`);
+    console.warn('Rider reset failed:', err);
+    showToast(RT.apiError(0, null, 'riderResetFailed'), 'error');
   }
 }
 
 function _bibLabelFor(tag_id) {
   const p = (state.lastStandings || []).find((r) => r.tag_id === tag_id);
-  if (p && p.bib != null && p.bib !== '') return `bib ${p.bib}`;
+  if (p && p.bib != null && p.bib !== '') return RT.fmt('bibLabel', { bib: p.bib });
   return tag_id.length > 12 ? `${tag_id.slice(0, 12)}…` : tag_id;
 }
 
@@ -1462,7 +1565,7 @@ async function onStandingsTableClick(e) {
     // midpoint of the suspected gap — open the modal pre-filled so the
     // operator confirms the (correct) time rather than stamping "now".
     if (p && p.suspected_missed_reads > 0 && p.suspected_gap_midpoint) {
-      showToast('Vermutete verpasste Runde — Zeitstempel vorbelegt, bitte bestätigen');
+      showToast(RT.S.toastSuspectedMissedLap);
       openLapEditModal(tag_id, p.suspected_gap_midpoint);
       return;
     }
@@ -1475,17 +1578,17 @@ async function onStandingsTableClick(e) {
     if (p && p.last_pass_time) {
       const age = Date.now() - new Date(p.last_pass_time).getTime();
       if (isFinite(age) && age > STALE_MS) {
-        showToast('Last pass was a while ago — set the timestamp');
+        showToast(RT.S.toastLastPassLongAgo);
         openLapEditModal(tag_id);
         return;
       }
     }
     const result = await manualLapAdd(tag_id);
-    if (result) showToast(`Lap added — ${label} now ${result.laps} laps`);
+    if (result) showToast(RT.fmt('toastLapAddedFor', { label, laps: rtLapsText(result.laps) }));
   } else if (action === 'remove') {
-    if (!confirm(`Remove the most recent lap for ${label}?`)) return;
+    if (!confirm(RT.fmt('confirmRemoveLapFor', { label }))) return;
     const result = await manualLapRemove(tag_id);
-    if (result) showToast(`Lap removed — ${label} now ${result.laps} laps`);
+    if (result) showToast(RT.fmt('toastLapRemovedFor', { label, laps: rtLapsText(result.laps) }));
   } else if (action === 'edit') {
     openLapEditModal(tag_id);
   }
@@ -1548,35 +1651,38 @@ function renderRaceStatus() {
   const startBtn = $('#startRaceBtn');
   const endBtn = $('#endRaceBtn');
   const racePrefix = state.activeRaceName
-    ? `${state.activeRaceName} — `
+    ? `${rtRaceDisplayName(state.activeRaceName)} — `
     : '';
 
   // F8: bell / laps-to-go suffix for the leader while the race is live.
   let ltgSuffix = '';
   if (state.finishing) {
-    ltgSuffix = ' — 🏁 LAST LAP / finishing';
+    ltgSuffix = RT.S.raceBannerFinishing;
   } else if (typeof state.lapsToGo === 'number') {
-    if (state.lapsToGo === 1) ltgSuffix = ' — 🔔 1 lap to go';
-    else if (state.lapsToGo > 0) ltgSuffix = ` — ${state.lapsToGo} laps to go`;
+    if (state.lapsToGo === 1) ltgSuffix = RT.S.raceBannerOneLapToGo;
+    else if (state.lapsToGo > 0) ltgSuffix = RT.fmt('raceBannerLapsToGo', { n: state.lapsToGo });
   }
 
   const reopenBtn = $('#reopenRaceBtn');
+  const pending = !(state.raceEnded && state.raceEndedAt) && !(state.raceStarted && state.raceStartedAt);
+  if (banner) banner.classList.toggle('race-status--pending', pending);
+  if (startBtn && !pending) startBtn.classList.remove('btn-attention');
   if (state.raceEnded && state.raceEndedAt) {
     const t = formatTimestampForDisplay(state.raceEndedAt);
-    if (banner) banner.textContent = `${racePrefix}Ended at ${t}`;
-    if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Race ended'; }
-    if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'Ended'; }
+    if (banner) banner.textContent = `${racePrefix}${RT.fmt('raceBannerEndedAt', { time: t })}`;
+    if (startBtn) { startBtn.disabled = true; startBtn.textContent = RT.S.btnRaceEnded; }
+    if (endBtn) { endBtn.disabled = true; endBtn.textContent = RT.S.btnEnded; }
     if (reopenBtn) reopenBtn.hidden = false;
   } else if (state.raceStarted && state.raceStartedAt) {
     const t = formatTimestampForDisplay(state.raceStartedAt);
-    if (banner) banner.textContent = `${racePrefix}Running since ${t}${ltgSuffix}`;
-    if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Race started'; }
-    if (endBtn) { endBtn.disabled = false; endBtn.textContent = 'End race'; }
+    if (banner) banner.textContent = `${racePrefix}${RT.fmt('raceBannerRunningSince', { time: t })}${ltgSuffix}`;
+    if (startBtn) { startBtn.disabled = true; startBtn.textContent = RT.S.btnRaceRunning; }
+    if (endBtn) { endBtn.disabled = false; endBtn.textContent = RT.S.btnEndRace; }
     if (reopenBtn) reopenBtn.hidden = true;
   } else {
-    if (banner) banner.textContent = `${racePrefix}Not started — press Start to begin`;
-    if (startBtn) { startBtn.disabled = false; startBtn.textContent = 'Start race'; }
-    if (endBtn) { endBtn.disabled = true; endBtn.textContent = 'End race'; }
+    if (banner) banner.textContent = `${racePrefix}${RT.S.raceBannerNotStarted}`;
+    if (startBtn) { startBtn.disabled = false; startBtn.textContent = RT.S.btnStartRace; }
+    if (endBtn) { endBtn.disabled = true; endBtn.textContent = RT.S.btnEndRace; }
     if (reopenBtn) reopenBtn.hidden = true;
   }
 }
@@ -1596,7 +1702,7 @@ async function loadRaces() {
       const schedSuffix = r.scheduled_at
         ? ` (${formatTimestampForDisplay(r.scheduled_at)})`
         : '';
-      opt.textContent = `${r.name}${schedSuffix}`;
+      opt.textContent = `${rtRaceDisplayName(r.name)}${schedSuffix}`;
       if (r.is_active) opt.selected = true;
       sel.appendChild(opt);
     });
@@ -1618,10 +1724,10 @@ async function activateRace(raceId) {
       headers: getApiHeaders(),
     });
     if (!res.ok) {
-      showToast(`Activate failed: HTTP ${res.status}`);
+      showToast(await rtResponseError(res, 'raceActivateFailed'), 'error');
       return;
     }
-    showToast('Race switched');
+    showToast(RT.S.toastRaceSwitched);
     // After activate, re-pull everything that's race-scoped
     await Promise.all([
       loadRaces(),
@@ -1629,11 +1735,14 @@ async function activateRace(raceId) {
       loadSnapshot(),
     ]);
   } catch (e) {
-    showToast(`Activate error: ${e.message}`);
+    console.warn('Activate race failed:', e);
+    showToast(RT.apiError(0, null, 'raceActivateFailed'), 'error');
   }
 }
 
-// W-051: fetch antenna diagnostics and render into diagnostics table
+// W-051: fetch antenna diagnostics and render into diagnostics table.
+// Polled every ANTENNA_POLL_MS for the status bar, and faster while the
+// diagnostics panel is open.
 async function refreshDiagnostics() {
   try {
     const res = await fetch(`${state.backend}/diagnostics/antennas?window_s=60`, {
@@ -1641,14 +1750,16 @@ async function refreshDiagnostics() {
     });
     if (!res.ok) return;
     const data = await res.json();
+    const counts = data.counts || {};
+    antennaUi.passes = counts; // D1: the Antennen pill shows these too
+    renderStatusBar();
     const tbody = document.querySelector('#diagnosticsTable tbody');
     if (!tbody) return;
     tbody.innerHTML = '';
-    const counts = data.counts || {};
     const antennas = Object.keys(counts).sort((a, b) => Number(a) - Number(b));
     if (antennas.length === 0) {
       const tr = document.createElement('tr');
-      tr.innerHTML = '<td colspan="2" style="color:var(--muted)">No reads in last 60 s</td>';
+      tr.innerHTML = `<td colspan="2" style="color:var(--muted)">${htmlEscape(RT.S.diagnosticsEmpty)}</td>`;
       tbody.appendChild(tr);
     } else {
       antennas.forEach((ant) => {
@@ -1690,15 +1801,16 @@ function connectSSE() {
     // would show stale standings under a green "Live" badge until the next
     // lap. Re-fetching heals both the standings and the race lifecycle state.
     onOpen: () => {
-      setStatus('Live');
       loadRaces();
       loadRaceConfig();
       loadSnapshot().catch(() => {});
       // W-075: rider cache may have drifted during the outage window.
       if (couple.active) refreshCoupleRiders();
+      // D1: reader state may have changed while the stream was down.
+      loadReaderStatus();
     },
-    onError: () => {}, // status handled by onStatusChange
-    onStatusChange: (msg) => setStatus(msg),
+    onError: () => {}, // state handled by onStateChange
+    onStateChange: (sseState, detail) => setConnectionState(sseState, detail),
     onMessage: (ev) => {
       try {
         const data = JSON.parse(ev.data);
@@ -1723,6 +1835,11 @@ function connectSSE() {
           }
         }
 
+        // D1: reader-service heartbeat state (connection, antennas, discovery)
+        if (data?.type === 'reader_status') {
+          handleReaderStatus(data);
+        }
+
         // W-075: serial coupling mode — live tag feed (ignored unless open)
         if (data?.type === 'tag_seen') {
           onCoupleTagSeen(data);
@@ -1731,7 +1848,7 @@ function connectSSE() {
         // W-036: race reset — clear standings table locally
         if (data?.type === 'race_reset') {
           renderStandings([]);
-          showToast('Race has been reset');
+          showToast(RT.S.toastRaceResetRemote);
         }
 
         // W-036: race updated — sync totalLaps
@@ -1783,6 +1900,1314 @@ function connectSSE() {
 }
 
 // ---------------------------------------------------------------------------
+// D4 — App mode (desktop build vs. browser/Docker) and shared helpers
+// ---------------------------------------------------------------------------
+
+const ANTENNA_POLL_MS = 10000;
+const STATUS_BAR_TICK_MS = 1000; // countdowns and "last read x s ago"
+const ANTENNA_WINDOW_MS = 60000;
+const CONFIG_FETCH_TIMEOUT_MS = 5000;
+// The backend itself waits up to 15 s for the reader-service's answer.
+const DISCOVER_CLIENT_TIMEOUT_MS = 20000;
+const PYWEBVIEW_WAIT_MS = 5000;
+const UPDATE_CHECK_TIMEOUT_MS = 3000;
+const UPDATE_RELEASES_API = 'https://api.github.com/repos/jan-knoblich/racetag/releases/latest';
+const UPDATE_RELEASES_PAGE = 'https://github.com/jan-knoblich/racetag/releases/latest';
+
+const appInfo = {
+  desktop: false, // GET /config → desktop (true only in the packaged app)
+  version: null, // GET /config → version (or the desktop bridge)
+  readerIp: null, // effective reader_ip from the last /config response
+  dataDir: null, // desktop only, from the pywebview bridge
+  assistantDone: null, // GET /config → assistant_done; null when the backend lacks the field
+};
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function isShown(selector) {
+  const el = $(selector);
+  return !!el && !el.hidden;
+}
+
+function rememberAppConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object') return;
+  if ('reader_ip' in cfg) appInfo.readerIp = cfg.reader_ip || null;
+  if (typeof cfg.version === 'string' && cfg.version) appInfo.version = cfg.version;
+  if (typeof cfg.assistant_done === 'boolean') appInfo.assistantDone = cfg.assistant_done;
+}
+
+async function fetchConfigFrom(base) {
+  try {
+    const res = await fetchWithTimeout(`${base}/config`, { headers: getApiHeaders() }, CONFIG_FETCH_TIMEOUT_MS);
+    if (!res.ok) return null;
+    // nginx answers unknown paths with index.html, so this throws there.
+    const cfg = await res.json();
+    return cfg && typeof cfg === 'object' ? cfg : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+// Decide desktop vs. browser mode. The desktop shell serves this page from the
+// backend itself, so a same-origin /config answering desktop:true is
+// authoritative and overrides any Backend URL remembered in localStorage.
+async function loadAppConfig() {
+  const loc = window.location;
+  const origin = loc && /^https?:$/.test(loc.protocol) ? loc.origin : null;
+  let cfg = origin ? await fetchConfigFrom(origin) : null;
+  if (cfg && cfg.desktop === true) {
+    appInfo.desktop = true;
+    state.backend = origin;
+  } else if (state.backend !== origin) {
+    cfg = await fetchConfigFrom(state.backend);
+  }
+  rememberAppConfig(cfg);
+  return cfg;
+}
+
+function applyAppMode() {
+  const desktop = appInfo.desktop;
+  document.body.classList.toggle('desktop-mode', desktop);
+  const urlControl = $('#backendUrlControl');
+  if (urlControl) urlControl.hidden = desktop;
+  const connectBtn = $('#connectBtn');
+  if (connectBtn) connectBtn.hidden = desktop;
+  const input = $('#backendUrl');
+  if (input) input.value = state.backend;
+
+  // The tag column is an expert option in the desktop build: move the
+  // existing control (its change listener travels with it) into
+  // Settings → Erweitert. Browser mode keeps it in the header.
+  const advanced = $('#settingsAdvanced');
+  const advancedBody = $('#settingsAdvancedBody');
+  const tagToggle = $('#tagColumnToggle');
+  const tagControl = tagToggle ? tagToggle.closest('label') : null;
+  if (desktop && advanced && advancedBody && tagControl) {
+    advancedBody.appendChild(tagControl);
+    advanced.hidden = false;
+  }
+  ['#openDataFolderBtn', '#supportBundleBtn'].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.hidden = !desktop;
+  });
+}
+
+// Initial load and every manual (re)connect: pull the current state, then open
+// the live stream. The stream retries on its own and reloads everything once
+// it opens, so a backend that is not up yet heals without operator action.
+async function connectToBackend() {
+  setConnectionState('connecting');
+  try {
+    await loadSnapshot();
+  } catch (e) {
+    console.warn('Initial snapshot failed; the live stream keeps retrying:', e);
+  }
+  connectSSE();
+  fetchRecentUnknownTag();
+  loadRaceConfig();
+  loadRaces();
+  loadReaderStatus();
+  refreshDiagnostics();
+}
+
+function formatDuration(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  if (h > 0) return RT.fmt('durationHours', { h, m });
+  if (m > 0) return RT.fmt('durationMinutes', { m, s: sec });
+  return RT.fmt('durationSeconds', { s: sec });
+}
+
+function setInlineStatus(selector, level, text, busy) {
+  const el = $(selector);
+  if (!el) return;
+  const className = `inline-status inline-status--${level}${busy ? ' inline-status--busy' : ''}`;
+  if (el.className !== className) el.className = className;
+  if (el.textContent !== text) el.textContent = text;
+  el.hidden = false;
+}
+
+function hideInlineStatus(selector) {
+  const el = $(selector);
+  if (!el) return;
+  el.hidden = true;
+  el.textContent = '';
+}
+
+// ---------------------------------------------------------------------------
+// D1 — Status bar: Reader / Antennen / Verbindung pills
+// ---------------------------------------------------------------------------
+
+// Before its first heartbeat a running reader-service child shows "startet…"
+// for at most this long after page load, then the red "keine Rückmeldung".
+const READER_BOOT_GRACE_MS = 30000;
+const READER_UI_STARTED_AT = Date.now();
+
+const readerUi = {
+  available: null, // false once GET /reader/status is missing (older backend)
+  status: null, // last reader status (GET /reader/status or SSE reader_status)
+  receivedAt: 0, // Date.now() when `status` arrived; ages next_retry_s
+  lostAt: null, // Date.now() when an active reader connection went away
+};
+
+const antennaUi = {
+  samples: [], // [{t, reads: {"1": n}}] from reader status frames
+  passes: null, // {"1": n} stored passes in the last 60 s (/diagnostics/antennas)
+};
+
+const connUi = {
+  state: 'connecting', // 'connecting' | 'live' | 'reconnecting'
+  attempt: 0, // consecutive failed stream attempts (api.js)
+  retryAt: null, // Date.now() of the next scheduled attempt
+};
+
+// Stream attempts failed in a row before the connection counts as down (red).
+const CONNECTION_DOWN_AFTER = 3;
+
+function setConnectionState(sseState, detail = {}) {
+  connUi.state = sseState;
+  connUi.attempt = detail.attempt || 0;
+  connUi.retryAt = sseState === 'reconnecting' ? Date.now() + (detail.delayS || 0) * 1000 : null;
+  renderStatusBar();
+}
+
+function translateReaderError(error) {
+  const text = String(error || '');
+  if (/no reader found/i.test(text)) return RT.S.readerErrorNoReader;
+  if (/multiple readers/i.test(text)) return RT.S.readerErrorMultiple;
+  if (/time(d)? ?out/i.test(text)) return RT.S.readerErrorTimeout;
+  if (/refused/i.test(text)) return RT.S.readerErrorRefused;
+  if (/unreachable|no route/i.test(text)) return RT.S.readerErrorUnreachable;
+  if (/event\.connection|session|bind/i.test(text)) return RT.S.readerErrorSession;
+  if (/no reader ip/i.test(text)) return RT.S.readerErrorNoIp;
+  if (/closed/i.test(text)) return RT.S.readerErrorClosed;
+  if (/no reply/i.test(text)) return RT.S.readerErrorNoReply;
+  if (/configuration failed/i.test(text)) return RT.S.readerErrorConfig;
+  if (/socket error|send failed|reset by peer|broken pipe/i.test(text)) return RT.S.readerErrorConnection;
+  // Unrecognised English text stays out of the UI; it is in reader.log.
+  return RT.S.readerErrorOther;
+}
+
+// Seconds until the reader-service's next connect attempt, aged by the time
+// since the status arrived; null when no retry is pending.
+function readerRetryRemainingS(rs) {
+  if (typeof rs.next_retry_s !== 'number' || rs.next_retry_s <= 0) return null;
+  const remaining = rs.next_retry_s - (Date.now() - readerUi.receivedAt) / 1000;
+  return remaining >= 1 ? Math.ceil(remaining) : null;
+}
+
+// {level: 'ok'|'warn'|'error'|'neutral', text, hint} for the reader state.
+function describeReader() {
+  const S = RT.S;
+  if (readerUi.available === false) {
+    return { level: 'neutral', text: S.readerStateUnavailable, hint: S.readerHintUnavailable };
+  }
+  const rs = readerUi.status;
+  if (!rs) return { level: 'neutral', text: S.pillNoData, hint: S.readerHintPending };
+  if (rs.state !== 'active' && /multiple readers/i.test(rs.error || '')) {
+    return { level: 'warn', text: S.readerStateMultiple, hint: S.readerHintMultiple };
+  }
+  // Desktop build: the reader-service child is supervised by the shell.
+  const sup = rs.supervisor && typeof rs.supervisor === 'object' ? rs.supervisor : null;
+  // "Reader neu verbinden" respawns the child: the old one's last heartbeat is
+  // 'stopped' while the replacement starts. Not an error; the backend turns it
+  // into 'unknown' (red) after ~6 s if the new child never reports.
+  if (rs.state === 'stopped' && sup && (sup.restart_pending === true || sup.running === true)) {
+    return { level: 'warn', text: S.readerStateRestarting, hint: S.readerHintRestarting };
+  }
+  // Right after launch: the child runs but has not sent its first heartbeat.
+  if (rs.state === 'unknown' && !rs.updated_at && sup && sup.running === true
+      && Date.now() - READER_UI_STARTED_AT < READER_BOOT_GRACE_MS) {
+    return { level: 'warn', text: S.readerStateStarting, hint: S.readerHintStarting };
+  }
+  const retryS = readerRetryRemainingS(rs);
+  switch (rs.state) {
+    case 'active':
+      return {
+        level: 'ok',
+        text: rs.ip ? RT.fmt('readerStateActiveWithIp', { ip: rs.ip }) : S.readerStateActive,
+        hint: '',
+      };
+    case 'configuring':
+      return { level: 'warn', text: S.readerStateConfiguring, hint: S.readerHintConfiguring };
+    case 'connecting':
+      return {
+        level: 'warn',
+        text: retryS ? RT.fmt('readerStateConnectingRetry', { s: retryS }) : S.readerStateConnecting,
+        hint: (rs.consecutive_failures || 0) > 0 ? S.readerHintConnecting : '',
+      };
+    case 'searching':
+      return { level: 'warn', text: S.readerStateSearching, hint: S.readerHintSearching };
+    case 'lost':
+      return { level: 'warn', text: S.readerStateLost, hint: S.readerHintLost };
+    case 'stopped':
+      return { level: 'error', text: S.readerStateStopped, hint: S.readerHintStopped };
+    default: // 'unknown': no heartbeat from the reader-service
+      return { level: 'error', text: S.readerStateUnknown, hint: S.readerHintUnknown };
+  }
+}
+
+function readerDetailLines(rs) {
+  const S = RT.S;
+  const lines = [];
+  if (!rs) return lines;
+  if (rs.ip) {
+    lines.push(RT.fmt('readerTipIp', { ip: rs.ip }));
+    const sourceKey = { cli: 'readerSourceCli', config: 'readerSourceConfig', discovery: 'readerSourceDiscovery' }[rs.target_source];
+    if (sourceKey) lines.push(RT.fmt('readerTipSource', { source: S[sourceKey] }));
+  }
+  if (rs.serial) lines.push(RT.fmt('readerTipSerial', { serial: rs.serial }));
+  if (Array.isArray(rs.antennas) && rs.antennas.length) {
+    lines.push(RT.fmt('readerTipAntennas', { ports: rs.antennas.join(', ') }));
+  }
+  if (rs.state === 'active') {
+    const lastAt = rs.last_event_at ? Date.parse(rs.last_event_at) : NaN;
+    lines.push(Number.isFinite(lastAt)
+      ? RT.fmt('readerTipLastRead', { age: formatDuration(Date.now() - lastAt) })
+      : S.readerTipNoReadYet);
+    if (rs.connected_since) {
+      lines.push(RT.fmt('readerTipConnectedSince', { time: formatTimestampForDisplay(rs.connected_since) }));
+    }
+  } else {
+    if (rs.consecutive_failures > 0) lines.push(RT.fmt('readerTipFailures', { n: rs.consecutive_failures }));
+    if (rs.error) lines.push(RT.fmt('readerTipError', { error: translateReaderError(rs.error) }));
+  }
+  if (rs.supervisor && rs.supervisor.restart_count > 0) {
+    lines.push(RT.fmt('readerTipRestarts', { n: rs.supervisor.restart_count }));
+  }
+  return lines;
+}
+
+function recordAntennaSample(rs) {
+  if (!rs.antenna_reads || typeof rs.antenna_reads !== 'object') return;
+  const now = Date.now();
+  antennaUi.samples.push({ t: now, reads: { ...rs.antenna_reads } });
+  // Keep exactly one sample at or before the window start as the baseline.
+  while (antennaUi.samples.length > 2 && antennaUi.samples[1].t <= now - ANTENNA_WINDOW_MS) {
+    antennaUi.samples.shift();
+  }
+}
+
+// Raw reads per port in (roughly) the last 60 s, from the since-connection
+// counters in reader status frames. Frames arrive every ≤ 5 s, so this is an
+// estimate; the counters reset on every new reader connection.
+function antennaReadsInWindow() {
+  const samples = antennaUi.samples;
+  if (!samples.length) return {};
+  const latest = samples[samples.length - 1].reads;
+  const cutoff = Date.now() - ANTENNA_WINDOW_MS;
+  let base = samples[0].reads;
+  for (const sample of samples) {
+    if (sample.t > cutoff) break;
+    base = sample.reads;
+  }
+  const rs = readerUi.status;
+  const connectedAt = rs && rs.connected_since ? Date.parse(rs.connected_since) : NaN;
+  if (samples[0].t > cutoff && Number.isFinite(connectedAt) && connectedAt >= cutoff) {
+    base = {}; // whole connection lies inside the window: counters are the answer
+  }
+  const out = {};
+  Object.keys(latest).forEach((port) => {
+    const now = Number(latest[port]) || 0;
+    const before = Number(base[port]) || 0;
+    out[port] = now >= before ? now - before : now; // counter reset → count from 0
+  });
+  return out;
+}
+
+const byPortNumber = (a, b) => Number(a) - Number(b);
+
+// A running race where the other antennas read at least this many tags in the
+// last 60 s while one powered antenna read none: that antenna is suspicious.
+const ANTENNA_SILENT_MIN_OTHER_READS = 5;
+
+// Powered ports (`antennas`, which always include the fallback ports) that
+// the reader did not report as connected (`antennas_detected`) and that have
+// not read a single tag on this connection. Empty when the reader-service
+// does not publish detection (null / missing field): nothing to judge then.
+// A port that reads tags is connected, whatever detection said.
+function antennasNotDetected(rs, ports) {
+  if (!rs || !Array.isArray(rs.antennas_detected)) return [];
+  const detected = rs.antennas_detected.map(String);
+  const readsSinceConnect = rs.antenna_reads || {};
+  return ports.filter((port) => !detected.includes(port) && !(Number(readsSinceConnect[port]) > 0));
+}
+
+// Ports without reads in the window while the race runs and other ports read.
+function antennasSilent(ports, reads, exclude) {
+  if (!(state.raceStarted && !state.raceEnded) || ports.length < 2) return [];
+  return ports.filter((port) => {
+    if (exclude.includes(port) || (Number(reads[port]) || 0) > 0) return false;
+    const others = ports.reduce((sum, p) => (p === port ? sum : sum + (Number(reads[p]) || 0)), 0);
+    return others >= ANTENNA_SILENT_MIN_OTHER_READS;
+  });
+}
+
+function describeAntennas() {
+  const S = RT.S;
+  const passes = antennaUi.passes || {};
+  const rs = readerUi.status;
+  if (readerUi.available !== false && rs) {
+    if (rs.state !== 'active') return { level: 'neutral', text: S.pillNoData, tip: S.antennasTipNoReader };
+    const ports = Array.isArray(rs.antennas) ? rs.antennas.map(String) : [];
+    if (!ports.length) {
+      return { level: 'warn', text: S.antennasNoneDetected, tip: S.antennasTipNoneDetected };
+    }
+    const reads = antennaReadsInWindow();
+    const missing = antennasNotDetected(rs, ports);
+    const silent = antennasSilent(ports, reads, missing);
+    const ok = ports.filter((port) => !missing.includes(port) && !silent.includes(port));
+    const lines = [
+      ...missing.map((port) => RT.fmt('antennasTipNotDetected', { port })),
+      ...silent.map((port) => RT.fmt('antennasTipSilent', { port })),
+      ...ports.map((port) => RT.fmt('antennasTipPort', {
+        port, reads: reads[port] || 0, passes: passes[port] || 0,
+      })),
+      S.antennasTipZeroHint,
+    ];
+    const tip = lines.join('\n');
+    if (!missing.length && !silent.length) {
+      return { level: 'ok', text: RT.fmt('antennasOk', { ports: ports.join(', ') }), tip };
+    }
+    let text;
+    if (missing.length) {
+      text = ok.length || silent.length
+        ? RT.fmt('antennasPartialNotDetected', { ok: [...ok, ...silent].sort(byPortNumber).join(', '), missing: missing.join(', ') })
+        : RT.fmt('antennasNotDetected', { ports: missing.join(', ') });
+    } else {
+      text = ok.length
+        ? RT.fmt('antennasPartialSilent', { ok: ok.join(', '), silent: silent.join(', ') })
+        : RT.fmt('antennasSilent', { ports: silent.join(', ') });
+    }
+    return { level: 'warn', text, tip };
+  }
+  // No reader status (older backend, or not loaded yet): fall back to the
+  // ports that produced passes recently.
+  const seen = Object.keys(passes).sort(byPortNumber);
+  if (!seen.length) return { level: 'neutral', text: S.pillNoData, tip: S.antennasTipNoData };
+  return {
+    level: 'neutral',
+    text: seen.join(', '),
+    tip: seen.map((port) => RT.fmt('antennasTipPortPasses', { port, passes: passes[port] })).join('\n'),
+  };
+}
+
+function describeConnection() {
+  const S = RT.S;
+  const down = connUi.attempt >= CONNECTION_DOWN_AFTER;
+  if (connUi.state === 'live') return { level: 'ok', text: S.connLive, hint: S.connTipLive };
+  if (connUi.state === 'reconnecting') {
+    const retryS = connUi.retryAt ? Math.ceil((connUi.retryAt - Date.now()) / 1000) : 0;
+    let text = S.connReconnectingNow;
+    if (retryS > 0) text = RT.fmt(down ? 'connDown' : 'connReconnectingIn', { s: retryS });
+    return { level: down ? 'error' : 'warn', text, hint: down ? S.connTipDown : S.connTipReconnecting };
+  }
+  if (connUi.attempt > 0) {
+    return { level: down ? 'error' : 'warn', text: S.connReconnectingNow, hint: down ? S.connTipDown : S.connTipReconnecting };
+  }
+  return { level: 'warn', text: S.connConnecting, hint: S.connTipConnecting };
+}
+
+function setPill(id, level, text, tip, stale) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const className = `status-pill status-pill--${level}${stale ? ' status-pill--stale' : ''}`;
+  if (el.className !== className) el.className = className;
+  const textEl = el.querySelector('.status-pill-text');
+  if (textEl && textEl.textContent !== text) textEl.textContent = text;
+  // data-tip (not title): tooltips.js follows live data-tip changes.
+  if (el.getAttribute('data-tip') !== tip) el.setAttribute('data-tip', tip);
+}
+
+function renderStatusBar() {
+  const S = RT.S;
+  // Without a live stream the reader/antenna pills keep the last known text
+  // but lose their colour: a green "verbunden" must not outlive the stream.
+  const stale = connUi.state !== 'live' && !!readerUi.status;
+
+  const reader = describeReader();
+  const readerLines = [reader.hint, ...readerDetailLines(readerUi.status)];
+  if (stale) readerLines.push(S.readerHintStale);
+  readerLines.push(S.readerTipClick);
+  setPill('pillReader', stale ? 'neutral' : reader.level, reader.text,
+    readerLines.filter(Boolean).join('\n'), stale);
+
+  const antennas = describeAntennas();
+  setPill('pillAntennas', stale ? 'neutral' : antennas.level, antennas.text,
+    `${antennas.tip}\n${S.antennasTipClick}`, stale);
+
+  const conn = describeConnection();
+  const connLines = [conn.hint];
+  if (!appInfo.desktop) connLines.push(RT.fmt('connTipBackend', { url: state.backend }));
+  if (appInfo.version) connLines.push(RT.fmt('connTipVersion', { version: appInfo.version }));
+  if (appInfo.dataDir) connLines.push(RT.fmt('connTipDataDir', { path: appInfo.dataDir }));
+  connLines.push(S.connTipClick);
+  setPill('pillConnection', conn.level, conn.text, connLines.join('\n'), false);
+
+  if (isShown('#settingsModal')) renderReaderStatusBox('#settingsReaderStatus');
+  if (isShown('#assistantModal')) renderAssistant();
+}
+
+// Toasts for the recovery events of the failure matrix. Nothing is announced
+// for the very first status after page load.
+function announceReaderTransition(prev, next) {
+  if (!prev) return;
+  const S = RT.S;
+  if (prev.state === 'active' && next.state !== 'active') {
+    readerUi.lostAt = Date.now();
+    if (next.state === 'unknown') showToast(S.toastReaderServiceSilent, 'error');
+    else if (next.state !== 'stopped') showToast(S.toastReaderLost, 'warn');
+  } else if (next.state === 'unknown' && prev.state !== 'unknown') {
+    showToast(S.toastReaderServiceSilent, 'error');
+  }
+  if (next.state === 'active' && prev.state !== 'active' && readerUi.lostAt) {
+    showToast(RT.fmt('toastReaderBack', { duration: formatDuration(Date.now() - readerUi.lostAt) }));
+    readerUi.lostAt = null;
+  }
+  if (next.ip && prev.ip && next.ip !== prev.ip && next.target_source === 'discovery') {
+    appInfo.readerIp = next.ip; // the backend persisted it before replying
+    showToast(RT.fmt('toastReaderNewIp', { ip: next.ip }));
+  }
+}
+
+// A different backend means a different reader-service: forget the old state.
+function resetReaderUi() {
+  readerUi.available = null;
+  readerUi.status = null;
+  readerUi.lostAt = null;
+  antennaUi.samples = [];
+  antennaUi.passes = null;
+}
+
+function handleReaderStatus(rs) {
+  if (!rs || typeof rs !== 'object' || typeof rs.state !== 'string') return;
+  readerUi.available = true;
+  announceReaderTransition(readerUi.status, rs);
+  readerUi.status = rs;
+  readerUi.receivedAt = Date.now();
+  recordAntennaSample(rs);
+  renderStatusBar();
+}
+
+async function loadReaderStatus() {
+  try {
+    const res = await fetch(`${state.backend}/reader/status`, { headers: getApiHeaders() });
+    if (res.status === 404 || res.status === 405) {
+      readerUi.available = false;
+      renderStatusBar();
+      return;
+    }
+    if (!res.ok) return;
+    handleReaderStatus(await res.json());
+  } catch (_e) {
+    // backend unreachable: the Verbindung pill already says so
+  }
+}
+
+// Reader state as a two-line box (Settings and assistant step 1).
+function renderReaderStatusBox(selector) {
+  const el = $(selector);
+  if (!el) return;
+  const reader = describeReader();
+  const rs = readerUi.status;
+  let headline = `${RT.S.pillReaderLabel}: ${reader.text}`;
+  if (rs && rs.state === 'active' && rs.serial) {
+    headline += ` · ${RT.fmt('readerTipSerial', { serial: rs.serial })}`;
+  }
+  const text = reader.hint ? `${headline}\n${reader.hint}` : headline;
+  if (el.textContent !== text) el.textContent = text;
+  const className = `settings-reader-status settings-reader-status--${reader.level}`;
+  if (el.className !== className) el.className = className;
+}
+
+// ---------------------------------------------------------------------------
+// C4 — Reader discovery, one-click IP apply, reconnect
+// ---------------------------------------------------------------------------
+
+const CANDIDATE_SOURCE_KEYS = {
+  arp: 'candidateSourceArp',
+  sweep: 'candidateSourceSweep',
+  linklocal: 'candidateSourceLinklocal',
+  connected: 'candidateSourceConnected',
+};
+
+// Candidates currently rendered per list selector, for re-rendering after
+// an IP was applied (the applied row turns into "eingestellt").
+const candidateLists = {};
+
+function renderReaderCandidates(selector, candidates) {
+  const list = $(selector);
+  if (!list) return;
+  const items = Array.isArray(candidates)
+    ? candidates.filter((c) => c && typeof c.ip === 'string' && c.ip)
+    : [];
+  candidateLists[selector] = items;
+  list.textContent = '';
+  list.hidden = items.length === 0;
+  items.forEach((c) => {
+    const li = document.createElement('li');
+    li.className = 'reader-candidate';
+    const info = document.createElement('div');
+    info.className = 'reader-candidate-info';
+    const ip = document.createElement('span');
+    ip.className = 'reader-candidate-ip';
+    ip.textContent = c.ip;
+    const meta = document.createElement('span');
+    meta.className = 'reader-candidate-meta';
+    const serial = c.serial ? RT.fmt('candidateSerial', { serial: c.serial }) : RT.S.candidateSerialUnknown;
+    const sourceKey = CANDIDATE_SOURCE_KEYS[c.source];
+    meta.textContent = sourceKey ? `${serial} · ${RT.S[sourceKey]}` : serial;
+    info.append(ip, meta);
+    li.appendChild(info);
+    if (appInfo.readerIp && c.ip === appInfo.readerIp) {
+      const badge = document.createElement('span');
+      badge.className = 'reader-candidate-current';
+      badge.textContent = RT.S.candidateCurrent;
+      li.appendChild(badge);
+    } else {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn-primary reader-candidate-apply';
+      btn.dataset.ip = c.ip;
+      btn.dataset.tip = RT.S.candidateApplyTip;
+      btn.textContent = RT.S.candidateApply;
+      li.appendChild(btn);
+    }
+    list.appendChild(li);
+  });
+}
+
+// Restarting the reader, applying another IP or a new antenna power makes the
+// reader-service drop and rebuild the reader session; passes in that gap are
+// not recorded. While a race runs with a connected reader, ask first.
+// `messageKey` names the RT.S confirm text. True = go ahead.
+function confirmReaderInterruption(messageKey) {
+  const rs = readerUi.status;
+  const raceLive = state.raceStarted && !state.raceEnded;
+  if (!raceLive || !rs || rs.state !== 'active') return true;
+  return window.confirm(RT.S[messageKey]);
+}
+
+// Persist a reader IP. The reader-service sees it in its next heartbeat reply
+// and reconnects by itself (contract §0.1), so nothing else is needed here.
+async function applyReaderIp(ip) {
+  try {
+    const res = await fetch(`${state.backend}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify({ reader_ip: ip }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      showToast(RT.apiError(res.status, body, 'readerIpApplyFailed'), 'error');
+      return false;
+    }
+    rememberAppConfig(await res.json().catch(() => null));
+  } catch (_e) {
+    showToast(`${RT.S.readerIpApplyFailed}: ${RT.S.errNetwork}`, 'error');
+    return false;
+  }
+  appInfo.readerIp = ip;
+  // Keep an open Settings form consistent so "Speichern" does not revert it.
+  _settingsOriginal.reader_ip = ip;
+  const ipInput = $('#settingsReaderIp');
+  if (ipInput) ipInput.value = ip;
+  showToast(RT.fmt('toastReaderIpApplied', { ip }));
+  return true;
+}
+
+async function onCandidateListClick(e) {
+  const btn = e.target.closest('button.reader-candidate-apply');
+  if (!btn || btn.disabled) return;
+  if (btn.dataset.ip !== appInfo.readerIp && !confirmReaderInterruption('confirmReaderIpRace')) return;
+  btn.disabled = true;
+  const applied = await applyReaderIp(btn.dataset.ip);
+  if (!applied) {
+    btn.disabled = false;
+    return;
+  }
+  Object.keys(candidateLists).forEach((selector) => {
+    if (candidateLists[selector].length) renderReaderCandidates(selector, candidateLists[selector]);
+  });
+}
+
+async function runReaderDiscovery(buttonSelector, statusSelector, listSelector) {
+  const btn = $(buttonSelector);
+  if (btn) btn.disabled = true;
+  setInlineStatus(statusSelector, 'info', RT.S.discoverRunning, true);
+  renderReaderCandidates(listSelector, []);
+  try {
+    const res = await fetchWithTimeout(`${state.backend}/reader/discover`, {
+      method: 'POST',
+      headers: getApiHeaders(),
+    }, DISCOVER_CLIENT_TIMEOUT_MS);
+    if (res.status === 404 || res.status === 405 || res.status === 501) {
+      setInlineStatus(statusSelector, 'warn', RT.S.discoverNotSupported);
+      return;
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      setInlineStatus(statusSelector, 'error', RT.apiError(res.status, body, 'discoverFailed'));
+      return;
+    }
+    const data = await res.json();
+    const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+    if (data.error === 'reader_service_unavailable') {
+      setInlineStatus(statusSelector, 'error', RT.S.discoverServiceUnavailable);
+    } else if (!candidates.length) {
+      setInlineStatus(statusSelector, 'warn', data.error === 'timeout' ? RT.S.discoverTimeout : RT.S.discoverNone);
+    } else if (candidates.length === 1 && candidates[0].ip === appInfo.readerIp) {
+      setInlineStatus(statusSelector, 'ok', RT.S.discoverFoundCurrent);
+    } else {
+      setInlineStatus(statusSelector, 'ok', candidates.length === 1
+        ? RT.S.discoverFoundOne
+        : RT.fmt('discoverFoundMany', { n: candidates.length }));
+    }
+    renderReaderCandidates(listSelector, candidates);
+  } catch (e) {
+    setInlineStatus(statusSelector, 'error', e && e.name === 'AbortError'
+      ? RT.S.discoverTimeout
+      : `${RT.S.discoverFailed}: ${RT.S.errNetwork}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function restartReader() {
+  const btn = $('#readerRestartBtn');
+  if (btn && btn.disabled) return;
+  // In the desktop build this puts the reader in standby and respawns the
+  // reader-service: several seconds without reads.
+  if (!confirmReaderInterruption('confirmReaderRestartRace')) return;
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(`${state.backend}/reader/restart`, { method: 'POST', headers: getApiHeaders() });
+    if (res.ok) {
+      showToast(RT.S.toastReaderRestart);
+    } else if (res.status === 404 || res.status === 405 || res.status === 501) {
+      showToast(RT.S.readerRestartNotSupported, 'warn');
+    } else {
+      const body = await res.text().catch(() => '');
+      showToast(RT.apiError(res.status, body, 'readerRestartFailed'), 'error');
+    }
+  } catch (_e) {
+    showToast(`${RT.S.readerRestartFailed}: ${RT.S.errNetwork}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// D6 — Desktop support tooling (pywebview js_api bridge)
+// ---------------------------------------------------------------------------
+
+// Resolve window.pywebview.api once `method` is callable, or null after
+// PYWEBVIEW_WAIT_MS. The bridge is injected asynchronously after page load and
+// announces itself with 'pywebviewready'; the event may already have fired,
+// so poll as well.
+function getDesktopApi(method) {
+  const lookup = () => {
+    const api = window.pywebview && window.pywebview.api;
+    return api && typeof api[method] === 'function' ? api : null;
+  };
+  const ready = lookup();
+  if (ready) return Promise.resolve(ready);
+  return new Promise((resolve) => {
+    const deadline = Date.now() + PYWEBVIEW_WAIT_MS;
+    let poll = null;
+    const check = () => {
+      const api = lookup();
+      if (!api && Date.now() < deadline) return;
+      window.removeEventListener('pywebviewready', check);
+      clearInterval(poll);
+      resolve(api);
+    };
+    window.addEventListener('pywebviewready', check);
+    poll = setInterval(check, 200);
+  });
+}
+
+function renderSettingsMeta() {
+  const versionEl = $('#settingsVersion');
+  if (versionEl) {
+    versionEl.textContent = appInfo.version
+      ? RT.fmt('settingsVersion', { version: appInfo.version })
+      : RT.S.settingsVersionUnknown;
+  }
+  const dirEl = $('#settingsDataDir');
+  if (dirEl) {
+    dirEl.textContent = appInfo.dataDir ? RT.fmt('settingsDataDir', { path: appInfo.dataDir }) : '';
+    dirEl.hidden = !appInfo.dataDir;
+  }
+}
+
+async function loadDesktopAppInfo() {
+  const api = await getDesktopApi('app_info');
+  if (!api) return;
+  try {
+    const info = await api.app_info();
+    if (!info || typeof info !== 'object') return;
+    if (typeof info.data_dir === 'string' && info.data_dir) appInfo.dataDir = info.data_dir;
+    if (!appInfo.version && typeof info.version === 'string' && info.version) appInfo.version = info.version;
+    renderSettingsMeta();
+    renderStatusBar();
+  } catch (e) {
+    console.warn('app_info failed:', e);
+  }
+}
+
+async function openDataFolder() {
+  const api = await getDesktopApi('open_data_folder');
+  if (!api) {
+    showToast(RT.S.desktopApiUnavailable, 'warn');
+    return;
+  }
+  try {
+    if (!(await api.open_data_folder())) showToast(RT.S.toastDataFolderFailed, 'error');
+  } catch (e) {
+    console.warn('open_data_folder failed:', e);
+    showToast(RT.S.toastDataFolderFailed, 'error');
+  }
+}
+
+async function createSupportBundle() {
+  const btn = $('#supportBundleBtn');
+  if (btn) btn.disabled = true;
+  setInlineStatus('#supportStatus', 'info', RT.S.supportBusy, true);
+  try {
+    const api = await getDesktopApi('create_support_bundle');
+    if (!api) {
+      setInlineStatus('#supportStatus', 'warn', RT.S.desktopApiUnavailable);
+      return;
+    }
+    const result = await api.create_support_bundle();
+    if (result && result.ok) {
+      setInlineStatus('#supportStatus', 'ok', RT.fmt('supportSaved', { path: result.path || '' }));
+      showToast(RT.S.toastSupportBundleSaved);
+    } else if (result && result.error) {
+      console.warn('create_support_bundle failed:', result.error);
+      setInlineStatus('#supportStatus', 'error', RT.S.supportFailed);
+    } else {
+      setInlineStatus('#supportStatus', 'neutral', RT.S.supportCancelled); // save dialog cancelled
+    }
+  } catch (e) {
+    console.warn('create_support_bundle failed:', e);
+    setInlineStatus('#supportStatus', 'error', RT.S.supportFailed);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// D5 — First-run assistant: find reader → antenna test → first race
+// ---------------------------------------------------------------------------
+
+const ASSISTANT_DONE_KEY = 'racetag.assistantDone';
+const ASSISTANT_STEPS = 3;
+const ASSISTANT_POLL_MS = 2000; // GET /reader/status while the antenna test runs
+const START_HINT_TOAST_MS = 9000;
+const START_BUTTON_ATTENTION_MS = 10000;
+// storage._ensure_default_race() creates this race on every fresh database.
+const BOOTSTRAP_RACE_NAME = 'Default race';
+
+const assistantUi = {
+  step: 1,
+  baseline: {}, // antenna_reads when the antenna test (re)started
+  baselineConnection: null, // connected_since of that baseline
+  gridPorts: null, // port list the antenna grid was built for
+  pollTimer: null,
+  creating: false,
+  context: null, // active race as seen when step 3 opened (loadAssistantRaceContext)
+  contextPromise: null,
+  contextSeq: 0,
+  doneSaved: false, // assistant_done: true reached the backend in this session
+};
+
+// "No races yet" in the sense of the contract. The backend always bootstraps
+// one untouched "Default race", so that race alone still counts as none.
+function hasNoRealRaces(items) {
+  if (!items.length) return true;
+  const only = items[0];
+  return items.length === 1 && only.name === BOOTSTRAP_RACE_NAME && !only.started && !only.ended;
+}
+
+// The done flag lives in the backend config (assistant_done), because the
+// desktop window forgets localStorage on every launch (private browser
+// profile, random port). localStorage is only the fallback for a backend
+// that does not know the field yet.
+function isAssistantDone() {
+  if (typeof appInfo.assistantDone === 'boolean') return appInfo.assistantDone;
+  return rtStorageGet(ASSISTANT_DONE_KEY) === '1';
+}
+
+async function markAssistantDone() {
+  appInfo.assistantDone = true;
+  rtStorageSet(ASSISTANT_DONE_KEY, '1');
+  if (assistantUi.doneSaved) return;
+  try {
+    const res = await fetch(`${state.backend}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify({ assistant_done: true }),
+    });
+    if (!res.ok) {
+      console.warn('assistant_done not saved:', res.status);
+      return;
+    }
+    assistantUi.doneSaved = true;
+    rememberAppConfig(await res.json().catch(() => null));
+  } catch (e) {
+    console.warn('assistant_done not saved:', e);
+  }
+}
+
+// Riders registered in the active race; null when unknown.
+async function fetchActiveRiderCount() {
+  try {
+    const res = await fetch(`${state.backend}/riders`, { headers: getApiHeaders() });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (typeof data.count === 'number') return data.count;
+    return Array.isArray(data.items) ? data.items.length : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+async function maybeShowAssistant() {
+  if (!appInfo.desktop || isAssistantDone()) return;
+  try {
+    const res = await fetch(`${state.backend}/races`, { headers: getApiHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!hasNoRealRaces(data.items || [])) return;
+    // An untouched bootstrap race can already hold the prepared start list
+    // (CSV import or pairing after skipping the assistant). Setup is done
+    // then — step 3 would move the active race away from those riders.
+    const riders = await fetchActiveRiderCount();
+    if (riders === null) return;
+    if (riders > 0) {
+      markAssistantDone();
+      return;
+    }
+  } catch (_e) {
+    return;
+  }
+  if (isAssistantDone()) return;
+  if (document.querySelector('.modal-backdrop:not([hidden])')) return; // never cover a dialog
+  openAssistant();
+}
+
+function openAssistant() {
+  const modal = $('#assistantModal');
+  if (!modal) return;
+  closeSettingsModal();
+  hideInlineStatus('#assistantDiscoverStatus');
+  renderReaderCandidates('#assistantCandidates', []);
+  const errBox = $('#assistantRaceError');
+  if (errBox) errBox.hidden = true;
+  assistantUi.context = null;
+  assistantUi.contextPromise = null;
+  const keepRadio = $('#assistantReuseKeep');
+  if (keepRadio) keepRadio.checked = true;
+  renderAssistantReuse();
+  modal.hidden = false;
+  assistantGoTo(1);
+}
+
+// Closing by any route (skip, Escape, finish) counts as done; the assistant
+// stays available from Settings.
+function closeAssistant() {
+  const modal = $('#assistantModal');
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  stopAssistantPoll();
+  markAssistantDone();
+}
+
+function stopAssistantPoll() {
+  clearInterval(assistantUi.pollTimer);
+  assistantUi.pollTimer = null;
+}
+
+function assistantGoTo(step) {
+  assistantUi.step = Math.min(Math.max(step, 1), ASSISTANT_STEPS);
+  const current = assistantUi.step;
+  for (let i = 1; i <= ASSISTANT_STEPS; i += 1) {
+    const section = $(`#assistantStep${i}`);
+    if (section) section.hidden = i !== current;
+  }
+  document.querySelectorAll('#assistantProgress li').forEach((li) => {
+    const n = Number(li.dataset.step);
+    li.classList.toggle('is-current', n === current);
+    li.classList.toggle('is-done', n < current);
+  });
+  const label = $('#assistantStepLabel');
+  if (label) label.textContent = RT.fmt('assistantStepOf', { step: current, total: ASSISTANT_STEPS });
+  const backBtn = $('#assistantBackBtn');
+  if (backBtn) backBtn.hidden = current === 1;
+  const nextBtn = $('#assistantNextBtn');
+  updateAssistantFinishLabel();
+
+  stopAssistantPoll();
+  if (current === 2) {
+    startAntennaTest();
+    // reader_status SSE frames can be up to 5 s apart; the heartbeat behind
+    // GET /reader/status is ≤ 2 s old, so tiles turn green promptly.
+    assistantUi.pollTimer = setInterval(loadReaderStatus, ASSISTANT_POLL_MS);
+  }
+  renderAssistant();
+  if (current === ASSISTANT_STEPS) {
+    loadAssistantRaceContext();
+    const nameInput = $('#assistantRaceName');
+    if (nameInput) nameInput.focus();
+  } else if (nextBtn) {
+    nextBtn.focus();
+  }
+}
+
+function resetAntennaTest() {
+  const rs = readerUi.status;
+  assistantUi.baseline = rs && rs.antenna_reads ? { ...rs.antenna_reads } : {};
+  assistantUi.baselineConnection = rs ? rs.connected_since || null : null;
+  assistantUi.gridPorts = null;
+}
+
+// The cached status can be several seconds old; reads that happened before
+// the test started must not count, so take the baseline from a fresh one.
+async function startAntennaTest() {
+  resetAntennaTest();
+  renderAssistant();
+  await loadReaderStatus();
+  resetAntennaTest();
+  renderAssistant();
+}
+
+function renderAssistant() {
+  renderReaderStatusBox('#assistantReaderStatus');
+  if (assistantUi.step === 2) renderAntennaTest();
+}
+
+function renderAntennaTest() {
+  const grid = $('#assistantAntennaGrid');
+  if (!grid) return;
+  const rs = readerUi.status;
+  const active = !!rs && rs.state === 'active';
+  const reads = active && rs.antenna_reads ? rs.antenna_reads : {};
+  // Counters restart with every reader connection; a baseline from an older
+  // connection would hide real reads.
+  const baseline = rs && (rs.connected_since || null) === assistantUi.baselineConnection
+    ? assistantUi.baseline : {};
+  const ports = active && Array.isArray(rs.antennas) ? rs.antennas.map(String) : [];
+  Object.keys(reads).forEach((port) => { if (!ports.includes(port)) ports.push(port); });
+  ports.sort(byPortNumber);
+
+  const key = ports.join(',');
+  if (assistantUi.gridPorts !== key) {
+    grid.textContent = '';
+    ports.forEach((port) => {
+      const tile = document.createElement('div');
+      tile.className = 'antenna-tile';
+      tile.dataset.port = port;
+      const label = document.createElement('span');
+      label.className = 'antenna-tile-label';
+      label.textContent = RT.fmt('assistantAntennaLabel', { port });
+      const value = document.createElement('span');
+      value.className = 'antenna-tile-value';
+      tile.append(label, value);
+      grid.appendChild(tile);
+    });
+    assistantUi.gridPorts = key;
+  }
+
+  let okCount = 0;
+  const notDetected = active ? antennasNotDetected(rs, ports) : [];
+  Array.from(grid.children).forEach((tile) => {
+    const port = tile.dataset.port;
+    const count = Math.max(0, (Number(reads[port]) || 0) - (Number(baseline[port]) || 0));
+    if (count > 0) okCount += 1;
+    const className = `antenna-tile${count > 0 ? ' antenna-tile--ok' : ''}`;
+    if (tile.className !== className) tile.className = className;
+    const valueEl = tile.querySelector('.antenna-tile-value');
+    let text = RT.S.assistantAntennaWaiting;
+    if (count > 0) text = RT.fmt('assistantAntennaReads', { n: count });
+    else if (notDetected.includes(port)) text = RT.S.assistantAntennaNotDetected;
+    if (valueEl && valueEl.textContent !== text) valueEl.textContent = text;
+  });
+
+  if (!active) {
+    setInlineStatus('#assistantAntennaHint', 'warn', RT.S.assistantAntennaNoReader);
+  } else if (!ports.length) {
+    setInlineStatus('#assistantAntennaHint', 'warn', RT.S.assistantAntennaNoPorts);
+  } else if (okCount === ports.length) {
+    setInlineStatus('#assistantAntennaHint', 'ok', RT.S.assistantAntennaAllOk);
+  } else {
+    setInlineStatus('#assistantAntennaHint', 'info', RT.fmt('assistantAntennaProgress', { ok: okCount, total: ports.length }));
+  }
+}
+
+// Step 3 looks at the active race first: if it is not started yet and already
+// has riders (a start list was imported before the assistant ran), creating
+// and activating a new race would leave those riders behind in a race that is
+// no longer active. The operator then chooses; keeping the race is the default.
+function loadAssistantRaceContext() {
+  const seq = ++assistantUi.contextSeq;
+  const promise = (async () => {
+    try {
+      const res = await fetch(`${state.backend}/races`, { headers: getApiHeaders() });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const active = (data.items || []).find((r) => r && r.is_active);
+      if (!active || !active.id) return null;
+      const untouched = !active.started && !active.ended;
+      const riders = untouched ? await fetchActiveRiderCount() : null;
+      return {
+        id: active.id,
+        name: active.name,
+        started: !!active.started,
+        ended: !!active.ended,
+        totalLaps: active.total_laps,
+        snapshotIntervalS: active.snapshot_interval_s ?? null,
+        riders: riders || 0,
+      };
+    } catch (_e) {
+      return null;
+    }
+  })();
+  assistantUi.contextPromise = promise;
+  promise.then((ctx) => {
+    if (seq !== assistantUi.contextSeq) return;
+    const wasKeepable = assistantCanKeepRace(assistantUi.context);
+    assistantUi.context = ctx;
+    if (!wasKeepable && assistantCanKeepRace(ctx)) prefillAssistantKeep(ctx);
+    renderAssistantReuse();
+  });
+  return promise;
+}
+
+function assistantCanKeepRace(ctx) {
+  return !!ctx && !ctx.started && !ctx.ended && ctx.riders > 0;
+}
+
+function assistantKeepsRace() {
+  const keepRadio = $('#assistantReuseKeep');
+  return assistantCanKeepRace(assistantUi.context) && !!keepRadio && keepRadio.checked;
+}
+
+function prefillAssistantKeep(ctx) {
+  const keepRadio = $('#assistantReuseKeep');
+  if (keepRadio) keepRadio.checked = true;
+  const nameInput = $('#assistantRaceName');
+  if (nameInput && !nameInput.value.trim() && ctx.name && ctx.name !== BOOTSTRAP_RACE_NAME) {
+    nameInput.value = ctx.name;
+  }
+  const lapsInput = $('#assistantRaceLaps');
+  if (lapsInput && lapsInput.value === lapsInput.defaultValue
+      && Number.isInteger(ctx.totalLaps) && ctx.totalLaps >= 1 && ctx.totalLaps <= 999) {
+    lapsInput.value = String(ctx.totalLaps);
+  }
+}
+
+function renderAssistantReuse() {
+  const ctx = assistantUi.context;
+  const show = assistantCanKeepRace(ctx);
+  const box = $('#assistantReuseBox');
+  if (box) box.hidden = !show;
+  const text = $('#assistantReuseText');
+  if (text && show) {
+    text.textContent = RT.fmt('assistantReuseText', { name: rtRaceDisplayName(ctx.name), n: ctx.riders });
+  }
+  updateAssistantFinishLabel();
+}
+
+function updateAssistantFinishLabel() {
+  const nextBtn = $('#assistantNextBtn');
+  if (!nextBtn || assistantUi.creating) return;
+  let label = RT.S.assistantNext;
+  if (assistantUi.step === ASSISTANT_STEPS) {
+    label = assistantKeepsRace() ? RT.S.assistantFinishKeep : RT.S.assistantFinish;
+  }
+  nextBtn.textContent = label;
+}
+
+// Races only count laps after "Rennen starten": say so and point at the button.
+function showStartRaceHint(toastKey, name) {
+  showToast(RT.fmt(toastKey, { name: rtRaceDisplayName(name) }), 'info', START_HINT_TOAST_MS);
+  const startBtn = $('#startRaceBtn');
+  if (!startBtn || startBtn.disabled) return;
+  startBtn.classList.remove('btn-attention');
+  void startBtn.offsetWidth; // restart the animation
+  startBtn.classList.add('btn-attention');
+  clearTimeout(startBtn._attentionTimer);
+  startBtn._attentionTimer = setTimeout(() => startBtn.classList.remove('btn-attention'), START_BUTTON_ATTENTION_MS);
+}
+
+async function assistantCreateRace() {
+  if (assistantUi.creating) return;
+  const errBox = $('#assistantRaceError');
+  const showError = (message) => {
+    if (!errBox) return;
+    errBox.textContent = message;
+    errBox.hidden = false;
+  };
+  if (errBox) errBox.hidden = true;
+  const name = ($('#assistantRaceName')?.value || '').trim();
+  const laps = Number.parseInt($('#assistantRaceLaps')?.value || '', 10);
+  if (!name) {
+    showError(RT.S.assistantRaceNameRequired);
+    return;
+  }
+  if (!Number.isInteger(laps) || laps < 1 || laps > 999) {
+    showError(RT.S.assistantRaceLapsInvalid);
+    return;
+  }
+
+  const nextBtn = $('#assistantNextBtn');
+  assistantUi.creating = true;
+  if (nextBtn) {
+    nextBtn.disabled = true;
+    nextBtn.textContent = RT.S.assistantCreating;
+  }
+  let failKey = 'assistantRaceCreateFailed';
+  try {
+    // Decide on the loaded race context, never on a half-loaded one.
+    if (!assistantUi.contextPromise) loadAssistantRaceContext();
+    await assistantUi.contextPromise;
+    const ctx = assistantUi.context;
+
+    if (assistantKeepsRace()) {
+      failKey = 'assistantRaceKeepFailed';
+      const patch = { name, total_laps: laps };
+      if (ctx.snapshotIntervalS == null) patch.snapshot_interval_s = 120; // assistant default
+      const res = await fetch(`${state.backend}/races/${encodeURIComponent(ctx.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        showError(RT.apiError(res.status, body, failKey));
+        return;
+      }
+      const updated = await res.json().catch(() => null);
+      closeAssistant();
+      await Promise.all([loadRaces(), loadRaceConfig()]);
+      showStartRaceHint('toastRaceKeptStartHint', (updated && updated.name) || name);
+      return;
+    }
+
+    // Activating a new race while another one runs would stop counting passes
+    // for the running race.
+    if (ctx && ctx.started && !ctx.ended
+        && !confirm(RT.fmt('confirmAssistantReplaceRunning', { name: rtRaceDisplayName(ctx.name) }))) {
+      return;
+    }
+
+    // Same defaults as the create-race modal: fixed laps, criterium finish,
+    // 120 s auto-snapshots.
+    const res = await fetch(`${state.backend}/races`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify({
+        name, total_laps: laps, snapshot_interval_s: 120, finish_mode: 'leader', scheduled_at: null,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      showError(RT.apiError(res.status, body, failKey));
+      return;
+    }
+    const created = await res.json();
+    closeAssistant();
+    await activateRace(created.id);
+    // activateRace reports its own failure; keep that toast visible.
+    if (state.activeRaceId === created.id) showStartRaceHint('toastRaceCreatedStartHint', created.name);
+  } catch (_e) {
+    showError(`${RT.S[failKey]}: ${RT.S.errNetwork}`);
+  } finally {
+    assistantUi.creating = false;
+    if (nextBtn) nextBtn.disabled = false;
+    updateAssistantFinishLabel();
+  }
+}
+
+function assistantNext() {
+  if (assistantUi.step < ASSISTANT_STEPS) assistantGoTo(assistantUi.step + 1);
+  else assistantCreateRace();
+}
+
+// ---------------------------------------------------------------------------
+// D7 — Update notice (silent on every error)
+// ---------------------------------------------------------------------------
+
+// Numeric dotted-version comparison; build/pre-release suffixes ("+sha",
+// "-rc1") are ignored. Unparseable input compares equal (no notice).
+function compareVersions(a, b) {
+  const parse = (v) => String(v).trim().replace(/^v/i, '').split(/[+-]/)[0].split('.')
+    .map((part) => (/^\d+$/.test(part) ? Number(part) : NaN));
+  const pa = parse(a);
+  const pb = parse(b);
+  if (pa.some(Number.isNaN) || pb.some(Number.isNaN)) return 0;
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+async function checkForUpdate() {
+  const current = appInfo.version;
+  if (!current) return;
+  try {
+    const res = await fetchWithTimeout(UPDATE_RELEASES_API, {}, UPDATE_CHECK_TIMEOUT_MS);
+    if (!res.ok) return;
+    const data = await res.json();
+    const latest = String((data && data.tag_name) || '').replace(/^v/i, '');
+    if (!latest || compareVersions(latest, current) <= 0) return;
+    const link = $('#updateNotice');
+    if (!link) return;
+    link.href = typeof data.html_url === 'string' && data.html_url.startsWith('https://github.com/')
+      ? data.html_url : UPDATE_RELEASES_PAGE;
+    link.textContent = RT.fmt('updateAvailable', { version: latest });
+    link.setAttribute('data-tip', RT.fmt('updateTip', { current }));
+    link.hidden = false;
+  } catch (_e) {
+    // offline, rate-limited or blocked: no notice
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Escape closes the top-most open modal
+// ---------------------------------------------------------------------------
+
+const MODAL_CLOSERS = [
+  ['#assistantModal', closeAssistant],
+  ['#settingsModal', closeSettingsModal],
+  ['#lapEditModal', closeLapEditModal],
+  ['#newRaceModal', () => { $('#newRaceModal').hidden = true; }],
+  ['#ridersModal', closeRidersModal],
+  ['#registerModal', closeRegisterModal],
+];
+
+function closeModalOnEscape(e) {
+  if (e.key !== 'Escape' || e.defaultPrevented) return;
+  const open = MODAL_CLOSERS.find(([selector]) => isShown(selector));
+  if (!open) return;
+  e.preventDefault();
+  open[1]();
+}
+
+// ---------------------------------------------------------------------------
 // init
 // ---------------------------------------------------------------------------
 function init() {
@@ -1804,8 +3229,8 @@ function init() {
     if (!el) return;
     const tagId = el.dataset.tagId || el.textContent.trim();
     if (!tagId) return;
-    const ok = (val) => showToast(`Tag ID copied: ${val.slice(0, 12)}…`);
-    const fail = () => showToast('Copy failed');
+    const ok = (val) => showToast(RT.fmt('toastTagCopied', { tag: val.slice(0, 12) }));
+    const fail = () => showToast(RT.S.toastCopyFailed, 'warn');
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(tagId).then(() => ok(tagId), fail);
     } else {
@@ -1824,20 +3249,34 @@ function init() {
     }
   });
 
-  $('#connectBtn').addEventListener('click', async () => {
+  // Browser/Docker mode only (hidden in the desktop build).
+  $('#connectBtn').addEventListener('click', () => {
     saveBackend(input.value);
-    setStatus('Connecting\u2026');
-    try {
-      await loadSnapshot();
-      connectSSE();
-      fetchRecentUnknownTag();
-      loadRaceConfig();
-      loadRaces();
-    } catch (e) {
-      console.error(e);
-      setStatus('Failed to connect');
-    }
+    resetReaderUi();
+    fetchConfigFrom(state.backend).then((cfg) => {
+      rememberAppConfig(cfg);
+      renderSettingsMeta();
+    });
+    connectToBackend();
   });
+
+  // D1: status pills double as shortcuts.
+  const pillReader = $('#pillReader');
+  if (pillReader) pillReader.addEventListener('click', openSettingsModal);
+  const pillAntennas = $('#pillAntennas');
+  if (pillAntennas) {
+    pillAntennas.addEventListener('click', () => {
+      const panel = $('#diagnosticsPanel');
+      if (!panel) return;
+      panel.open = true; // fires 'toggle' → starts the panel's own polling
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  }
+  const pillConnection = $('#pillConnection');
+  if (pillConnection) pillConnection.addEventListener('click', connectToBackend);
+
+  // Escape closes the top-most modal (all of them, not only the new ones).
+  document.addEventListener('keydown', closeModalOnEscape);
 
   // Multi-race: switch active race via selector
   const raceSelect = $('#raceSelect');
@@ -1899,7 +3338,7 @@ function init() {
       const activate = !!$('#newRaceActivate')?.checked;
       const errBox = $('#newRaceError');
       if (!name) {
-        if (errBox) { errBox.textContent = 'Race name is required'; errBox.hidden = false; }
+        if (errBox) { errBox.textContent = RT.S.assistantRaceNameRequired; errBox.hidden = false; }
         return;
       }
 
@@ -1911,7 +3350,7 @@ function init() {
         const mins = parseInt($('#newRaceDurationMin')?.value || '0', 10) || 0;
         const finalLaps = Math.max(0, parseInt($('#newRaceFinalLaps')?.value || '0', 10) || 0);
         if (mins <= 0) {
-          if (errBox) { errBox.textContent = 'Duration must be at least 1 minute'; errBox.hidden = false; }
+          if (errBox) { errBox.textContent = RT.S.raceDurationInvalid; errBox.hidden = false; }
           return;
         }
         body.duration_s = mins * 60;
@@ -1933,21 +3372,22 @@ function init() {
           body: JSON.stringify(body),
         });
         if (!res.ok) {
-          const txt = await res.text();
-          if (errBox) { errBox.textContent = `Create failed: ${res.status} ${txt}`; errBox.hidden = false; }
+          const message = await rtResponseError(res, 'assistantRaceCreateFailed');
+          if (errBox) { errBox.textContent = message; errBox.hidden = false; }
           return;
         }
         const created = await res.json();
         const modal = $('#newRaceModal');
         if (modal) modal.hidden = true;
-        showToast(`Race "${created.name}" created`);
+        showToast(RT.fmt('toastRaceCreated', { name: created.name }));
         if (activate) {
           await activateRace(created.id);
         } else {
           await loadRaces();
         }
       } catch (e) {
-        if (errBox) { errBox.textContent = `Error: ${e.message}`; errBox.hidden = false; }
+        console.warn('Create race failed:', e);
+        if (errBox) { errBox.textContent = RT.apiError(0, null, 'assistantRaceCreateFailed'); errBox.hidden = false; }
       }
     });
   }
@@ -1956,7 +3396,7 @@ function init() {
   const endRaceBtn = $('#endRaceBtn');
   if (endRaceBtn) {
     endRaceBtn.addEventListener('click', async () => {
-      if (!confirm('End the race? Standings will be frozen.')) return;
+      if (!confirm(RT.S.confirmEndRace)) return;
       try {
         const res = await fetch(`${state.backend}/race/end`, {
           method: 'POST',
@@ -1967,12 +3407,13 @@ function init() {
           state.raceEnded = true;
           state.raceEndedAt = data.ended_at || null;
           renderRaceStatus();
-          showToast('Race ended');
+          showToast(RT.S.toastRaceEnded);
         } else {
-          showToast(`End failed: HTTP ${res.status}`);
+          showToast(await rtResponseError(res, 'raceEndFailed'), 'error');
         }
       } catch (e) {
-        showToast(`End error: ${e.message}`);
+        console.warn('End race failed:', e);
+        showToast(RT.apiError(0, null, 'raceEndFailed'), 'error');
       }
     });
   }
@@ -1982,7 +3423,7 @@ function init() {
   const reopenRaceBtn = $('#reopenRaceBtn');
   if (reopenRaceBtn) {
     reopenRaceBtn.addEventListener('click', async () => {
-      if (!confirm('Reopen the race? Passes recorded while it was ended will be counted.')) return;
+      if (!confirm(RT.S.confirmReopenRace)) return;
       try {
         const res = await fetch(`${state.backend}/race/reopen`, {
           method: 'POST',
@@ -1994,12 +3435,13 @@ function init() {
           renderRaceStatus();
           loadRaceConfig();
           loadSnapshot().catch(() => {});
-          showToast('Race reopened');
+          showToast(RT.S.toastRaceReopened);
         } else {
-          showToast(`Reopen failed: HTTP ${res.status}`);
+          showToast(await rtResponseError(res, 'raceReopenFailed'), 'error');
         }
       } catch (e) {
-        showToast(`Reopen error: ${e.message}`);
+        console.warn('Reopen race failed:', e);
+        showToast(RT.apiError(0, null, 'raceReopenFailed'), 'error');
       }
     });
   }
@@ -2018,7 +3460,7 @@ function init() {
         headers: getApiHeaders(),
       });
       if (!res.ok) {
-        showToast(`Export failed: HTTP ${res.status}`);
+        showToast(await rtResponseError(res, 'exportFailed'), 'error');
         return;
       }
 
@@ -2040,9 +3482,9 @@ function init() {
       if (window.pywebview && window.pywebview.api && window.pywebview.api.save_csv) {
         const saved = await window.pywebview.api.save_csv(csvText, filename);
         if (saved) {
-          showToast(`Exported: ${filename}`);
+          showToast(RT.fmt('toastExported', { filename }));
         } else {
-          showToast('Export cancelled');
+          showToast(RT.S.toastExportCancelled);
         }
         return;
       }
@@ -2057,9 +3499,10 @@ function init() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 0);
-      showToast(`Exported: ${filename}`);
+      showToast(RT.fmt('toastExported', { filename }));
     } catch (e) {
-      showToast(`Export error: ${e.message}`);
+      console.warn('CSV export failed:', e);
+      showToast(RT.apiError(0, null, 'exportFailed'), 'error');
     }
   }
 
@@ -2085,10 +3528,10 @@ function init() {
     reader.onload = (ev) => {
       importCSVToBackend(decodeCsvBytes(ev.target.result)).catch((err) => {
         console.error('CSV import error:', err);
-        setStatus('Error during CSV import');
+        setStatus(RT.S.csvImportFailed);
       });
     };
-    reader.onerror = () => setStatus('Error reading CSV file');
+    reader.onerror = () => setStatus(RT.S.csvReadFailed);
     reader.readAsArrayBuffer(file);
     // Reset so re-selecting same file triggers change event again
     e.target.value = '';
@@ -2111,11 +3554,11 @@ function init() {
     coupleBtn.addEventListener('click', async () => {
       // W-075: the serial panel owns tag handling while it is open.
       if (couple.active) {
-        showToast('Koppel-Modus ist aktiv — Panel benutzen');
+        showToast(RT.S.toastCoupleModeActive);
         return;
       }
       state.awaitingRead = true;
-      setStatus('Hold a tag near the antenna\u2026');
+      setStatus(RT.S.holdTagNearAntenna);
 
       // If we already have a cached unknown tag, open modal immediately
       if (state.lastUnknownTag) {
@@ -2146,12 +3589,13 @@ function init() {
           state.raceStarted = true;
           state.raceStartedAt = data.started_at || null;
           renderRaceStatus();
-          showToast('Race started');
+          showToast(RT.S.toastRaceStarted);
         } else {
-          showToast(`Start failed: HTTP ${res.status}`);
+          showToast(await rtResponseError(res, 'raceStartFailed'), 'error');
         }
       } catch (err) {
-        showToast(`Start error: ${err.message}`);
+        console.warn('Start race failed:', err);
+        showToast(RT.apiError(0, null, 'raceStartFailed'), 'error');
       }
     });
   }
@@ -2160,7 +3604,7 @@ function init() {
   const resetRaceBtn = $('#resetRaceBtn');
   if (resetRaceBtn) {
     resetRaceBtn.addEventListener('click', async () => {
-      if (!confirm('Reset race? All lap data will be cleared.')) return;
+      if (!confirm(RT.S.confirmResetRace)) return;
       try {
         const res = await fetch(`${state.backend}/race/reset`, {
           method: 'POST',
@@ -2173,12 +3617,13 @@ function init() {
           state.raceEnded = false;
           state.raceEndedAt = null;
           renderRaceStatus();
-          showToast('Race reset');
+          showToast(RT.S.toastRaceReset);
         } else {
-          showToast(`Reset failed: HTTP ${res.status}`);
+          showToast(await rtResponseError(res, 'raceResetFailed'), 'error');
         }
       } catch (err) {
-        showToast(`Reset error: ${err.message}`);
+        console.warn('Reset race failed:', err);
+        showToast(RT.apiError(0, null, 'raceResetFailed'), 'error');
       }
     });
   }
@@ -2190,7 +3635,7 @@ function init() {
       const input = $('#totalLapsInput');
       const n = parseInt(input?.value ?? '', 10);
       if (!n || n < 1 || n > 999) {
-        showToast('Total laps must be 1–999');
+        showToast(RT.S.assistantRaceLapsInvalid, 'warn');
         return;
       }
       try {
@@ -2202,12 +3647,13 @@ function init() {
         if (res.ok) {
           state.totalLaps = n;
           renderStandings(state.lastStandings);
-          showToast(`Total laps set to ${n}`);
+          showToast(RT.fmt('toastTotalLapsSet', { n }));
         } else {
-          showToast(`Failed: HTTP ${res.status}`);
+          showToast(await rtResponseError(res, 'totalLapsSaveFailed'), 'error');
         }
       } catch (err) {
-        showToast(`Error: ${err.message}`);
+        console.warn('Set total laps failed:', err);
+        showToast(RT.apiError(0, null, 'totalLapsSaveFailed'), 'error');
       }
     });
   }
@@ -2248,6 +3694,50 @@ function init() {
       if (e.target === settingsModal) closeSettingsModal();
     });
   }
+
+  // C4: reader discovery + reconnect; D6: desktop support tooling
+  const readerDiscoverBtn = $('#readerDiscoverBtn');
+  if (readerDiscoverBtn) {
+    readerDiscoverBtn.addEventListener('click', () =>
+      runReaderDiscovery('#readerDiscoverBtn', '#readerDiscoverStatus', '#readerCandidates'));
+  }
+  const readerRestartBtn = $('#readerRestartBtn');
+  if (readerRestartBtn) readerRestartBtn.addEventListener('click', restartReader);
+  ['#readerCandidates', '#assistantCandidates'].forEach((sel) => {
+    const list = $(sel);
+    if (list) list.addEventListener('click', onCandidateListClick);
+  });
+  const openDataFolderBtn = $('#openDataFolderBtn');
+  if (openDataFolderBtn) openDataFolderBtn.addEventListener('click', openDataFolder);
+  const supportBundleBtn = $('#supportBundleBtn');
+  if (supportBundleBtn) supportBundleBtn.addEventListener('click', createSupportBundle);
+
+  // D5: first-run assistant
+  const assistantOpenBtn = $('#assistantOpenBtn');
+  if (assistantOpenBtn) assistantOpenBtn.addEventListener('click', openAssistant);
+  const assistantSkipBtn = $('#assistantSkipBtn');
+  if (assistantSkipBtn) assistantSkipBtn.addEventListener('click', closeAssistant);
+  const assistantBackBtn = $('#assistantBackBtn');
+  if (assistantBackBtn) assistantBackBtn.addEventListener('click', () => assistantGoTo(assistantUi.step - 1));
+  const assistantNextBtn = $('#assistantNextBtn');
+  if (assistantNextBtn) assistantNextBtn.addEventListener('click', assistantNext);
+  const assistantDiscoverBtn = $('#assistantDiscoverBtn');
+  if (assistantDiscoverBtn) {
+    assistantDiscoverBtn.addEventListener('click', () =>
+      runReaderDiscovery('#assistantDiscoverBtn', '#assistantDiscoverStatus', '#assistantCandidates'));
+  }
+  const assistantAntennaResetBtn = $('#assistantAntennaResetBtn');
+  if (assistantAntennaResetBtn) {
+    assistantAntennaResetBtn.addEventListener('click', startAntennaTest);
+  }
+  ['#assistantReuseKeep', '#assistantReuseNew'].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.addEventListener('change', updateAssistantFinishLabel);
+  });
+  ['#assistantRaceName', '#assistantRaceLaps'].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') assistantCreateRace(); });
+  });
 
   // Submit settings on Enter in modal inputs
   ['#settingsReaderIp', '#settingsMinLap', '#settingsTotalLaps', '#settingsSnapshotInterval', '#settingsAntennaPower'].forEach((sel) => {
@@ -2301,7 +3791,7 @@ function init() {
   if (beepToggle) {
     beepToggle.addEventListener('change', (e) => {
       couple.muted = !e.target.checked;
-      localStorage.setItem('racetag.coupleBeep', couple.muted ? 'off' : 'on');
+      rtStorageSet('racetag.coupleBeep', couple.muted ? 'off' : 'on');
     });
   }
   ['#coupleBib', '#coupleName'].forEach((sel) => {
@@ -2337,7 +3827,7 @@ function init() {
   if (autoStartBtn) autoStartBtn.addEventListener('click', coupleAutoStart);
   const autoStopBtn = $('#coupleAutoStopBtn');
   if (autoStopBtn) {
-    autoStopBtn.addEventListener('click', () => coupleAutoStop('Auto-Zuweisung gestoppt'));
+    autoStopBtn.addEventListener('click', () => coupleAutoStop(RT.S.toastCoupleAutoStopped));
   }
   const autoRanges = $('#coupleAutoRanges');
   if (autoRanges) {
@@ -2398,18 +3888,16 @@ function init() {
   function applyNetHeaderState() {
     if (!netHeader) return;
     const active = state.sortMode === 'net';
-    netHeader.textContent = active ? 'Net time ▲' : 'Net time';
+    netHeader.textContent = active ? RT.S.standingsNetTimeSorted : RT.S.standingsNetTime;
     netHeader.classList.toggle('sort-active', active);
   }
   if (netHeader) {
     netHeader.addEventListener('click', () => {
       state.sortMode = state.sortMode === 'net' ? 'official' : 'net';
-      localStorage.setItem('racetag.sortMode', state.sortMode);
+      rtStorageSet('racetag.sortMode', state.sortMode);
       applyNetHeaderState();
       renderStandings(state.lastStandings || []);
-      showToast(state.sortMode === 'net'
-        ? 'Sortiert nach Netto-Zeit (TT-Ergebnis)'
-        : 'Offizielle Reihenfolge (Runden + Zeit)');
+      showToast(state.sortMode === 'net' ? RT.S.toastSortNet : RT.S.toastSortOfficial);
     });
     applyNetHeaderState();
   }
@@ -2443,8 +3931,8 @@ function init() {
       const result = await setRiderStatus(modal.dataset.tagId, status);
       if (result) {
         showToast(status
-          ? `Status gesetzt: ${status.toUpperCase()}`
-          : 'Status entfernt');
+          ? RT.fmt('toastStatusSet', { status: status.toUpperCase() })
+          : RT.S.toastStatusCleared);
         closeLapEditModal();
       }
     });
@@ -2453,16 +3941,17 @@ function init() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   init();
-  // Auto-connect on load using stored backend URL
-  try {
-    setStatus('Connecting\u2026');
-    await loadSnapshot();
-    connectSSE();
-    fetchRecentUnknownTag();
-    loadRaceConfig();
-    loadRaces();
-  } catch (e) {
-    console.warn('Auto-connect failed, please set backend URL and click Connect');
-    setStatus('Disconnected');
+  renderStatusBar();
+  // Desktop detection first: it decides which backend URL to talk to.
+  await loadAppConfig();
+  applyAppMode();
+  renderSettingsMeta();
+  await connectToBackend();
+  setInterval(refreshDiagnostics, ANTENNA_POLL_MS);
+  setInterval(renderStatusBar, STATUS_BAR_TICK_MS);
+  if (appInfo.desktop) {
+    loadDesktopAppInfo();
+    maybeShowAssistant();
   }
+  checkForUpdate();
 });

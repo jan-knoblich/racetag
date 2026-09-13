@@ -2,15 +2,17 @@
 
 H7: single-instance flock — a second acquisition on the same lock file must
     fail while the first handle is alive.
-H6: reader-service PID file — written on spawn, removed on stop; stale-kill
-    logic must never touch a PID that is no longer a reader-service.
+H6: reader-service PID file stale-kill logic must never touch a PID that is
+    no longer a reader-service. (Writing/removing the PID file is covered by
+    test_reader_supervisor.py.)
 """
 import os
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -70,6 +72,47 @@ class TestSingleInstanceLock:
         assert fh2 is not None, "lock must be reacquirable after release"
         fh2.close()
 
+    def test_lock_holds_after_pid_is_written(self, tmp_path):
+        """The first instance writes its PID into the lock file; a second
+        attempt must still fail (regression for the Windows seek(0) fix)."""
+        app = _import_desktop_app()
+        lock_path = tmp_path / "racetag.lock"
+
+        fh1 = app._try_lock_file(lock_path)
+        assert fh1 is not None
+        try:
+            fh1.truncate(0)
+            fh1.write("123456")
+            fh1.flush()
+            assert app._try_lock_file(lock_path) is None
+        finally:
+            fh1.close()
+
+    def test_windows_lock_seeks_to_start_before_locking(self, tmp_path, monkeypatch):
+        """msvcrt.locking locks from the current position and "a+" opens at
+        EOF, so the lock must be taken at offset 0 regardless of file size."""
+        app = _import_desktop_app()
+        lock_path = tmp_path / "racetag.lock"
+        lock_path.write_text("98765")  # PID left by a previous instance
+        positions = []
+
+        def fake_locking(fd, mode, nbytes):
+            positions.append(os.lseek(fd, 0, os.SEEK_CUR))
+
+        fake_msvcrt = types.ModuleType("msvcrt")
+        fake_msvcrt.LK_NBLCK = 2
+        fake_msvcrt.locking = fake_locking
+        monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(sys, "platform", "win32")
+            fh = app._try_lock_file(lock_path)
+        try:
+            assert fh is not None
+            assert positions == [0]
+        finally:
+            fh.close()
+
     def test_lock_survives_across_subprocess(self, tmp_path):
         """Real cross-process check: hold the lock here, try from a child."""
         app = _import_desktop_app()
@@ -78,12 +121,22 @@ class TestSingleInstanceLock:
         fh = app._try_lock_file(lock_path)
         assert fh is not None
         try:
+            if sys.platform == "win32":
+                acquire = (
+                    "import msvcrt\n"
+                    "fh.seek(0)\n"
+                    "msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)\n"
+                )
+            else:
+                acquire = (
+                    "import fcntl\n"
+                    "fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                )
             probe = (
-                "import fcntl, sys\n"
                 f"fh = open({str(lock_path)!r}, 'a+')\n"
                 "try:\n"
-                "    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-                "    print('ACQUIRED')\n"
+                + "".join(f"    {line}\n" for line in acquire.splitlines())
+                + "    print('ACQUIRED')\n"
                 "except OSError:\n"
                 "    print('LOCKED')\n"
             )
@@ -101,22 +154,6 @@ class TestSingleInstanceLock:
 # ---------------------------------------------------------------------------
 
 class TestReaderPidFile:
-
-    def test_stop_reader_service_removes_pid_file(self, tmp_path, monkeypatch):
-        app = _import_desktop_app()
-        pid_file = tmp_path / "reader-service.pid"
-        monkeypatch.setattr(app, "_READER_PID_FILE", pid_file)
-
-        # Fake an already-exited process handle
-        proc = MagicMock()
-        proc.poll.return_value = 0
-        app._reader_proc = proc
-        pid_file.write_text("12345")
-
-        app._stop_reader_service()
-
-        assert not pid_file.exists()
-        assert app._reader_proc is None
 
     def test_kill_stale_ignores_missing_pid_file(self, tmp_path, monkeypatch):
         app = _import_desktop_app()
@@ -154,6 +191,7 @@ class TestReaderPidFile:
             p.kill()
             p.wait()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="stale-kill is POSIX-only; Windows relies on the Job Object")
     def test_kill_stale_terminates_real_reader_service_lookalike(self, tmp_path, monkeypatch):
         """A live process whose command matches a reader-service gets SIGTERM."""
         app = _import_desktop_app()
@@ -185,6 +223,7 @@ class TestReaderPidFile:
 # H6 — parent-liveness self-termination in the reader-service
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform == "win32", reason="parent-liveness check is a no-op on Windows")
 class TestParentLiveness:
 
     def test_run_forever_exits_when_reparented(self):

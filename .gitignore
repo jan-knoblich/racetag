@@ -44,6 +44,10 @@ apps/desktop/build/
 apps/desktop/dist/
 *.spec.bak
 
+# Inno Setup: WebView2 bootstrapper (downloaded in CI) and installer output
+apps/desktop/installer/MicrosoftEdgeWebview2Setup.exe
+apps/desktop/installer/output/
+
 # Icon intermediates
 apps/desktop/icons/*.iconset/
 

@@ -174,3 +174,39 @@ def test_patch_antenna_power_validates_range(tmp_path, monkeypatch):
         assert client.patch("/config", json={"antenna_power": 999}).status_code == 422
         assert client.patch("/config", json={"antenna_power": 100}).status_code == 200
         assert client.patch("/config", json={"antenna_power": 300}).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# First-run assistant flag: must survive restarts (the desktop webview wipes
+# localStorage on every launch).
+# ---------------------------------------------------------------------------
+
+def test_assistant_done_defaults_false_and_persists_across_restart(tmp_path, monkeypatch):
+    data_dir = str(tmp_path / "assistant")
+    app_module = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module.app) as client:
+        assert client.get("/config").json()["assistant_done"] is False
+        r = client.patch("/config", json={"assistant_done": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["assistant_done"] is True
+        # Other PATCHes leave it alone; null is ignored like the other fields.
+        assert client.patch("/config", json={"total_laps": 4}).json()["assistant_done"] is True
+        assert client.patch("/config", json={"assistant_done": None}).json()["assistant_done"] is True
+
+    app_module2 = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module2.app) as client2:
+        assert client2.get("/config").json()["assistant_done"] is True
+        assert client2.patch("/config", json={"assistant_done": False}).json()["assistant_done"] is False
+        assert client2.get("/config").json()["assistant_done"] is False
+
+
+@pytest.mark.parametrize("value", ["true", 1, 0, "1", "yes", [], {}])
+def test_assistant_done_rejects_non_bool(tmp_path, monkeypatch, value):
+    app_module = _fresh_app(str(tmp_path), monkeypatch)
+    with TestClient(app_module.app) as client:
+        r = client.patch("/config", json={"assistant_done": value, "total_laps": 9})
+        assert r.status_code == 422, r.text
+        data = client.get("/config").json()
+        assert data["assistant_done"] is False
+        # The whole PATCH was rejected, nothing else was applied.
+        assert data["total_laps"] != 9

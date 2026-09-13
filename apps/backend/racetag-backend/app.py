@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import logging
 import threading
 import time
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 from domain.config import Config, ConfigStore, is_valid_ipv4
 from domain.race import RaceState
@@ -41,7 +42,9 @@ from models_api import (
     ManualLapResultDTO,
 )
 from storage import Storage
+from reader_status_hub import ReaderStatusHub, ReaderStatusIn
 
+logger = logging.getLogger("racetag.backend")
 
 # ---------------------------------------------------------------------------
 # API Key auth
@@ -237,23 +240,36 @@ race, rider_store = _load_active_race_state()
 events: List[TagEventDTO] = []
 
 # ---------------------------------------------------------------------------
-# W-032: SSE subscribers — each subscriber is an asyncio.Queue.
+# W-032: SSE subscribers — one asyncio.Queue per /stream connection.
 #
 # The subscribers list is mutated from both the async /stream handler and the
-# sync POST /events/tag/batch route.  We protect list mutation with a
-# threading.Lock (safe across sync routes and asyncio tasks in the same
-# process).  Publishing from the sync route uses
-# loop.call_soon_threadsafe(queue.put_nowait, payload) so the queue stays
-# fully async-compatible.
+# sync routes (which FastAPI runs in worker threads), so list mutation is
+# guarded by a threading.Lock.
 #
-# Backward-compat shim: test_unknown_tag.py directly appends a plain list to
-# `subscribers` and calls list.append() on it.  We keep that working by
-# accepting both asyncio.Queue objects and plain list objects in the fan-out
-# loop: if the element has a `put_nowait` method we treat it as a queue;
-# otherwise we call `.append()` on it (legacy list-based subscriber).
+# asyncio.Queue is not thread-safe: put_nowait() from a foreign thread neither
+# is safe nor wakes the waiting get() until the loop happens to tick (up to
+# the 15 s keepalive). Each queue is therefore stored together with the event
+# loop that owns it (captured in stream_events via get_running_loop()), and
+# _publish always hands the payload over with loop.call_soon_threadsafe —
+# from sync routes, the reader-status staleness thread, or the loop itself.
+#
+# Backward-compat shim: tests append a plain list to `subscribers` and read
+# what list.append() collected. Anything that is not a _QueueSubscriber is
+# treated as such a legacy list.
 # ---------------------------------------------------------------------------
 
-subscribers: List[Any] = []   # elements are asyncio.Queue or legacy list
+
+class _QueueSubscriber:
+    """An SSE client's queue plus the event loop that consumes it."""
+
+    __slots__ = ("queue", "loop")
+
+    def __init__(self, queue: "asyncio.Queue[Dict[str, Any]]", loop: asyncio.AbstractEventLoop) -> None:
+        self.queue = queue
+        self.loop = loop
+
+
+subscribers: List[Any] = []   # elements are _QueueSubscriber or legacy list
 _subscribers_lock = threading.Lock()
 
 # Rider registry (W-010) is built per-race by _load_active_race_state() above.
@@ -422,30 +438,39 @@ def _rider_to_dto(rider: Rider) -> RiderDTO:
 def _publish(payload: Dict[str, Any]) -> None:
     """Fan-out *payload* to all current subscribers.
 
-    Safe to call from both sync and async contexts.  Handles both queue-based
-    subscribers (asyncio.Queue) and legacy list-based subscribers (used by
-    existing tests that directly append a plain list to `subscribers`).
+    Safe to call from any thread and from the event loop itself: queue-based
+    subscribers always receive the payload through their own loop's
+    call_soon_threadsafe, which also wakes a get() that is already waiting.
+    Legacy list-based subscribers (test shim) get a plain append.
     """
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = None
-
     with _subscribers_lock:
         current = list(subscribers)
 
     for sub in current:
         try:
-            if hasattr(sub, "put_nowait"):
-                # asyncio.Queue — schedule from whichever thread we're on
-                if loop is not None and loop.is_running():
-                    loop.call_soon_threadsafe(sub.put_nowait, payload)
-                else:
-                    sub.put_nowait(payload)
+            if isinstance(sub, _QueueSubscriber):
+                sub.loop.call_soon_threadsafe(sub.queue.put_nowait, payload)
             else:
-                # Legacy list-based subscriber (test shim)
                 sub.append(payload)
         except Exception:
+            # A subscriber whose loop is already closed (client gone, server
+            # shutting down) must not stop the fan-out to the others.
+            pass
+
+
+def _add_sse_subscriber() -> _QueueSubscriber:
+    """Register a queue bound to the running event loop. Call from the loop."""
+    sub = _QueueSubscriber(asyncio.Queue(), asyncio.get_running_loop())
+    with _subscribers_lock:
+        subscribers.append(sub)
+    return sub
+
+
+def _remove_sse_subscriber(sub: _QueueSubscriber) -> None:
+    with _subscribers_lock:
+        try:
+            subscribers.remove(sub)
+        except ValueError:
             pass
 
 
@@ -1152,12 +1177,24 @@ def post_race_snapshot_now(race_id: str):
 # ---------------------------------------------------------------------------
 
 class PatchConfigBody(BaseModel):
-    """Partial config update — all fields optional."""
+    """Partial config update — all fields optional.
+
+    An absent field is left untouched. ``reader_ip: null`` explicitly clears
+    the persisted reader IP; null for the other fields is ignored.
+    ``assistant_done`` must be a real JSON boolean (strict: ``"true"`` or
+    ``1`` are rejected with 422).
+    """
 
     reader_ip: str | None = None
     min_lap_interval_s: float | None = None
     total_laps: int | None = None
     antenna_power: int | None = None
+    assistant_done: StrictBool | None = None
+
+
+def _reader_controller() -> Any:
+    """The desktop shell's ReaderSupervisor, or None (Docker, tests)."""
+    return getattr(app.state, "reader_controller", None)
 
 
 def _effective_config() -> Config:
@@ -1175,6 +1212,11 @@ def _effective_config() -> Config:
             else _RACE_TOTAL_LAPS
         ),
         antenna_power=config_store.get_antenna_power(),
+        assistant_done=config_store.get_assistant_done(),
+        desktop=_reader_controller() is not None,
+        # Read per call: the desktop shell sets it before loading the backend,
+        # but nothing else depends on import order.
+        version=os.getenv("RACETAG_VERSION") or None,
     )
 
 
@@ -1188,9 +1230,11 @@ def get_config():
 def patch_config(body: PatchConfigBody):
     """Partially update config. Validates ranges; persists via meta table.
 
-    On total_laps change: updates race.total_laps live and broadcasts
-    race_updated SSE.  reader_ip and min_lap_interval_s are persisted only
-    (their consumers are external processes managed by the desktop shell).
+    min_lap_interval_s and total_laps apply to the live race immediately and
+    broadcast race_updated SSE. reader_ip and antenna_power are persisted
+    only: the reader-service receives them in the reply to its next
+    POST /reader/status (within ~2 s) and reconnects by itself, so no restart
+    is triggered from here.
     """
     errors = []
 
@@ -1216,11 +1260,14 @@ def patch_config(body: PatchConfigBody):
 
     if body.reader_ip is not None:
         config_store.set_reader_ip(body.reader_ip)
+    elif "reader_ip" in body.model_fields_set:
+        config_store.clear_reader_ip()
 
     if body.antenna_power is not None:
-        # Persist only — the reader-service picks it up at spawn (next app
-        # restart), same lifecycle as reader_ip.
         config_store.set_antenna_power(body.antenna_power)
+
+    if body.assistant_done is not None:
+        config_store.set_assistant_done(body.assistant_done)
 
     if body.min_lap_interval_s is not None:
         config_store.set_min_lap_interval_s(body.min_lap_interval_s)
@@ -1239,6 +1286,169 @@ def patch_config(body: PatchConfigBody):
         _publish({"type": "race_updated", "total_laps": body.total_laps})
 
     return _effective_config()
+
+
+# ---------------------------------------------------------------------------
+# Reader status protocol (PLAN-WINDOWS-NONTECHIE contract §2)
+#
+# The reader-service heartbeats POST /reader/status; the reply carries the
+# current reader config and at most one queued command. State, SSE publishing,
+# staleness and the discovery rendezvous live in reader_status_hub.py.
+# ---------------------------------------------------------------------------
+
+# Module-level so tests can shrink them; read at call / thread-start time.
+_READER_DISCOVER_TIMEOUT_S = 15.0
+_READER_STALE_CHECK_INTERVAL_S = 1.0
+
+
+def _reader_supervisor_status() -> Optional[Dict[str, Any]]:
+    """The controller's status() dict, or None without a (working) controller."""
+    controller = _reader_controller()
+    if controller is None:
+        return None
+    try:
+        return dict(controller.status())
+    except Exception:
+        logger.warning("reader_controller.status() failed", exc_info=True)
+        return None
+
+
+_reader_hub = ReaderStatusHub(
+    publish=_publish,
+    # Late-bound so tests can monkeypatch the module-level _monotonic.
+    clock=lambda: _monotonic(),
+    now_iso=_now_iso,
+    supervisor_status=_reader_supervisor_status,
+)
+
+
+def _check_reader_stale() -> bool:
+    """Flip the reader state to unknown after 6 s without a heartbeat.
+
+    Runs every second on the staleness thread; tests call it directly.
+    """
+    return _reader_hub.check_stale()
+
+
+_reader_stale_stop: Optional[threading.Event] = None
+_reader_stale_thread: Optional[threading.Thread] = None
+
+
+def _reader_stale_loop(stop: threading.Event, interval_s: float) -> None:
+    while not stop.wait(interval_s):
+        try:
+            _check_reader_stale()
+        except Exception:
+            logger.exception("reader staleness check failed")
+
+
+@app.on_event("startup")
+def _start_reader_stale_watch() -> None:
+    """Start the staleness thread (per startup, like the snapshotter)."""
+    global _reader_stale_stop, _reader_stale_thread
+    _reader_stale_stop = threading.Event()
+    _reader_stale_thread = threading.Thread(
+        target=_reader_stale_loop,
+        args=(_reader_stale_stop, _READER_STALE_CHECK_INTERVAL_S),
+        name="reader-status-stale",
+        daemon=True,
+    )
+    _reader_stale_thread.start()
+
+
+@app.on_event("shutdown")
+def _stop_reader_stale_watch() -> None:
+    global _reader_stale_stop, _reader_stale_thread
+    if _reader_stale_stop is not None:
+        _reader_stale_stop.set()
+    if _reader_stale_thread is not None:
+        _reader_stale_thread.join(timeout=2.0)
+    _reader_stale_stop = None
+    _reader_stale_thread = None
+
+
+# The discovery last taken over into reader_ip, as (reader-service pid, ip).
+# The reader-service repeats discovered_ip in every heartbeat until its
+# connection thread has handled the echo, which can take several seconds while
+# it sits in a TCP connect. Persisting each discovery only once keeps such a
+# repeat from overwriting a reader_ip the operator saved in the meantime.
+_discovery_persist_lock = threading.Lock()
+_last_persisted_discovery: Optional[tuple] = None
+
+
+def _persist_discovered_ip(discovered_ip: Optional[str], pid: Optional[int]) -> None:
+    """Contract §2.2 rule 1, applied once per discovery.
+
+    A heartbeat without ``discovered_ip`` ends the current discovery, so a
+    later rediscovery of the same address is persisted again; so is the same
+    address reported by a different reader-service process.
+    """
+    global _last_persisted_discovery
+    with _discovery_persist_lock:
+        if discovered_ip is None:
+            _last_persisted_discovery = None
+            return
+        key = (pid, discovered_ip)
+        if key == _last_persisted_discovery:
+            return
+        _last_persisted_discovery = key
+        old_ip = config_store.get_reader_ip()
+        if discovered_ip != old_ip:
+            # Persist before building the reply so the reply already echoes
+            # the new IP and the reader-service can clear discovered_ip.
+            config_store.set_reader_ip(discovered_ip)
+            logger.info("reader_ip changed via discovery: %s -> %s", old_ip, discovered_ip)
+
+
+@app.post("/reader/status")
+def post_reader_status(body: ReaderStatusIn):
+    """Heartbeat from the reader-service (every ~2 s and on state change).
+
+    Only an unknown or missing ``state`` is rejected (422); every other
+    malformed field is sanitised to null/empty. Reply:
+    ``{"config": {"reader_ip", "antenna_power"}, "command": null | {"id", "type"}}``.
+    """
+    _persist_discovered_ip(body.discovered_ip, body.pid)
+
+    command = _reader_hub.ingest(body)
+    cfg = _effective_config()
+    return {
+        "config": {"reader_ip": cfg.reader_ip, "antenna_power": cfg.antenna_power},
+        "command": command,
+    }
+
+
+@app.get("/reader/status")
+def get_reader_status():
+    """Last reader status; ``state`` is ``unknown`` before the first heartbeat
+    and after 6 s without one. ``supervisor`` is the desktop controller's
+    status, or null outside the desktop build."""
+    return _reader_hub.snapshot()
+
+
+@app.post("/reader/discover")
+def post_reader_discover():
+    """Ask the reader-service to search the network and wait for the result.
+
+    Sync on purpose: FastAPI runs it in a worker thread, so blocking for up to
+    15 s here never stalls the event loop (SSE keeps flowing).
+    """
+    return _reader_hub.request_discovery(_READER_DISCOVER_TIMEOUT_S)
+
+
+@app.post("/reader/restart", status_code=202)
+def post_reader_restart():
+    """Reconnect the reader: restart the reader-service process in the
+    desktop build, otherwise ask the running reader-service to reconnect."""
+    controller = _reader_controller()
+    if controller is not None:
+        try:
+            controller.restart()
+            return {"accepted": True, "via": "supervisor"}
+        except Exception:
+            logger.exception("reader_controller.restart() failed; queueing reconnect command")
+    _reader_hub.queue_reconnect()
+    return {"accepted": True, "via": "command"}
 
 
 # ---------------------------------------------------------------------------
@@ -1264,30 +1474,24 @@ def get_diagnostics_antennas(window_s: int = Query(default=60, ge=5, le=3600)):
 async def stream_events():
     """Server-Sent Events stream.
 
-    Each subscriber gets its own asyncio.Queue.  The publisher (post_events_batch)
-    enqueues payloads via loop.call_soon_threadsafe so the queue stays thread-safe.
-    A 15-second timeout on queue.get() yields a keepalive comment so proxies do
-    not drop the connection.
+    Each subscriber gets its own asyncio.Queue bound to this handler's event
+    loop; _publish enqueues via that loop's call_soon_threadsafe from whatever
+    thread it runs on. A 15-second timeout on queue.get() yields a keepalive
+    comment so proxies do not drop the connection.
     """
-    client_queue: asyncio.Queue = asyncio.Queue()
-    with _subscribers_lock:
-        subscribers.append(client_queue)
+    sub = _add_sse_subscriber()
 
     async def event_stream():
         try:
             while True:
                 try:
-                    item = await asyncio.wait_for(client_queue.get(), timeout=15.0)
+                    item = await asyncio.wait_for(sub.queue.get(), timeout=15.0)
                     data = json.dumps(item, separators=(",", ":"))
                     yield f"data: {data}\n\n"
                 except asyncio.TimeoutError:
                     yield f": keepalive {_now_iso()}\n\n"
         finally:
-            with _subscribers_lock:
-                try:
-                    subscribers.remove(client_queue)
-                except ValueError:
-                    pass
+            _remove_sse_subscriber(sub)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

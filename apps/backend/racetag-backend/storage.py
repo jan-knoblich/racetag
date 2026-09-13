@@ -812,6 +812,9 @@ class Storage:
             (key, value),
         )
 
+    def delete_meta(self, key: str) -> None:
+        self._execute("DELETE FROM meta WHERE key = ?;", (key,))
+
     # ---- Lifecycle ------------------------------------------------------
 
     def close(self) -> None:

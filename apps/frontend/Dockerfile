@@ -4,8 +4,10 @@ FROM nginx:1.29.2-alpine
 # Copy static files
 COPY index.html /usr/share/nginx/html/index.html
 COPY styles.css /usr/share/nginx/html/styles.css
+COPY strings.js /usr/share/nginx/html/strings.js
 COPY api.js /usr/share/nginx/html/api.js
 COPY script.js /usr/share/nginx/html/script.js
+COPY tooltips.js /usr/share/nginx/html/tooltips.js
 COPY nginx.conf /etc/nginx/nginx.conf
 
 COPY docker-entrypoint.sh /docker-entrypoint.sh

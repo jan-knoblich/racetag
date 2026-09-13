@@ -92,6 +92,19 @@ class TagTracker:
         self.last_emitted_at[key] = now
         return True
 
+    def reset_presence(self) -> None:
+        """Forget which tags are currently in the field (called on every new
+        reader connection).
+
+        Arrive/depart pairs do not survive a dropped connection: a tag that
+        was present when the link died would otherwise stay "present" forever
+        and its next arrive would be swallowed as a duplicate, losing the
+        pass. `seen` and `last_emitted_at` are deliberately kept: they are
+        history, not live field state, and the cooldown must span a short
+        outage.
+        """
+        self.present.clear()
+
     def mark_absent(self, tag_hex: str, antenna: int) -> bool:
         """Remove `antenna` from the set of antennas seeing `tag_hex`.
 
