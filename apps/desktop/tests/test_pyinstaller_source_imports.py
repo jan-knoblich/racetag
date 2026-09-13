@@ -1,6 +1,7 @@
 """pyinstaller_source_imports: hidden imports collected from the bundled
 backend and reader-service sources (they are loaded by path at runtime, so
 PyInstaller's static analysis never follows their imports)."""
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -16,7 +17,12 @@ def test_backend_middleware_import_is_collected():
     # The module the 0.2.0 Windows bundle was missing.
     assert "fastapi.middleware.cors" in names
     assert "sqlite3" in names
-    assert "requests" in names
+    # Third-party modules are only collected when installed in the build
+    # environment; the Linux desktop CI job does not install `requests`.
+    if importlib.util.find_spec("requests") is not None:
+        assert "requests" in names
+    else:
+        assert "requests" not in names
 
 
 def test_local_modules_and_non_modules_are_excluded():
