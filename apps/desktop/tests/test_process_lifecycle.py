@@ -192,7 +192,7 @@ class TestReaderPidFile:
             p.wait()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="stale-kill is POSIX-only; Windows relies on the Job Object")
-    def test_kill_stale_terminates_real_reader_service_lookalike(self, tmp_path, monkeypatch):
+    def test_kill_stale_terminates_real_reader_service_lookalike(self, tmp_path, monkeypatch, caplog):
         """A live process whose command matches a reader-service gets SIGTERM."""
         app = _import_desktop_app()
         pid_file = tmp_path / "reader-service.pid"
@@ -206,12 +206,16 @@ class TestReaderPidFile:
         ])
         try:
             pid_file.write_text(str(p.pid))
-            app._kill_stale_reader_service()
+            with caplog.at_level("INFO", logger="racetag.shell"):
+                app._kill_stale_reader_service()
             # Give the SIGTERM a moment
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and p.poll() is None:
                 time.sleep(0.1)
-            assert p.poll() is not None, "stale reader-service was not terminated"
+            assert p.poll() is not None, (
+                "stale reader-service was not terminated; command line seen: "
+                f"{app._process_command_line(p.pid)!r}; log: {caplog.text!r}"
+            )
             assert not pid_file.exists()
         finally:
             if p.poll() is None:
@@ -253,3 +257,19 @@ class TestParentLiveness:
             t.join(timeout=5)
             assert not t.is_alive(), "run_forever did not exit after reparenting"
         assert client._stopping.is_set(), "stop() was not invoked"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only helper")
+def test_process_command_line_keeps_marker_after_long_path():
+    """The marker must survive long command lines (procps truncates `ps` output
+    to 80 columns when it is not writing to a terminal)."""
+    app = _import_desktop_app()
+    long_arg = "x" * 200
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)", long_arg, "--reader-service"])
+    try:
+        cmd = app._process_command_line(p.pid)
+        assert cmd is not None
+        assert "--reader-service" in cmd
+    finally:
+        p.kill()
+        p.wait()

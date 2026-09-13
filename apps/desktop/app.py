@@ -419,6 +419,30 @@ def _release_single_instance_lock() -> None:
             pass
 
 
+def _process_command_line(pid: int) -> "str | None":
+    """Return the full command line of *pid* (POSIX), or None if unreadable.
+
+    Linux: read /proc/<pid>/cmdline directly (exact, never truncated).
+    Elsewhere: ``ps -ww`` so a long interpreter path cannot push the
+    ``--reader-service`` marker past a column limit and make a real stale
+    reader-service look like an innocent process.
+    """
+    proc_cmdline = Path("/proc") / str(pid) / "cmdline"
+    try:
+        raw = proc_cmdline.read_bytes()
+    except OSError:
+        raw = None
+    if raw:
+        return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+    try:
+        return subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _kill_stale_reader_service() -> None:
     """Kill a reader-service left over from a crashed previous run (H6).
 
@@ -439,15 +463,13 @@ def _kill_stale_reader_service() -> None:
     except (ProcessLookupError, PermissionError):
         _READER_PID_FILE.unlink(missing_ok=True)
         return
-    try:
-        cmd = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True, timeout=5,
-        ).stdout
-    except Exception:  # noqa: BLE001
+    cmd = _process_command_line(pid)
+    if cmd is None:
+        log.info("stale reader-service check: could not read command line of pid %s", pid)
         return
     if "--reader-service" not in cmd and "racetag_reader_service" not in cmd:
         # PID was reused by something else — just drop the stale file.
+        log.info("stale reader-service pid %s belongs to another process; dropping pid file", pid)
         _READER_PID_FILE.unlink(missing_ok=True)
         return
     log.warning("killing stale reader-service from a previous run (pid %s)", pid)
