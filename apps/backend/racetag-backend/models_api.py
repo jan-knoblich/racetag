@@ -59,6 +59,15 @@ class ParticipantDTO(BaseModel):
     laps_behind: Optional[int] = Field(
         None, description='Number of laps behind the leader (null or 0 if on same lap)'
     )
+    # F3 — result status: null (classified/racing), "dnf", "dns", "dsq".
+    status: Optional[str] = None
+    # F5 — advisory: laps that look missed by the reader, and the midpoint
+    # timestamp of the first suspected gap (to pre-fill the manual-lap dialog).
+    suspected_missed_reads: int = 0
+    suspected_gap_midpoint: Optional[str] = None
+    # TT/net time: first counted pass → finish (or latest) pass. The correct
+    # individual time for staggered-start formats. None until 2+ passes.
+    net_time_ms: Optional[int] = None
     # Rider fields — populated from RiderStore at standings time (W-010)
     bib: Optional[str] = Field(None, description='Rider bib number (null if no rider registered for this tag)')
     name: Optional[str] = Field(None, description='Rider name (null if no rider registered for this tag)')
@@ -89,6 +98,12 @@ class RaceDTO(BaseModel):
     started: bool = False
     started_at: Optional[str] = None
     participants: List[ParticipantDTO]
+    # F1/F2 (AUDIT-2026-07): race format + live finishing/bell state.
+    finish_mode: str = "leader"
+    duration_s: Optional[int] = None
+    final_laps: Optional[int] = None
+    finishing: bool = False
+    laps_to_go: Optional[int] = None
 
 
 class RaceSummaryDTO(BaseModel):
@@ -104,6 +119,10 @@ class RaceSummaryDTO(BaseModel):
     ended_at: Optional[str] = None
     created_at: Optional[str] = None
     is_active: bool = False
+    snapshot_interval_s: Optional[int] = None
+    finish_mode: str = "leader"
+    duration_s: Optional[int] = None
+    final_laps: Optional[int] = None
 
 
 class RaceListDTO(BaseModel):
@@ -118,6 +137,29 @@ class RaceCreateDTO(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     scheduled_at: Optional[str] = None  # ISO 8601 datetime; nullable
     total_laps: int = Field(default=5, ge=1, le=999)
+    snapshot_interval_s: Optional[int] = Field(
+        default=None, ge=0, le=3600,
+        description=(
+            "Seconds between automatic snapshots (CSV + DB) for this race. "
+            "None or 0 disables snapshots. Capped at 3600 (1 h)."
+        ),
+    )
+    finish_mode: str = Field(
+        default="leader",
+        pattern="^(leader|per_rider)$",
+        description=(
+            "'leader' (criterium: leader crossing the line finishes the race, "
+            "others flagged off at their next pass) or 'per_rider'."
+        ),
+    )
+    duration_s: Optional[int] = Field(
+        default=None, ge=1, le=86400,
+        description="Time-based race duration in seconds. Requires final_laps.",
+    )
+    final_laps: Optional[int] = Field(
+        default=None, ge=0, le=99,
+        description="Laps to go once the timer expires (bell lap). Requires duration_s.",
+    )
 
 
 class RaceUpdateDTO(BaseModel):
@@ -126,6 +168,10 @@ class RaceUpdateDTO(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     scheduled_at: Optional[str] = None
     total_laps: Optional[int] = Field(default=None, ge=1, le=999)
+    snapshot_interval_s: Optional[int] = Field(default=None, ge=0, le=3600)
+    finish_mode: Optional[str] = Field(default=None, pattern="^(leader|per_rider)$")
+    duration_s: Optional[int] = Field(default=None, ge=0, le=86400)
+    final_laps: Optional[int] = Field(default=None, ge=0, le=99)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +186,14 @@ class RiderDTO(BaseModel):
     bib: str = Field(..., description='Bib number (stored as string to preserve leading zeros)')
     name: str = Field(..., description='Rider display name')
     created_at: datetime = Field(..., description='UTC timestamp when the rider was first registered')
+    status: Optional[str] = Field(None, description='Result status: null, "dnf", "dns", "dsq"')
+    verein: str = Field('', description='Club (SRB official-result export)')
+    uci_id: str = Field('', description='UCI ID (SRB official-result export)')
+    races_updated: Optional[int] = Field(
+        None,
+        description='Only set when the request had all_races=true: number of '
+                    'race rows (across ALL races) that were updated.',
+    )
 
 
 class RiderCreateDTO(BaseModel):
@@ -148,6 +202,23 @@ class RiderCreateDTO(BaseModel):
     tag_id: str = Field(..., description='RFID tag id (uppercase hex)')
     bib: str = Field(..., description='Bib number')
     name: str = Field(..., description='Rider display name')
+    verein: str = Field('', description='Club — empty keeps an existing value')
+    uci_id: str = Field('', description='UCI ID — empty keeps an existing value')
+    all_races: bool = Field(
+        default=False,
+        description='Also update bib/name for this tag in every OTHER race '
+                    'where it is registered (day model: one tag + number per '
+                    'person). Update-only — never inserts into other races.',
+    )
+
+
+class RiderStatusDTO(BaseModel):
+    """Body of PATCH /riders/{tag_id}/status. status=null clears it (F3)."""
+
+    status: Optional[str] = Field(
+        default=None,
+        description='Result status: null (classified), "dnf", "dns", or "dsq"',
+    )
 
 
 class RidersListDTO(BaseModel):
@@ -171,3 +242,36 @@ class RecentReadsListDTO(BaseModel):
 
     count: int
     items: List[RecentReadDTO]
+
+
+# ---------------------------------------------------------------------------
+# Manual lap correction (Feature: +1/-1 lap for a rider, optional manual ts).
+# Triggered by the operator when the reader miscounts (mis-read, sleeper tag,
+# weak antenna). The synthetic lap is persisted to tag_events with
+# reader_serial="MANUAL" so it can be distinguished from real reader events
+# in audits / replay.
+# ---------------------------------------------------------------------------
+
+class ManualLapAddDTO(BaseModel):
+    """Payload for POST /riders/{tag_id}/laps."""
+
+    timestamp: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO-8601 UTC timestamp for the synthetic lap pass. If omitted, "
+            "the server uses its current UTC time. Operator can supply a past "
+            "timestamp (e.g. the moment the rider crossed the line) when the "
+            "click happens later than the actual pass."
+        ),
+    )
+
+
+class ManualLapResultDTO(BaseModel):
+    """Response for manual lap add/remove."""
+
+    tag_id: str
+    laps: int
+    last_pass_time: Optional[str] = None
+    finished: bool = False
+    finish_time: Optional[str] = None
+    total_time_ms: Optional[int] = None

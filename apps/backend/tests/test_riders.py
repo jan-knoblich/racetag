@@ -155,3 +155,51 @@ def test_standings_enriched_with_bib_name(client):
     assert row["tag_id"] == "TAGX0001"
     assert row["bib"] == "17"
     assert row["name"] == "Dave"
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 F3: rider status endpoint (DNF/DNS/DSQ).
+# ---------------------------------------------------------------------------
+
+def test_patch_rider_status_sets_and_clears(client):
+    client.post("/riders", json={"tag_id": "ST1", "bib": "1", "name": "Rider"})
+    # Default: no status
+    assert client.get("/riders/ST1").json()["status"] is None
+    # Set DNF
+    r = client.patch("/riders/ST1/status", json={"status": "dnf"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "dnf"
+    assert client.get("/riders/ST1").json()["status"] == "dnf"
+    # Clear
+    r = client.patch("/riders/ST1/status", json={"status": None})
+    assert r.status_code == 200
+    assert r.json()["status"] is None
+
+
+def test_patch_rider_status_normalises_case(client):
+    client.post("/riders", json={"tag_id": "ST2", "bib": "2", "name": "R"})
+    r = client.patch("/riders/ST2/status", json={"status": "DNS"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "dns"
+
+
+def test_patch_rider_status_rejects_invalid(client):
+    client.post("/riders", json={"tag_id": "ST3", "bib": "3", "name": "R"})
+    r = client.patch("/riders/ST3/status", json={"status": "abandoned"})
+    assert r.status_code == 422
+
+
+def test_patch_rider_status_404_for_unknown(client):
+    r = client.patch("/riders/NOPE/status", json={"status": "dnf"})
+    assert r.status_code == 404
+
+
+def test_csv_reimport_does_not_wipe_status(client):
+    """A DNF set by the operator must survive a CSV re-import of the rider."""
+    client.post("/riders", json={"tag_id": "ST4", "bib": "4", "name": "R"})
+    client.patch("/riders/ST4/status", json={"status": "dnf"})
+    # Re-couple / re-import the same tag (upsert)
+    client.post("/riders", json={"tag_id": "ST4", "bib": "4", "name": "R Renamed"})
+    got = client.get("/riders/ST4").json()
+    assert got["name"] == "R Renamed"
+    assert got["status"] == "dnf", "status was wiped by re-import"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import statistics
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -38,6 +39,108 @@ class Participant(BaseModel):
     gap_ms: Optional[int] = None
     # Computed: laps behind the leader (0 if same lap)
     laps_behind: Optional[int] = None
+    # F3 — operator-set result status: None/"" (classified), "dnf", "dns", "dsq".
+    status: Optional[str] = None
+    # TT/net time (RECHECK-2026-07-25 #5): elapsed from the rider's FIRST
+    # counted pass to their finish pass (or latest pass while unfinished).
+    # This is the correct individual time for staggered-start formats, where
+    # riders roll across the line to start (read 1) and cross again at the
+    # finish. None until a second pass exists. Uses finish_time when finished,
+    # so post-finish cool-down crossings don't inflate it.
+    net_time_ms: Optional[int] = None
+    # F5 — computed annotation: how many laps look like they were missed by the
+    # reader (a lap interval far above this rider's median). Advisory only; the
+    # operator confirms with a manual +1. Never auto-applied.
+    suspected_missed_reads: int = 0
+    # F5 — the suspected midpoint timestamp for the FIRST detected gap, so the
+    # UI can pre-fill the manual-lap dialog. None when nothing is suspected.
+    suspected_gap_midpoint: Optional[str] = None
+
+
+# Rider result statuses (AUDIT-2026-07 F3). Empty/None = classified/racing.
+STATUS_DNF = "dnf"   # abandoned during the race
+STATUS_DNS = "dns"   # registered but never started
+STATUS_DSQ = "dsq"   # disqualified
+_VALID_STATUSES = {STATUS_DNF, STATUS_DNS, STATUS_DSQ}
+# Sort order for non-classified riders (after all classified finishers).
+_STATUS_RANK = {STATUS_DNF: 0, STATUS_DSQ: 1, STATUS_DNS: 2}
+
+
+# F5 — missed-read detection thresholds.
+# A lap interval above FACTOR × the rider's median lap counts as a suspected
+# missed read; we need at least MIN_INTERVALS clean laps to trust the median.
+# Intervals above PAUSE_FACTOR × median are classified as breaks (rider stopped
+# at the pits / staging), NOT missed reads — otherwise every training pause
+# would flag "⚠×12" and pre-fill the +1 dialog with the midpoint of a coffee
+# break (RECHECK-2026-07-25 #3). A genuinely missed read produces ~2× median;
+# anything much longer is a stop.
+_MISSED_READ_FACTOR = 1.7
+_MISSED_READ_PAUSE_FACTOR = 3.5
+_MISSED_READ_MIN_INTERVALS = 4
+
+
+def _lap_intervals_s(pass_times: List[str]) -> List[float]:
+    """Seconds between consecutive counted passes."""
+    if len(pass_times) < 2:
+        return []
+    ts = [parse_iso(t) for t in pass_times]
+    return [(ts[i] - ts[i - 1]).total_seconds() for i in range(1, len(ts))]
+
+
+def suspected_missed_reads(
+    pass_times: List[str],
+    factor: float = _MISSED_READ_FACTOR,
+    min_intervals: int = _MISSED_READ_MIN_INTERVALS,
+    pause_factor: float = _MISSED_READ_PAUSE_FACTOR,
+) -> Tuple[int, Optional[str]]:
+    """Detect laps that look like the reader missed a pass.
+
+    Returns (count, first_gap_midpoint_iso). A rider whose lap interval is far
+    above their own median (robust to a few outliers) probably crossed the
+    line one or more times unseen. We report how many laps look missed and the
+    midpoint timestamp of the FIRST such gap so the UI can pre-fill the manual
+    +1 dialog. Purely advisory — the domain never adds the lap itself.
+
+    Intervals above pause_factor × median are treated as BREAKS (rider stopped
+    riding) and produce no flag — a missed read shows up as ~2× median, not
+    ~10×.
+    """
+    intervals = _lap_intervals_s(pass_times)
+    if len(intervals) < min_intervals:
+        return 0, None
+    med = statistics.median(intervals)
+    if med <= 0:
+        return 0, None
+
+    missed = 0
+    first_mid: Optional[str] = None
+    ts = [parse_iso(t) for t in pass_times]
+    for idx, iv in enumerate(intervals):
+        if iv > factor * med:
+            if iv > pause_factor * med:
+                # A stop/pause, not a missed read — skip without flagging.
+                continue
+            # round(iv/med) laps' worth of time elapsed → that many minus one
+            # were presumably missed.
+            n = max(round(iv / med) - 1, 1)
+            missed += n
+            if first_mid is None:
+                midpoint = ts[idx] + (ts[idx + 1] - ts[idx]) / 2
+                first_mid = midpoint.isoformat(timespec="milliseconds").replace(
+                    "+00:00", "Z"
+                )
+    return missed, first_mid
+
+
+# Finish models (AUDIT-2026-07 F1).
+# - "leader": criterium model — the FIRST rider to reach the target lap count
+#   wins and triggers the finishing phase; every other rider is flagged off at
+#   their NEXT pass, in whatever lap they are on. This is the correct model for
+#   circuit / criterium races and is the default.
+# - "per_rider": each rider finishes independently when they personally reach
+#   the target (time-trial / training semantics).
+FINISH_MODE_LEADER = "leader"
+FINISH_MODE_PER_RIDER = "per_rider"
 
 
 class RaceState:
@@ -46,6 +149,9 @@ class RaceState:
         total_laps: int = 20,
         min_pass_interval_s: float = 8.0,
         race_id: Optional[str] = None,
+        finish_mode: str = "leader",
+        duration_s: Optional[int] = None,
+        final_laps: Optional[int] = None,
     ) -> None:
         # Which persisted race this runtime state belongs to. Optional so
         # in-memory-only tests can construct a RaceState without storage.
@@ -70,6 +176,53 @@ class RaceState:
         self.ended_at: Optional[datetime] = None
         self.participants: Dict[str, Participant] = {}
 
+        # F3 — operator-set result status per tag ("dnf"/"dns"/"dsq"). Mirrors
+        # the persisted Rider.status; the app layer syncs it on load/rebuild.
+        self.status: Dict[str, str] = {}
+        # F5 — per-tag list of counted pass timestamps, for lap-time analysis
+        # (missed-read detection). Rebuilt on replay alongside participants.
+        self.pass_times: Dict[str, List[str]] = {}
+
+        # F1 — finish model + finishing phase.
+        self.finish_mode = finish_mode
+        # Set once the leader crosses the finish line (leader mode). While
+        # True, every other rider is flagged off at their next pass.
+        self.finishing: bool = False
+        self.finishing_at: Optional[datetime] = None
+
+        # F2 — time-based race ("duration_s + final_laps"). When duration_s is
+        # set the race runs on the clock; when the elapsed time reaches
+        # duration_s, the leader's next pass locks a final lap target
+        # (leader_laps + final_laps) and the race counts down those laps.
+        self.duration_s = duration_s
+        self.final_laps = final_laps
+        # Locked absolute lap target once the timer expires; None until then.
+        self.time_target_laps: Optional[int] = None
+
+    def effective_total_laps(self) -> int:
+        """The lap count that currently defines 'finished'.
+
+        For a time-based race this is the locked target once the timer
+        expired (leader_laps + final_laps); otherwise the fixed total_laps.
+        """
+        if self.time_target_laps is not None:
+            return self.time_target_laps
+        return self.total_laps
+
+    def laps_to_go(self) -> Optional[int]:
+        """Laps remaining for the leader (F8 — bell / 'laps to go' display).
+
+        None when it can't be stated: race not started, already ended, or a
+        time-based race whose timer hasn't expired yet (no target locked, so
+        the number of remaining laps is genuinely unknown).
+        """
+        if not self.started or self.ended:
+            return None
+        if self.duration_s is not None and self.time_target_laps is None:
+            return None
+        leader_laps = max((p.laps for p in self.participants.values()), default=0)
+        return max(self.effective_total_laps() - leader_laps, 0)
+
     def start(self, now: Optional[datetime] = None) -> datetime:
         """Mark the race as started. Idempotent: returns the existing started_at
         if already started, so accidental double-clicks don't reset the clock."""
@@ -86,6 +239,19 @@ class RaceState:
         self.ended_at = now or datetime.now(timezone.utc)
         self.ended = True
         return self.ended_at
+
+    def set_status(self, tag_id: str, status: Optional[str]) -> None:
+        """Set (or clear with None/"") a rider's result status (F3).
+
+        Raises ValueError for an unknown status string so the API can 422.
+        """
+        if status in (None, ""):
+            self.status.pop(tag_id, None)
+            return
+        st = status.lower()
+        if st not in _VALID_STATUSES:
+            raise ValueError(f"invalid status: {status!r}")
+        self.status[tag_id] = st
 
     def add_lap(self, tag_id: str, pass_time_iso: str) -> Participant:
         """Add a lap pass. Increments laps and updates last_pass_time.
@@ -143,19 +309,71 @@ class RaceState:
             if delta_s < self.min_pass_interval_s:
                 return p
 
-        # Cooldown check: suppress passes that arrive too soon after the last one.
+        # Cooldown check: suppress passes that arrive too soon after — or at
+        # any time BEFORE — the last counted pass. The delta is deliberately
+        # signed (AUDIT-2026-07 H3): with the old abs() a duplicate or
+        # out-of-order event 20 s OLDER than the last pass counted as a new
+        # lap and rewound last_pass_time (recomputing total_time_ms from the
+        # stale timestamp, possibly negative). Out-of-order delivery is a
+        # normal operating mode: spool drains after an outage arrive behind
+        # newer live events, and re-POSTs after a crash-during-commit repeat
+        # old batches. Monotonic-only counting makes all of those no-ops.
         if p.last_pass_time is not None:
-            delta_s = abs(
-                (parse_iso(pass_time_iso) - parse_iso(p.last_pass_time)).total_seconds()
-            )
-            if delta_s < self.min_pass_interval_s:
+            delta_s = (
+                parse_iso(pass_time_iso) - parse_iso(p.last_pass_time)
+            ).total_seconds()
+            # delta_s <= 0 is checked separately from the cooldown: an event
+            # AT or BEFORE the last counted pass is never a new pass, even
+            # with min_pass_interval_s == 0 (exact duplicates from re-POSTs).
+            if delta_s <= 0 or delta_s < self.min_pass_interval_s:
                 return p
 
         p.laps += 1
         p.last_pass_time = pass_time_iso
-        if not p.finished and p.laps >= self.total_laps:
-            p.finished = True
-            p.finish_time = pass_time_iso
+        # F5 — record the counted pass for lap-time analysis (missed-read
+        # detection in standings()).
+        self.pass_times.setdefault(tag_id, []).append(pass_time_iso)
+
+        # F2 — time-based race: when the elapsed time reaches duration_s, the
+        # first pass by the current lap-leader locks the final target
+        # (their lap count + final_laps). Until locked, no fixed threshold
+        # applies, so a duration race never "finishes" on total_laps alone.
+        if (
+            self.duration_s is not None
+            and self.final_laps is not None
+            and self.time_target_laps is None
+            and self.started_at is not None
+        ):
+            elapsed_s = (parse_iso(pass_time_iso) - self.started_at).total_seconds()
+            if elapsed_s >= self.duration_s:
+                max_laps = max((q.laps for q in self.participants.values()), default=0)
+                if p.laps >= max_laps:
+                    # This rider is (tied for) the leader crossing after the
+                    # timer expired — lock the bell target.
+                    self.time_target_laps = p.laps + self.final_laps
+
+        target = self.effective_total_laps()
+
+        # F1 — finish logic.
+        if not p.finished:
+            if self.finish_mode == FINISH_MODE_LEADER and self.finishing:
+                # Finishing phase: the leader already crossed the target, so
+                # every rider is flagged off at their next pass in their
+                # current lap — no need to reach the target themselves.
+                p.finished = True
+                p.finish_time = pass_time_iso
+            elif self.time_target_laps is None and self.duration_s is not None:
+                # Time-based race, timer not yet expired → no finish threshold.
+                pass
+            elif p.laps >= target:
+                p.finished = True
+                p.finish_time = pass_time_iso
+                if self.finish_mode == FINISH_MODE_LEADER and not self.finishing:
+                    # First rider to reach the target — the winner triggers
+                    # the finishing phase for everyone else.
+                    self.finishing = True
+                    self.finishing_at = parse_iso(pass_time_iso)
+
         t = parse_iso(p.finish_time or p.last_pass_time) if (p.finish_time or p.last_pass_time) else None
         if t is not None:
             # BUG-005 fix: anchor total time at the "Start race" moment
@@ -168,8 +386,10 @@ class RaceState:
         return p
 
     def standings(self) -> List[Participant]:
+        target = self.effective_total_laps()
+
         def _cap_laps(p: Participant) -> int:
-            return min(p.laps, self.total_laps)
+            return min(p.laps, target)
 
         # Sentinel for participants with no pass yet (pre-start, or zero-lap
         # rows created by the unknown-tag SSE flow). float('inf') would
@@ -184,8 +404,42 @@ class RaceState:
             # Use capped laps for ordering to avoid post-finish extra passes affecting classification
             return (finished_flag, _cap_laps(p), -tt_i)
 
-        arr = list(self.participants.values())
-        arr.sort(key=key, reverse=True)
+        # F3 — stamp each participant's status + F5 missed-read annotation,
+        # then split classified from non-classified (DNF/DNS/DSQ).
+        all_p = list(self.participants.values())
+        # Include riders that have a status but never got a participant row —
+        # a DNS rider (registered, never crossed the line) must still show up
+        # in the result, flagged, at the bottom.
+        for tag in self.status:
+            if tag not in self.participants:
+                all_p.append(Participant(tag_id=tag))
+        for p in all_p:
+            p.status = self.status.get(p.tag_id)
+            pts = self.pass_times.get(p.tag_id, [])
+            missed, mid = suspected_missed_reads(pts)
+            p.suspected_missed_reads = missed
+            p.suspected_gap_midpoint = mid
+            # Net time (first counted pass → finish/latest pass). finish_time
+            # is frozen at the finishing pass, so cool-down crossings after the
+            # finish don't stretch it.
+            end_ref = p.finish_time or p.last_pass_time
+            if len(pts) >= 2 and end_ref:
+                p.net_time_ms = int(
+                    (parse_iso(end_ref) - parse_iso(pts[0])).total_seconds() * 1000
+                )
+            else:
+                p.net_time_ms = None
+
+        classified = [p for p in all_p if not p.status]
+        non_classified = [p for p in all_p if p.status]
+
+        classified.sort(key=key, reverse=True)
+        # Non-classified sort AFTER all finishers: DNF before DSQ before DNS,
+        # and within a status more laps rank higher.
+        non_classified.sort(
+            key=lambda p: (_STATUS_RANK.get(p.status or "", 9), -_cap_laps(p))
+        )
+        arr = classified + non_classified
 
         # Compute gap vs. leader using reference times
         def ref_ms(p: Participant) -> Optional[int]:
@@ -194,7 +448,9 @@ class RaceState:
                 return None
             return int(parse_iso(ref).timestamp() * 1000)
 
-        leader = arr[0] if arr else None
+        # The leader is the top CLASSIFIED rider — a DNF rider who led before
+        # abandoning must not anchor the gap column.
+        leader = classified[0] if classified else None
         leader_ref = ref_ms(leader) if leader else None
         leader_laps_capped = _cap_laps(leader) if leader else 0
         for p in arr:

@@ -111,3 +111,102 @@ def test_patch_config_updates_race_total_laps_live(tmp_path, monkeypatch):
     assert app_module.race.total_laps == 9, (
         f"Expected race.total_laps=9, got {app_module.race.total_laps}"
     )
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 H5: min_lap_interval_s is a single source of truth.
+# ---------------------------------------------------------------------------
+
+def test_patch_config_min_lap_applies_to_live_race(tmp_path, monkeypatch):
+    """PATCH /config min_lap_interval_s must change the LIVE race cooldown
+    immediately — previously it only wrote a dead meta key."""
+    app_module = _fresh_app(str(tmp_path), monkeypatch)
+
+    with TestClient(app_module.app) as client:
+        assert app_module.race.min_pass_interval_s != 25.0
+        resp = client.patch("/config", json={"min_lap_interval_s": 25.0})
+        assert resp.status_code == 200, resp.text
+        # Live race object updated in-process, no restart needed
+        assert app_module.race.min_pass_interval_s == 25.0
+
+
+def test_min_lap_interval_survives_restart(tmp_path, monkeypatch):
+    """PATCH min_lap_interval_s, reload — the live cooldown must rehydrate
+    from the persisted config, not fall back to the env default."""
+    data_dir = str(tmp_path / "minlap")
+
+    app_module = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module.app) as client:
+        assert client.patch("/config", json={"min_lap_interval_s": 17.0}).status_code == 200
+
+    app_module2 = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module2.app):
+        assert app_module2.race.min_pass_interval_s == 17.0, (
+            f"cooldown reverted to default after restart: "
+            f"{app_module2.race.min_pass_interval_s}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# RECHECK-2026-07-25 #7: antenna_power settable via /config.
+# ---------------------------------------------------------------------------
+
+def test_patch_antenna_power_persists_and_round_trips(tmp_path, monkeypatch):
+    data_dir = str(tmp_path / "antpow")
+    app_module = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module.app) as client:
+        # Unset by default (desktop falls back to env/300)
+        assert client.get("/config").json()["antenna_power"] is None
+        r = client.patch("/config", json={"antenna_power": 250})
+        assert r.status_code == 200, r.text
+        assert r.json()["antenna_power"] == 250
+
+    # Survives restart
+    app_module2 = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module2.app) as client2:
+        assert client2.get("/config").json()["antenna_power"] == 250
+
+
+def test_patch_antenna_power_validates_range(tmp_path, monkeypatch):
+    app_module = _fresh_app(str(tmp_path), monkeypatch)
+    with TestClient(app_module.app) as client:
+        assert client.patch("/config", json={"antenna_power": 50}).status_code == 422
+        assert client.patch("/config", json={"antenna_power": 999}).status_code == 422
+        assert client.patch("/config", json={"antenna_power": 100}).status_code == 200
+        assert client.patch("/config", json={"antenna_power": 300}).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# First-run assistant flag: must survive restarts (the desktop webview wipes
+# localStorage on every launch).
+# ---------------------------------------------------------------------------
+
+def test_assistant_done_defaults_false_and_persists_across_restart(tmp_path, monkeypatch):
+    data_dir = str(tmp_path / "assistant")
+    app_module = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module.app) as client:
+        assert client.get("/config").json()["assistant_done"] is False
+        r = client.patch("/config", json={"assistant_done": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["assistant_done"] is True
+        # Other PATCHes leave it alone; null is ignored like the other fields.
+        assert client.patch("/config", json={"total_laps": 4}).json()["assistant_done"] is True
+        assert client.patch("/config", json={"assistant_done": None}).json()["assistant_done"] is True
+
+    app_module2 = _fresh_app(data_dir, monkeypatch)
+    with TestClient(app_module2.app) as client2:
+        assert client2.get("/config").json()["assistant_done"] is True
+        assert client2.patch("/config", json={"assistant_done": False}).json()["assistant_done"] is False
+        assert client2.get("/config").json()["assistant_done"] is False
+
+
+@pytest.mark.parametrize("value", ["true", 1, 0, "1", "yes", [], {}])
+def test_assistant_done_rejects_non_bool(tmp_path, monkeypatch, value):
+    app_module = _fresh_app(str(tmp_path), monkeypatch)
+    with TestClient(app_module.app) as client:
+        r = client.patch("/config", json={"assistant_done": value, "total_laps": 9})
+        assert r.status_code == 422, r.text
+        data = client.get("/config").json()
+        assert data["assistant_done"] is False
+        # The whole PATCH was rejected, nothing else was applied.
+        assert data["total_laps"] != 9

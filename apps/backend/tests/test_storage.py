@@ -183,3 +183,83 @@ def test_event_optional_fields_null(tmp_path):
         assert replayed[0].reader_serial is None
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 H3+H4: chronological replay + ingest idempotency
+# ---------------------------------------------------------------------------
+
+def test_iter_events_yields_chronological_order_not_insertion_order(tmp_path):
+    """Spool recovery inserts old events AFTER newer live ones; replay must
+    still be chronological."""
+    db = Storage(tmp_path / "order.db")
+    try:
+        # Insert deliberately out of chronological order
+        db.append_event(_make_event(ts="2026-04-15T12:02:00.000Z"))
+        db.append_event(_make_event(ts="2026-04-15T12:00:00.000Z"))
+        db.append_event(_make_event(ts="2026-04-15T12:01:00.000Z"))
+
+        timestamps = [ev.timestamp for ev in db.iter_events()]
+        assert timestamps == sorted(timestamps), (
+            f"iter_events not chronological: {timestamps}"
+        )
+    finally:
+        db.close()
+
+
+def test_append_event_is_idempotent(tmp_path):
+    """Identical event delivered twice (re-POST after crash-during-commit)
+    must produce exactly one audit row."""
+    db = Storage(tmp_path / "idem.db")
+    try:
+        ev = _make_event(ts="2026-04-15T12:00:00.000Z")
+        db.append_event(ev)
+        db.append_event(ev)
+        assert db.count_events() == 1
+    finally:
+        db.close()
+
+
+def test_append_event_distinct_events_still_insert(tmp_path):
+    """Idempotency must not suppress genuinely different events."""
+    db = Storage(tmp_path / "distinct.db")
+    try:
+        db.append_event(_make_event(ts="2026-04-15T12:00:00.000Z"))
+        db.append_event(_make_event(ts="2026-04-15T12:00:30.000Z"))  # later pass
+        db.append_event(_make_event(tag_id="OTHER", ts="2026-04-15T12:00:00.000Z"))
+        assert db.count_events() == 3
+    finally:
+        db.close()
+
+
+def test_unique_index_migration_dedupes_existing_rows(tmp_path):
+    """A pre-migration DB can already contain duplicate rows; opening it must
+    dedupe (keep lowest id) before creating the unique index."""
+    import sqlite3 as _sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    db = Storage(db_path)
+    active = db.get_active_race_id()
+    db.close()
+
+    # Simulate a legacy DB: drop the unique index, insert duplicates raw.
+    con = _sqlite3.connect(str(db_path))
+    con.execute("DROP INDEX idx_tag_events_unique;")
+    for _ in range(3):
+        con.execute(
+            "INSERT INTO tag_events (race_id, tag_id, event_type, timestamp) "
+            "VALUES (?, 'DUPTAG', 'arrive', '2026-04-15T12:00:00.000Z');",
+            (active,),
+        )
+    con.commit()
+    con.close()
+
+    # Re-open: migration must dedupe and recreate the index.
+    db2 = Storage(db_path)
+    try:
+        assert db2.count_events() == 1
+        # Index is back and enforcing
+        db2.append_event(_make_event(tag_id="DUPTAG", ts="2026-04-15T12:00:00.000Z"))
+        assert db2.count_events() == 1
+    finally:
+        db2.close()

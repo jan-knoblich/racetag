@@ -9,7 +9,7 @@ _build_combined_app() never touch a real database directory.  The isolation
 must be applied via os.environ BEFORE any test imports the backend app module,
 since the backend's app.py runs Storage(...) at module level.
 """
-import os
+import logging
 import sys
 from pathlib import Path
 
@@ -30,3 +30,29 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     and ensures each test starts clean.
     """
     monkeypatch.setenv("RACETAG_DATA_DIR", str(tmp_path / "data"))
+
+
+@pytest.fixture(autouse=True)
+def _no_native_dialogs(monkeypatch):
+    """A real MessageBoxW/osascript dialog would block a headless test run."""
+    monkeypatch.setenv("RACETAG_NO_DIALOGS", "1")
+
+
+@pytest.fixture(autouse=True)
+def _reset_desktop_logging():
+    """Remove file handlers installed by desktop_logging.setup_logging().
+
+    Left in place they would keep files in deleted tmp dirs open (Windows
+    cannot delete those) and swallow log records other tests expect.
+    """
+    yield
+    desktop_logging = sys.modules.get("desktop_logging")
+    if desktop_logging is None:
+        return
+    desktop_logging._remove_own_handlers(logging.getLogger())
+    for name in desktop_logging.BACKEND_LOGGERS:
+        logger = logging.getLogger(name)
+        desktop_logging._remove_own_handlers(logger)
+        logger.propagate = True
+        logger.setLevel(logging.NOTSET)
+    logging.getLogger().setLevel(logging.WARNING)

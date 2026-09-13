@@ -37,6 +37,10 @@ datas = [
     # Reader-service Python source — used by the --reader-service dispatch.
     # In frozen mode app.py resolves the path to _MEIPASS/reader_src.
     (str(REPO_ROOT / "apps" / "reader-service" / "src"), "reader_src"),
+
+    # VERSION file at the bundle root (_MEIPASS/VERSION). The shell reads it at
+    # startup and exports RACETAG_VERSION, which GET /config reports.
+    (str(SPEC_DIR / "VERSION"), "."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -44,23 +48,40 @@ datas = [
 # ---------------------------------------------------------------------------
 # PyInstaller's static analyser misses modules that are imported dynamically
 # (e.g. via importlib) or that are loaded only in frozen mode.
+# Same list as the Windows spec apart from the webview backend — keep in sync.
 hiddenimports = [
+    # Desktop shell modules (apps/desktop). Plain imports from app.py are found
+    # by static analysis; listing them makes a missed module visible at build
+    # time. PyInstaller itself still exits 0 then and only logs
+    # "ERROR: Hidden import 'x' not found"; release.yml fails the build on
+    # that line. So every entry here must be a real, importable module name.
+    "desktop_logging",
+    "native",
+    "reader_supervisor",
+    "support_bundle",
+    "selftest",
     # Reader-service modules (loaded via --reader-service dispatch path).
     "racetag_reader_service",
     "sirit_client",
     "tag_tracker",
     "session_state",
+    "discovery",
+    "status_reporter",
     "utils",
     "backend_client",
     "backend_client.http",
     "backend_client.mock",
     "backend_client.base",
     "models",
-    # Backend modules (loaded via importlib.util in _build_combined_app).
-    "racetag_backend_app",
+    # Backend modules. The backend's app.py itself is loaded by file path from
+    # backend_src (as sys.modules["racetag_backend_app"]), so it cannot be
+    # listed here; its imports are covered by the entries below.
     "storage",
     "models_api",
     "domain",
+    # Reader status protocol (contract 2); analysed here so its imports
+    # (pydantic validators) are bundled even though app.py is loaded by path.
+    "reader_status_hub",
     # FastAPI / Starlette internals that are often missed.
     "fastapi",
     "fastapi.staticfiles",
@@ -92,9 +113,8 @@ hiddenimports = [
     # pywebview macOS backend.
     "webview",
     "webview.platforms.cocoa",
-    # multiprocessing support (needed by PyInstaller on macOS).
+    # multiprocessing (freeze_support is a function in it, not a module).
     "multiprocessing",
-    "multiprocessing.freeze_support",
 ]
 
 # ---------------------------------------------------------------------------

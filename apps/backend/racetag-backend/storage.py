@@ -41,15 +41,19 @@ if TYPE_CHECKING:
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS races (
-    id            TEXT PRIMARY KEY,
-    name          TEXT NOT NULL,
-    scheduled_at  TEXT,
-    total_laps    INTEGER NOT NULL DEFAULT 5,
-    started       INTEGER NOT NULL DEFAULT 0,
-    started_at    TEXT,
-    ended         INTEGER NOT NULL DEFAULT 0,
-    ended_at      TEXT,
-    created_at    TEXT NOT NULL
+    id                   TEXT PRIMARY KEY,
+    name                 TEXT NOT NULL,
+    scheduled_at         TEXT,
+    total_laps           INTEGER NOT NULL DEFAULT 5,
+    started              INTEGER NOT NULL DEFAULT 0,
+    started_at           TEXT,
+    ended                INTEGER NOT NULL DEFAULT 0,
+    ended_at             TEXT,
+    created_at           TEXT NOT NULL,
+    snapshot_interval_s  INTEGER,
+    finish_mode          TEXT NOT NULL DEFAULT 'leader',
+    duration_s           INTEGER,
+    final_laps           INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS riders (
@@ -58,6 +62,7 @@ CREATE TABLE IF NOT EXISTS riders (
     bib        TEXT NOT NULL,
     name       TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    status     TEXT,
     PRIMARY KEY (race_id, tag_id),
     FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE
 );
@@ -133,11 +138,49 @@ class Storage:
         # Migrate pre-multi-race rows to the new schema, then make sure there
         # is at least one race + an active id set.
         self._migrate_legacy()
+        # Add columns introduced after the initial multi-race migration.
+        self._ensure_races_snapshot_interval_column()
+        self._ensure_races_race_format_columns()
+        self._ensure_riders_status_column()
+        self._ensure_riders_stammdaten_columns()
         self._ensure_default_race()
         # Create the race index now that tag_events.race_id is guaranteed to exist.
         with self._lock:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tag_events_race ON tag_events(race_id);"
+            )
+        self._ensure_tag_events_unique_index()
+
+    def _ensure_tag_events_unique_index(self) -> None:
+        """Create the idempotency index for tag_events (AUDIT-2026-07 H4).
+
+        Duplicate audit rows (same race/tag/type/timestamp) come from
+        re-POSTed batches after a crash-during-commit or repeated spool
+        drains; on replay each duplicate used to count as a real lap.
+
+        Pre-existing DBs may already CONTAIN duplicates, which would make
+        CREATE UNIQUE INDEX fail — so on first migration we delete exact
+        duplicates (keeping the lowest id). Guarded by an index-exists check
+        so the dedupe scan doesn't run on every startup.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_tag_events_unique';"
+            ).fetchone()
+            if row is not None:
+                return
+            self._conn.execute(
+                """
+                DELETE FROM tag_events WHERE id NOT IN (
+                    SELECT MIN(id) FROM tag_events
+                    GROUP BY race_id, tag_id, event_type, timestamp
+                );
+                """
+            )
+            self._conn.execute(
+                "CREATE UNIQUE INDEX idx_tag_events_unique "
+                "ON tag_events(race_id, tag_id, event_type, timestamp);"
             )
 
     # ---- internal helpers -----------------------------------------------
@@ -166,6 +209,61 @@ class Storage:
         return row is not None
 
     # ---- Bootstrap / migration -----------------------------------------
+
+    def _ensure_races_snapshot_interval_column(self) -> None:
+        """Add the `snapshot_interval_s` column to a pre-existing races table.
+
+        Idempotent: if the column already exists (e.g. fresh DB created from
+        the current DDL above), this is a no-op. Old DBs from before the
+        auto-snapshot feature need the column added so the rest of the code
+        can SELECT/UPDATE it.
+        """
+        cols = self._table_columns("races")
+        if "snapshot_interval_s" in cols:
+            return
+        with self._lock:
+            self._conn.execute(
+                "ALTER TABLE races ADD COLUMN snapshot_interval_s INTEGER;"
+            )
+
+    def _ensure_riders_status_column(self) -> None:
+        """Add the riders.status column to a pre-existing riders table
+        (AUDIT-2026-07 F3). Idempotent."""
+        cols = self._table_columns("riders")
+        if "status" in cols:
+            return
+        with self._lock:
+            self._conn.execute("ALTER TABLE riders ADD COLUMN status TEXT;")
+
+    def _ensure_riders_stammdaten_columns(self) -> None:
+        """Add riders.verein / riders.uci_id for the SRB official-result
+        export (post-Karli-Krit TODO). Idempotent."""
+        cols = self._table_columns("riders")
+        with self._lock:
+            if "verein" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE riders ADD COLUMN verein TEXT NOT NULL DEFAULT '';")
+            if "uci_id" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE riders ADD COLUMN uci_id TEXT NOT NULL DEFAULT '';")
+
+    def _ensure_races_race_format_columns(self) -> None:
+        """Add the finish_mode / duration_s / final_laps columns to a
+        pre-existing races table (AUDIT-2026-07 F1+F2). Idempotent."""
+        cols = self._table_columns("races")
+        with self._lock:
+            if "finish_mode" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE races ADD COLUMN finish_mode TEXT NOT NULL DEFAULT 'leader';"
+                )
+            if "duration_s" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE races ADD COLUMN duration_s INTEGER;"
+                )
+            if "final_laps" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE races ADD COLUMN final_laps INTEGER;"
+                )
 
     def _migrate_legacy(self) -> None:
         """Migrate pre-multi-race ``riders`` / ``tag_events`` rows into the new
@@ -259,47 +357,39 @@ class Storage:
 
     # ---- Race CRUD ------------------------------------------------------
 
+    _RACE_INSERT_SQL = """
+        INSERT INTO races
+            (id, name, scheduled_at, total_laps, started, started_at, ended,
+             ended_at, created_at, snapshot_interval_s, finish_mode,
+             duration_s, final_laps)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    """
+
+    @staticmethod
+    def _race_insert_params(race: "Race") -> tuple:
+        return (
+            race.id,
+            race.name,
+            _iso(race.scheduled_at),
+            race.total_laps,
+            1 if race.started else 0,
+            _iso(race.started_at),
+            1 if race.ended else 0,
+            _iso(race.ended_at),
+            _iso(race.created_at),
+            race.snapshot_interval_s,
+            race.finish_mode,
+            race.duration_s,
+            race.final_laps,
+        )
+
     def _insert_race(self, race: "Race") -> None:
         """Insert without locking (used inside migration which already holds the lock)."""
-        self._conn.execute(
-            """
-            INSERT INTO races
-                (id, name, scheduled_at, total_laps, started, started_at, ended, ended_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                race.id,
-                race.name,
-                _iso(race.scheduled_at),
-                race.total_laps,
-                1 if race.started else 0,
-                _iso(race.started_at),
-                1 if race.ended else 0,
-                _iso(race.ended_at),
-                _iso(race.created_at),
-            ),
-        )
+        self._conn.execute(self._RACE_INSERT_SQL, self._race_insert_params(race))
 
     def create_race(self, race: "Race") -> "Race":
         """Insert a new race row and return the (persisted) Race."""
-        self._execute(
-            """
-            INSERT INTO races
-                (id, name, scheduled_at, total_laps, started, started_at, ended, ended_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                race.id,
-                race.name,
-                _iso(race.scheduled_at),
-                race.total_laps,
-                1 if race.started else 0,
-                _iso(race.started_at),
-                1 if race.ended else 0,
-                _iso(race.ended_at),
-                _iso(race.created_at),
-            ),
-        )
+        self._execute(self._RACE_INSERT_SQL, self._race_insert_params(race))
         return race
 
     def get_race(self, race_id: str) -> Optional["Race"]:
@@ -326,7 +416,8 @@ class Storage:
         if not fields:
             return self.get_race(race_id)
         allowed = {"name", "scheduled_at", "total_laps", "started", "started_at",
-                   "ended", "ended_at"}
+                   "ended", "ended_at", "snapshot_interval_s", "finish_mode",
+                   "duration_s", "final_laps"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"unknown race fields: {sorted(unknown)}")
@@ -354,6 +445,20 @@ class Storage:
     @staticmethod
     def _row_to_race(row: sqlite3.Row) -> "Race":
         from domain.races import Race
+
+        def _opt_int(col: str) -> Optional[int]:
+            # Columns added by later migrations may be absent on very old rows.
+            try:
+                raw = row[col]
+            except (KeyError, IndexError):
+                return None
+            return int(raw) if raw is not None else None
+
+        try:
+            finish_mode = row["finish_mode"] or "leader"
+        except (KeyError, IndexError):
+            finish_mode = "leader"
+
         return Race(
             id=row["id"],
             name=row["name"],
@@ -364,6 +469,10 @@ class Storage:
             ended=bool(row["ended"]),
             ended_at=_parse_iso(row["ended_at"]),
             created_at=_parse_iso(row["created_at"]) or datetime.now(timezone.utc),
+            snapshot_interval_s=_opt_int("snapshot_interval_s"),
+            finish_mode=finish_mode,
+            duration_s=_opt_int("duration_s"),
+            final_laps=_opt_int("final_laps"),
         )
 
     # ---- Active race ----------------------------------------------------
@@ -404,23 +513,44 @@ class Storage:
             if hasattr(rider.created_at, "isoformat")
             else str(rider.created_at)
         )
+        # status is deliberately NOT in the UPDATE clause: a CSV re-import or
+        # re-coupling must not wipe a DNF/DNS/DSQ the operator already set
+        # (F3). Status is managed through set_rider_status(). verein/uci_id
+        # ARE updated — their keep-if-incoming-empty semantics live in
+        # RiderStore.upsert, which passes the merged values down.
         self._execute(
             """
-            INSERT INTO riders (race_id, tag_id, bib, name, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO riders (race_id, tag_id, bib, name, created_at, status,
+                                verein, uci_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(race_id, tag_id) DO UPDATE SET
                 bib        = excluded.bib,
                 name       = excluded.name,
-                created_at = excluded.created_at;
+                created_at = excluded.created_at,
+                verein     = excluded.verein,
+                uci_id     = excluded.uci_id;
             """,
-            (rid, rider.tag_id, rider.bib, rider.name, created_at_str),
+            (rid, rider.tag_id, rider.bib, rider.name, created_at_str,
+             rider.status, rider.verein, rider.uci_id),
         )
+
+    def set_rider_status(
+        self, tag_id: str, status: Optional[str], race_id: Optional[str] = None
+    ) -> bool:
+        """Set (or clear with None) a rider's result status. Returns False if
+        no such rider exists in the race."""
+        rid = self._require_race_id(race_id)
+        cur = self._execute(
+            "UPDATE riders SET status = ? WHERE race_id = ? AND tag_id = ?;",
+            (status, rid, tag_id),
+        )
+        return cur.rowcount > 0
 
     def get_rider(self, tag_id: str, race_id: Optional[str] = None) -> Optional["Rider"]:
         rid = self._require_race_id(race_id)
         row = self._conn.execute(
-            "SELECT tag_id, bib, name, created_at FROM riders "
-            "WHERE race_id = ? AND tag_id = ?;",
+            "SELECT tag_id, bib, name, created_at, status, verein, uci_id "
+            "FROM riders WHERE race_id = ? AND tag_id = ?;",
             (rid, tag_id),
         ).fetchone()
         return self._row_to_rider(row) if row else None
@@ -428,8 +558,8 @@ class Storage:
     def list_riders(self, race_id: Optional[str] = None) -> List["Rider"]:
         rid = self._require_race_id(race_id)
         rows = self._conn.execute(
-            "SELECT tag_id, bib, name, created_at FROM riders "
-            "WHERE race_id = ? ORDER BY rowid;",
+            "SELECT tag_id, bib, name, created_at, status, verein, uci_id "
+            "FROM riders WHERE race_id = ? ORDER BY rowid;",
             (rid,),
         ).fetchall()
         return [self._row_to_rider(r) for r in rows]
@@ -453,20 +583,36 @@ class Storage:
         created_at = datetime.fromisoformat(created_at_str)
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
+        def opt(key, default):
+            try:
+                return row[key] if row[key] is not None else default
+            except (KeyError, IndexError):
+                return default
+
         return Rider(
             tag_id=row["tag_id"],
             bib=row["bib"],
             name=row["name"],
             created_at=created_at,
+            status=opt("status", None),
+            verein=opt("verein", ""),
+            uci_id=opt("uci_id", ""),
         )
 
     # ---- Tag-event persistence (race-scoped) ---------------------------
 
     def append_event(self, event: "TagEventDTO", race_id: Optional[str] = None) -> None:
+        """Persist one event. Idempotent (AUDIT-2026-07 H4): re-delivery of an
+        identical event — reader-service re-POST after a crash-during-commit,
+        spool drain replaying a partially delivered outage window — must not
+        create a duplicate audit row, otherwise replay-on-restart would count
+        the duplicate as a real lap. Enforced by the unique index on
+        (race_id, tag_id, event_type, timestamp) + INSERT OR IGNORE.
+        """
         rid = self._require_race_id(race_id)
         self._execute(
             """
-            INSERT INTO tag_events
+            INSERT OR IGNORE INTO tag_events
                 (race_id, tag_id, event_type, timestamp, antenna, rssi, reader_serial)
             VALUES (?, ?, ?, ?, ?, ?, ?);
             """,
@@ -482,13 +628,21 @@ class Storage:
         )
 
     def iter_events(self, race_id: Optional[str] = None) -> Iterator["TagEventDTO"]:
-        """Yield TagEventDTOs for the given race in insertion order (replay)."""
+        """Yield TagEventDTOs for the given race in CHRONOLOGICAL order (replay).
+
+        Ordered by timestamp (id as tiebreaker), not insertion order
+        (AUDIT-2026-07 H3): spool-recovered events are inserted AFTER newer
+        live events, so insertion order is not chronological whenever a spool
+        drain happened. Replaying out of order used to rewind last_pass_time
+        and over-count laps. timestamps are uniform ISO-8601 UTC "Z" strings,
+        so lexicographic ordering == chronological ordering.
+        """
         from models_api import EventType, TagEventDTO
 
         rid = self._require_race_id(race_id)
         rows = self._conn.execute(
             "SELECT tag_id, event_type, timestamp, antenna, rssi, reader_serial "
-            "FROM tag_events WHERE race_id = ? ORDER BY id;",
+            "FROM tag_events WHERE race_id = ? ORDER BY timestamp, id;",
             (rid,),
         ).fetchall()
         for row in rows:
@@ -510,9 +664,114 @@ class Storage:
         ).fetchone()
         return row[0]
 
+    def update_rider_bib_name_all_races(
+        self, tag_id: str, bib: str, name: str,
+        verein: str = "", uci_id: str = "",
+    ) -> int:
+        """Set bib/name (+ Stammdaten) for this tag in EVERY race that has it
+        registered.
+
+        Day-model for multi-race events (Karli Krit): one tag + one number
+        per PERSON for the whole day, so a late-entry name applies to all
+        races the tag was pre-imported into. Update-only by design — races
+        that don't know the tag are left alone. Status is never touched;
+        verein/uci_id only overwrite when non-empty (keep semantics).
+        Returns the number of race rows updated.
+        """
+        cur = self._execute(
+            """
+            UPDATE riders SET
+                bib = ?, name = ?,
+                verein = CASE WHEN ? != '' THEN ? ELSE verein END,
+                uci_id = CASE WHEN ? != '' THEN ? ELSE uci_id END
+            WHERE tag_id = ?;
+            """,
+            (bib, name, verein, verein, uci_id, uci_id, tag_id),
+        )
+        return cur.rowcount if cur is not None else 0
+
+    def tag_read_summary(self, race_id: Optional[str] = None) -> list[dict]:
+        """One row per distinct tag read in the race, in first-read order.
+
+        First-read order == the order the operator waved the tags, which is
+        what the tag-inventory CSV export (GET /tags.csv) presents to the
+        user; ``reads`` doubles as a read-quality check per tag.
+        """
+        rid = self._require_race_id(race_id)
+        rows = self._conn.execute(
+            "SELECT tag_id, COUNT(*) AS reads, MIN(timestamp) AS first_seen "
+            "FROM tag_events WHERE race_id = ? "
+            "GROUP BY tag_id ORDER BY first_seen, tag_id;",
+            (rid,),
+        ).fetchall()
+        return [
+            {"tag_id": r["tag_id"], "reads": r["reads"], "first_seen": r["first_seen"]}
+            for r in rows
+        ]
+
     def clear_events(self, race_id: Optional[str] = None) -> None:
         rid = self._require_race_id(race_id)
         self._execute("DELETE FROM tag_events WHERE race_id = ?;", (rid,))
+
+    def find_last_event_id_for_tag(
+        self,
+        tag_id: str,
+        race_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+    ) -> Optional[int]:
+        """Return the id (PK) of the most-recently-inserted event for *tag_id*
+        in the given race, or None if no event exists.
+
+        Used by the manual-lap-correction endpoint: an operator can delete the
+        most-recent lap when the reader miscounted or recorded a phantom.
+
+        If event_type is given, only events of that type are considered (e.g.
+        only 'arrive' events count as laps).
+        """
+        rid = self._require_race_id(race_id)
+        if event_type is not None:
+            row = self._conn.execute(
+                "SELECT id FROM tag_events "
+                "WHERE race_id = ? AND tag_id = ? AND event_type = ? "
+                "ORDER BY id DESC LIMIT 1;",
+                (rid, tag_id, event_type),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT id FROM tag_events "
+                "WHERE race_id = ? AND tag_id = ? "
+                "ORDER BY id DESC LIMIT 1;",
+                (rid, tag_id),
+            ).fetchone()
+        return row["id"] if row else None
+
+    def delete_event_by_id(self, event_id: int) -> bool:
+        """Delete the tag_events row with the given primary key.
+
+        Returns True if a row was deleted, False if no row matched. Used by
+        the manual-lap-correction endpoint to drop a single mis-read.
+        """
+        cur = self._execute(
+            "DELETE FROM tag_events WHERE id = ?;", (event_id,)
+        )
+        return cur.rowcount > 0
+
+    def delete_events_for_tag(
+        self, tag_id: str, race_id: Optional[str] = None
+    ) -> int:
+        """Delete ALL events for *tag_id* in the given race (default: active).
+
+        Rider-reset (2026-07-25): a botched measurement — e.g. a TT run where
+        the start read caught the rider while staging — is wiped in one action
+        so the rider can roll over the line again for a fresh attempt.
+        Returns the number of rows deleted.
+        """
+        rid = self._require_race_id(race_id)
+        cur = self._execute(
+            "DELETE FROM tag_events WHERE race_id = ? AND tag_id = ?;",
+            (rid, tag_id),
+        )
+        return cur.rowcount
 
     def count_events_by_antenna(
         self, window_s: int, race_id: Optional[str] = None
@@ -553,7 +812,27 @@ class Storage:
             (key, value),
         )
 
+    def delete_meta(self, key: str) -> None:
+        self._execute("DELETE FROM meta WHERE key = ?;", (key,))
+
     # ---- Lifecycle ------------------------------------------------------
 
     def close(self) -> None:
         self._conn.close()
+
+    # ---- Snapshots / online backup -------------------------------------
+
+    def backup_to(self, dst_path: "str | Path") -> None:
+        """Write an online SQLite backup of the live DB to *dst_path*.
+
+        Uses sqlite3's online backup API: the source connection stays usable,
+        WAL is reconciled, and the target file is a consistent, point-in-time
+        snapshot. Holds the write lock during the call to keep the source
+        stable.
+        """
+        target = sqlite3.connect(str(dst_path))
+        try:
+            with self._lock:
+                self._conn.backup(target)
+        finally:
+            target.close()

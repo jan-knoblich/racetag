@@ -108,14 +108,21 @@ paths:
     patch:
       summary: Partially update config (W-074)
       description: |
-        Accepts a partial ConfigDTO. Validates ranges:
+        Accepts a partial ConfigDTO. Absent fields are left untouched. Validates ranges:
         - min_lap_interval_s: 0.0–60.0
         - total_laps: 1–999
-        - reader_ip: must be valid IPv4
+        - reader_ip: must be valid IPv4; an explicit `null` clears the persisted IP
+        - antenna_power: 100–300 (0.1 dBm)
+        - assistant_done: must be a JSON boolean (strings or numbers → 422); `null` is ignored
 
-        On total_laps change the in-memory race is updated immediately and a
-        race_updated SSE event is broadcast.  reader_ip and min_lap_interval_s
-        are persisted only (external consumers restart separately).
+        `desktop` and `version` are read-only and ignored here.
+
+        On min_lap_interval_s or total_laps change the in-memory race is
+        updated immediately and a race_updated SSE event is broadcast.
+        reader_ip and antenna_power are persisted only; the reader-service
+        receives them in the reply to its next `POST /reader/status` (within
+        about 2 s) and reconnects by itself. This endpoint never restarts the
+        reader-service.
       requestBody:
         required: true
         content:
@@ -152,17 +159,110 @@ paths:
               schema:
                 $ref: '#/components/schemas/AntennaDiagnosticsDTO'
 
+  /reader/status:
+    post:
+      summary: Reader-service heartbeat
+      description: |
+        Sent by the reader-service every `heartbeat_interval_s` (default 2 s)
+        and immediately on every state change. Only `state` is validated
+        strictly (unknown values → 422); every other malformed field is
+        sanitised to null/empty instead of rejecting the heartbeat.
+
+        Backend rules:
+        - A valid `discovered_ip` that differs from the persisted reader_ip is
+          persisted before the reply is built, so the reply already echoes it.
+        - A `reader_status` SSE frame is published when state, ip, serial,
+          antennas, error, candidates or consecutive_failures changed, and
+          otherwise at most every 5 s.
+        - `discovery.request_id` matching a waiting `POST /reader/discover`
+          completes that request.
+        - The reply carries at most one queued command, delivered exactly
+          once. A `stopped` heartbeat never receives a command.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReaderStatusReportDTO'
+      responses:
+        '200':
+          description: Current reader config and an optional command
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderStatusReplyDTO'
+        '422':
+          description: Missing or unknown `state`, or a body that is not a JSON object
+    get:
+      summary: Last reader status
+      description: |
+        `state` is `unknown` before the first heartbeat (all other status
+        fields null/empty) and whenever no heartbeat arrived for 6 s (last
+        known details are kept). A `reader_status` SSE frame with
+        `state: unknown` is published once on that transition.
+      responses:
+        '200':
+          description: Reader status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderStatusDTO'
+
+  /reader/discover:
+    post:
+      summary: Search the network for readers
+      description: |
+        Queues a `discover` command for the reader-service and waits up to
+        15 s for its result. Concurrent requests share one discovery run.
+        Always returns 200; `error` is null, `timeout` (no result within
+        15 s) or `reader_service_unavailable` (reader status is `unknown`;
+        returns immediately). Exception: before the first heartbeat, while the
+        registered reader controller reports its process as running, the
+        reader-service is still starting, so the command is queued and waits
+        for its first heartbeat within the normal 15 s. The candidates also
+        reach the UI through the next `reader_status` SSE frame.
+      responses:
+        '200':
+          description: Discovery result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderDiscoverResultDTO'
+
+  /reader/restart:
+    post:
+      summary: Reconnect the reader
+      description: |
+        Desktop build (reader controller registered): restarts the
+        reader-service process (`via: supervisor`). Otherwise, or if the
+        controller fails, queues a `reconnect` command delivered in the next
+        heartbeat reply (`via: command`); a reconnect that is already queued
+        is not duplicated.
+      responses:
+        '202':
+          description: Restart accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderRestartResultDTO'
+
   /stream:
     get:
       summary: Server-Sent Events stream for live updates
       description: |
-        Emits newline-delimited `data:` frames. Known event types:
+        Emits newline-delimited `data:` frames; the event type is the `type`
+        key of the JSON payload. Known event types:
         - `lap` – a tag has crossed the timing line.
         - `standings` – full standings snapshot (enriched with bib/name when a rider is registered).
         - `unknown_tag` – an `arrive` was received for a tag with no registered rider.
+        - `tag_seen` – throttled per-tag live read feed (coupling mode).
+        - `race_started`, `race_reset`, `race_updated`, `race_ended`, `race_reopened`, `active_race_changed` – race lifecycle and settings changes.
+        - `reader_status` – reader connection status; payload is `ReaderStatusDTO` plus `type`.
+          Sent on change, at most every 5 s otherwise, and once with `state: unknown`
+          when the reader-service heartbeat goes stale.
       responses:
         '200':
-          description: SSE stream of lap, standings, and unknown_tag events
+          description: SSE stream of live race and reader events
           content:
             text/event-stream:
               schema:
@@ -474,6 +574,270 @@ components:
           minimum: 1
           maximum: 999
           description: Target total laps for the race
+        antenna_power:
+          type: integer
+          nullable: true
+          minimum: 100
+          maximum: 300
+          description: Antenna conducted power in 0.1 dBm (300 = 30 dBm). Delivered to the reader-service in heartbeat replies.
+          example: 250
+        assistant_done:
+          type: boolean
+          default: false
+          description: First-run assistant finished or skipped. Persisted in the meta table (key `assistant_done`) so it survives app restarts; the desktop webview does not keep localStorage.
+        desktop:
+          type: boolean
+          readOnly: true
+          description: True when the desktop shell registered its reader controller (packaged app). Ignored in PATCH.
+        version:
+          type: string
+          nullable: true
+          readOnly: true
+          description: App version from RACETAG_VERSION (set by the desktop shell). Ignored in PATCH.
+          example: 0.3.0
+
+    ReaderCandidateDTO:
+      type: object
+      required: [ip]
+      properties:
+        ip:
+          type: string
+          example: 192.168.178.22
+        serial:
+          type: string
+          nullable: true
+          example: 00179E123456
+        source:
+          type: string
+          nullable: true
+          # No `null` in the enum: datamodel-codegen (Docker codegen stage) turns
+          # a nullable enum listing null into a pydantic-v1 __root__ model that
+          # fails to import under pydantic 2. `nullable: true` already allows null.
+          enum: [arp, sweep, linklocal, connected]
+
+    ReaderDiscoveryResultDTO:
+      type: object
+      required: [request_id]
+      properties:
+        request_id:
+          type: integer
+          description: Id of the `discover` command this result answers
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReaderCandidateDTO'
+        error:
+          type: string
+          nullable: true
+
+    ReaderStatusReportDTO:
+      type: object
+      required: [state]
+      description: Heartbeat body. The reader-service always sends every key (null when unknown).
+      properties:
+        state:
+          type: string
+          enum: [searching, connecting, configuring, active, lost, stopped]
+        ip:
+          type: string
+          nullable: true
+          description: Current target IP
+        target_source:
+          type: string
+          nullable: true
+          # See ReaderCandidateDTO.source: no `null` inside the enum.
+          enum: [cli, config, discovery]
+        serial:
+          type: string
+          nullable: true
+        antennas:
+          type: array
+          items:
+            type: integer
+          description: Powered antenna ports after configuration; empty before
+        antenna_power:
+          type: integer
+          nullable: true
+        antenna_reads:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Raw arrive count per antenna (string keys) since the current connection was established
+        last_event_at:
+          type: string
+          nullable: true
+          description: UTC ISO time the reader-service last received any tag event
+        connected_since:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        consecutive_failures:
+          type: integer
+          description: Failed connect/configure attempts since the last `active`
+        next_retry_s:
+          type: number
+          nullable: true
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReaderCandidateDTO'
+          description: Result of the most recent discovery run
+        discovered_ip:
+          type: string
+          nullable: true
+          description: Set after the reader-service switched target because of discovery, until the reply echoes it as config.reader_ip. The backend persists each discovery once; repeats of the same value from the same pid do not overwrite a reader_ip changed via PATCH /config in the meantime.
+        discovery:
+          allOf:
+            - $ref: '#/components/schemas/ReaderDiscoveryResultDTO'
+          nullable: true
+          description: Present exactly once in reply to a `discover` command
+        reader_service_version:
+          type: string
+          nullable: true
+        pid:
+          type: integer
+          nullable: true
+
+    ReaderCommandDTO:
+      type: object
+      required: [id, type]
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+          enum: [discover, reconnect]
+
+    ReaderStatusReplyDTO:
+      type: object
+      required: [config, command]
+      properties:
+        config:
+          type: object
+          required: [reader_ip, antenna_power]
+          properties:
+            reader_ip:
+              type: string
+              nullable: true
+            antenna_power:
+              type: integer
+              nullable: true
+        command:
+          allOf:
+            - $ref: '#/components/schemas/ReaderCommandDTO'
+          nullable: true
+
+    ReaderSupervisorDTO:
+      type: object
+      description: Desktop reader-service supervisor status
+      properties:
+        running:
+          type: boolean
+        pid:
+          type: integer
+          nullable: true
+        restart_count:
+          type: integer
+        last_exit_code:
+          type: integer
+          nullable: true
+        restart_pending:
+          type: boolean
+          description: True from an accepted restart() until the replacement reader-service child has been spawned
+
+    ReaderStatusDTO:
+      type: object
+      description: All fields of ReaderStatusReportDTO except `discovery`, with `state` extended by `unknown`.
+      properties:
+        state:
+          type: string
+          enum: [searching, connecting, configuring, active, lost, stopped, unknown]
+        ip:
+          type: string
+          nullable: true
+        target_source:
+          type: string
+          nullable: true
+        serial:
+          type: string
+          nullable: true
+        antennas:
+          type: array
+          items:
+            type: integer
+        antenna_power:
+          type: integer
+          nullable: true
+        antenna_reads:
+          type: object
+          additionalProperties:
+            type: integer
+        last_event_at:
+          type: string
+          nullable: true
+        connected_since:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        consecutive_failures:
+          type: integer
+          nullable: true
+        next_retry_s:
+          type: number
+          nullable: true
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReaderCandidateDTO'
+        discovered_ip:
+          type: string
+          nullable: true
+        reader_service_version:
+          type: string
+          nullable: true
+        pid:
+          type: integer
+          nullable: true
+        updated_at:
+          type: string
+          nullable: true
+          description: UTC ISO time of the last heartbeat
+        age_s:
+          type: number
+          nullable: true
+          description: Seconds since the last heartbeat (null before the first)
+        supervisor:
+          allOf:
+            - $ref: '#/components/schemas/ReaderSupervisorDTO'
+          nullable: true
+          description: Null outside the desktop build
+
+    ReaderDiscoverResultDTO:
+      type: object
+      required: [candidates, error]
+      properties:
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReaderCandidateDTO'
+        error:
+          type: string
+          nullable: true
+          description: null, `timeout`, `reader_service_unavailable`, or an error reported by the reader-service
+
+    ReaderRestartResultDTO:
+      type: object
+      required: [accepted, via]
+      properties:
+        accepted:
+          type: boolean
+        via:
+          type: string
+          enum: [supervisor, command]
 
     AntennaDiagnosticsDTO:
       type: object

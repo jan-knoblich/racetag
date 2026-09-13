@@ -44,6 +44,10 @@ apps/desktop/build/
 apps/desktop/dist/
 *.spec.bak
 
+# Inno Setup: WebView2 bootstrapper (downloaded in CI) and installer output
+apps/desktop/installer/MicrosoftEdgeWebview2Setup.exe
+apps/desktop/installer/output/
+
 # Icon intermediates
 apps/desktop/icons/*.iconset/
 
@@ -51,8 +55,9 @@ apps/desktop/icons/*.iconset/
 # not tracked. Re-add with `git add -f <file>` if a specific document needs
 # to ship in the public repo.
 /ARCHITECTURE.md
-/ISSUES.md
 /PACKAGING.md
-/PLAN.md
 docs/issues/
 docs/FIELD_TEST_CHECKLIST.md
+
+# lokale Planungs-Artefakte (April 2026)
+/docs/history/

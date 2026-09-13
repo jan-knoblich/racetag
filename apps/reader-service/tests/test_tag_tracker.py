@@ -212,3 +212,61 @@ def test_record_seen_first_time_only():
     assert tracker.record_seen("AABB01") is True
     assert tracker.record_seen("AABB01") is False
     assert tracker.record_seen("AABB02") is True
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2026-07 M6: default is presence-union only (no time cooldown).
+# ---------------------------------------------------------------------------
+
+def test_default_min_lap_interval_is_zero_presence_union_only():
+    """With the M6 default (0), a tag that departs and re-arrives on the same
+    antenna emits again immediately — the backend owns the time cooldown."""
+    from tag_tracker import TagTracker
+
+    clock = [1000.0]
+    t = TagTracker(clock=lambda: clock[0])
+    assert t.min_lap_interval_s == 0.0  # new default
+
+    assert t.mark_present("AA01", antenna=1) is True   # first arrive
+    assert t.mark_absent("AA01", antenna=1) is True    # departs
+    clock[0] += 0.2                                     # 200 ms later
+    assert t.mark_present("AA01", antenna=1) is True    # re-arrive counts
+
+
+def test_presence_union_still_collapses_multi_antenna_overlap_with_zero_cooldown():
+    """Even with cooldown 0, the same pass seen on two overlapping antennas
+    is ONE arrive (presence-union), not two."""
+    from tag_tracker import TagTracker
+
+    t = TagTracker(min_lap_interval_s=0.0)
+    assert t.mark_present("BB02", antenna=1) is True    # arrives on ant 1
+    assert t.mark_present("BB02", antenna=2) is False   # also seen on ant 2 — not a new lap
+    # departs one antenna, still present on the other
+    assert t.mark_absent("BB02", antenna=1) is False
+    assert t.mark_present("BB02", antenna=1) is False   # ant1 re-sees, still present via ant2
+
+
+# ---------------------------------------------------------------------------
+# reset_presence — per-connection reset (plan B1)
+# ---------------------------------------------------------------------------
+
+class TestResetPresence:
+
+    def test_reset_clears_presence_but_keeps_history_and_cooldown(self):
+        clock = FakeClock(start=100.0)
+        tracker = TagTracker(min_lap_interval_s=10.0, clock=clock)
+        assert tracker.mark_present("E2001", 1) is True
+        tracker.record_seen("E2001")
+
+        tracker.reset_presence()
+
+        assert tracker.present == {}
+        assert "E2001" in tracker.seen
+        assert tracker.last_emitted_at == {"E2001": 100.0}
+        # Cooldown still spans the outage ...
+        clock.advance(5)
+        assert tracker.mark_present("E2001", 1) is False
+        # ... and after it the same tag arrives again instead of being stuck "present".
+        tracker.reset_presence()
+        clock.advance(6)
+        assert tracker.mark_present("E2001", 1) is True

@@ -8,7 +8,7 @@ import time
 from typing import List, Optional
 
 from models import TagEvent
-from utils import get_logger
+from utils import get_logger, resolve_log_dir
 from .base import BackendClient
 
 logger = get_logger("reader.backend.http")
@@ -18,8 +18,11 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
-# Spool file path (relative to the CWD at runtime, i.e. the reader-service root)
-_SPOOL_PATH = os.path.join("logs", "spool.jsonl")
+# Spool file path — absolute, resolved via RACETAG_LOG_DIR / ~/.racetag/logs
+# (AUDIT-2026-07 H1: the old CWD-relative "logs/spool.jsonl" silently failed
+# for a Finder-launched .app whose CWD is the read-only "/", dropping batches
+# instead of spooling them).
+_SPOOL_PATH = os.path.join(resolve_log_dir(), "spool.jsonl")
 
 # Retry back-off delays in seconds
 _RETRY_DELAYS = [0.2, 0.5, 1.0]
@@ -47,7 +50,10 @@ class HttpBackendClient(BackendClient):
     def stop(self) -> None:
         self._stop.set()
         if self._t and self._t.is_alive():
-            self._t.join(timeout=1.5)
+            # 3 s covers the bounded shutdown path in _worker: one quick POST
+            # (1 s timeout) plus spooling. The old 1.5 s killed the daemon
+            # thread mid-retry and lost the final buffer (AUDIT-2026-07 H2).
+            self._t.join(timeout=3.0)
         logger.info("[BACKEND] HTTP client stopped")
 
     def send(self, event: TagEvent) -> None:
@@ -75,6 +81,11 @@ class HttpBackendClient(BackendClient):
 
         while not self._stop.is_set():
             timeout = max(0.0, (self.flush_interval_ms / 1000.0) - (time.monotonic() - last_flush))
+            # Cap the blocking get so a stop() request is noticed promptly
+            # even with a long flush interval — otherwise the worker sits in
+            # get() past stop()'s join timeout and the shutdown flush below
+            # never runs (AUDIT-2026-07 H2).
+            timeout = min(timeout, 0.25)
             try:
                 ev = self._q.get(timeout=timeout)
                 buf.append(ev.to_payload())
@@ -83,13 +94,39 @@ class HttpBackendClient(BackendClient):
                     buf.clear()
                     last_flush = time.monotonic()
             except queue.Empty:
+                # The capped get() can wake before the flush deadline; only
+                # flush when the configured interval has actually elapsed.
+                if (time.monotonic() - last_flush) < (self.flush_interval_ms / 1000.0):
+                    continue
                 if buf:
                     self._flush_with_retry(session, headers, endpoint, buf)
                     buf.clear()
                 last_flush = time.monotonic()
 
+        # ------------------------------------------------------------------
+        # Shutdown path (AUDIT-2026-07 H2): never abandon undelivered events.
+        # Drain everything still sitting in the queue into buf, make ONE
+        # quick delivery attempt (no retries — the common shutdown case is a
+        # dead backend, and a full retry cycle would outlive stop()'s join
+        # timeout), then unconditionally spool whatever wasn't delivered.
+        # ------------------------------------------------------------------
+        try:
+            while True:
+                buf.append(self._q.get_nowait().to_payload())
+        except queue.Empty:
+            pass
+
         if buf:
-            self._flush_with_retry(session, headers, endpoint, buf)
+            try:
+                self._post_batch(session, headers, endpoint, buf, timeout=1.0)
+                logger.info("[BACKEND] Final flush delivered %d event(s)", len(buf))
+            except Exception as exc:
+                logger.warning(
+                    "[BACKEND] Final flush failed (%s); spooling %d event(s) to %s",
+                    exc, len(buf), _SPOOL_PATH,
+                )
+                for i in range(0, len(buf), self.batch_size):
+                    self._spool_batch(buf[i:i + self.batch_size])
 
     # ------------------------------------------------------------------
     # Retry + spool logic (W-031)
@@ -127,11 +164,11 @@ class HttpBackendClient(BackendClient):
         )
         self._spool_batch(items)
 
-    def _post_batch(self, session, headers, endpoint: str, items: List[dict]) -> None:
+    def _post_batch(self, session, headers, endpoint: str, items: List[dict], timeout: float = 2.0) -> None:
         """POST a single batch.  Raises on connection errors, timeouts, or non-2xx responses."""
         payload = {"events": items}
         try:
-            resp = session.post(endpoint, headers=headers, data=json.dumps(payload), timeout=2.0)
+            resp = session.post(endpoint, headers=headers, data=json.dumps(payload), timeout=timeout)
         except Exception as exc:
             raise RuntimeError(f"HTTP POST failed: {exc}") from exc
 
@@ -158,19 +195,53 @@ class HttpBackendClient(BackendClient):
     # ------------------------------------------------------------------
 
     def _spool_batch(self, items: List[dict]) -> None:
-        """Append *items* as one JSONL line to the spool file."""
+        """Append *items* as one JSONL line to the spool file.
+
+        flush + fsync per line: the spool is the last line of defence for
+        race data, and a power loss mid-append must not be able to truncate
+        an already-written line (a torn line used to wedge the drain — M1).
+        """
         try:
             os.makedirs(os.path.dirname(_SPOOL_PATH) or ".", exist_ok=True)
             with open(_SPOOL_PATH, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"events": items}) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
         except OSError as exc:
             logger.error("[BACKEND] Failed to write spool file %s: %s", _SPOOL_PATH, exc)
+
+    def _quarantine_spool_line(self, raw_line: str) -> None:
+        """Move an unparseable spool line to a sidecar file for forensics.
+
+        The corrupt line must never stay at the head of the spool: the drain
+        would re-fail on it forever and every batch behind it would be
+        stranded (AUDIT-2026-07 M1).
+        """
+        corrupt_path = os.path.join(
+            os.path.dirname(_SPOOL_PATH) or ".", "spool.corrupt.jsonl"
+        )
+        try:
+            with open(corrupt_path, "a", encoding="utf-8") as fh:
+                fh.write(raw_line.rstrip("\n") + "\n")
+            logger.error(
+                "[BACKEND] Corrupt spool line quarantined to %s", corrupt_path
+            )
+        except OSError as exc:
+            # Even if quarantine fails we still drop the line from the spool —
+            # keeping it would wedge the drain permanently.
+            logger.error(
+                "[BACKEND] Failed to quarantine corrupt spool line (%s); dropping it",
+                exc,
+            )
 
     def _drain_spool(self, session, headers, endpoint: str) -> None:
         """Read the spool file and deliver all batches in order.
 
         If all batches are delivered successfully, truncate the file.
-        If any batch fails, stop draining (preserve remaining lines for the next drain).
+        If a batch fails to DELIVER, stop draining (preserve remaining lines
+        for the next drain). If a line fails to PARSE, quarantine it and keep
+        going — a parse error never resolves by retrying, so treating it like
+        a delivery failure used to wedge the drain forever (M1).
         """
         if not os.path.exists(_SPOOL_PATH):
             return
@@ -187,13 +258,29 @@ class HttpBackendClient(BackendClient):
         logger.info("[BACKEND] Draining spool: %d batche(s) to deliver", len(lines))
         delivered = 0
         for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
+            stripped = line.strip()
+            if not stripped:
                 delivered += 1
                 continue
+
+            # Parse separately from delivery: corrupt lines are quarantined
+            # and skipped, only delivery failures stop the drain.
             try:
-                obj = json.loads(line)
+                obj = json.loads(stripped)
                 items = obj.get("events", [])
+                if not isinstance(items, list):
+                    raise ValueError(
+                        f"'events' is not a list: {type(items).__name__}"
+                    )
+            except ValueError as exc:  # json.JSONDecodeError subclasses ValueError
+                logger.error(
+                    "[BACKEND] Spool line %d/%d unparseable: %s", i + 1, len(lines), exc
+                )
+                self._quarantine_spool_line(line)
+                delivered += 1
+                continue
+
+            try:
                 self._post_batch(session, headers, endpoint, items)
                 delivered += 1
                 logger.info("[BACKEND] Spool batch %d/%d delivered (%d events)", i + 1, len(lines), len(items))

@@ -40,28 +40,48 @@ datas = [
     # Reader-service Python source — used by the --reader-service dispatch.
     # In frozen mode app.py resolves the path to _MEIPASS/reader_src.
     (str(REPO_ROOT / "apps" / "reader-service" / "src"), "reader_src"),
+
+    # VERSION file at the bundle root (_MEIPASS/VERSION). The shell reads it at
+    # startup and exports RACETAG_VERSION, which GET /config reports.
+    (str(SPEC_DIR / "VERSION"), "."),
 ]
 
 # ---------------------------------------------------------------------------
 # Hidden imports (same as mac spec — keep in sync)
 # ---------------------------------------------------------------------------
 hiddenimports = [
+    # Desktop shell modules (apps/desktop). Plain imports from app.py are found
+    # by static analysis; listing them makes a missed module visible at build
+    # time. PyInstaller itself still exits 0 then and only logs
+    # "ERROR: Hidden import 'x' not found"; release.yml fails the build on
+    # that line. So every entry here must be a real, importable module name.
+    "desktop_logging",
+    "native",
+    "reader_supervisor",
+    "support_bundle",
+    "selftest",
     # Reader-service modules.
     "racetag_reader_service",
     "sirit_client",
     "tag_tracker",
     "session_state",
+    "discovery",
+    "status_reporter",
     "utils",
     "backend_client",
     "backend_client.http",
     "backend_client.mock",
     "backend_client.base",
     "models",
-    # Backend modules.
-    "racetag_backend_app",
+    # Backend modules. The backend's app.py itself is loaded by file path from
+    # backend_src (as sys.modules["racetag_backend_app"]), so it cannot be
+    # listed here; its imports are covered by the entries below.
     "storage",
     "models_api",
     "domain",
+    # Reader status protocol (contract 2); analysed here so its imports
+    # (pydantic validators) are bundled even though app.py is loaded by path.
+    "reader_status_hub",
     # FastAPI / Starlette.
     "fastapi",
     "fastapi.staticfiles",
@@ -85,12 +105,18 @@ hiddenimports = [
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan",
     "uvicorn.lifespan.on",
-    # pywebview Windows backend (WebView2).
+    # pywebview Windows backend (WinForms + WebView2) and pythonnet, which it
+    # runs on. Listed so a missing package is an "ERROR: Hidden import" line
+    # (release.yml fails on it); their DLLs come from the pywebview, pythonnet
+    # and clr_loader hooks and are checked in release.yml after the build.
     "webview",
+    "webview.platforms.winforms",
     "webview.platforms.edgechromium",
-    # multiprocessing freeze support — required on Windows.
+    "clr",
+    "pythonnet",
+    "clr_loader",
+    # multiprocessing (freeze_support is a function in it, not a module).
     "multiprocessing",
-    "multiprocessing.freeze_support",
 ]
 
 # ---------------------------------------------------------------------------
@@ -142,7 +168,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX-packed executables are a classic Windows Defender false-positive
+    # trigger (the build is not code-signed); the size gain is irrelevant.
+    upx=False,
     console=False,              # windowed — no console window
     disable_windowed_traceback=False,
     argv_emulation=False,       # Windows does not need argv_emulation
@@ -158,7 +186,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,                  # see EXE above: no UPX on Windows
     upx_exclude=[],
     name="Racetag",
 )

@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # Manual test build from any branch. Produces downloadable workflow
+  # artefacts named with "+<sha>" and does not publish a GitHub Release.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -31,41 +34,180 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # version: contents of apps/desktop/VERSION.
+      # suffix:  "" for tag builds (the operator sees Racetag-Setup-0.3.0.exe),
+      #          "+<sha>" for manual workflow_dispatch test builds.
+      # A tag that does not match VERSION fails the build before anything is
+      # compiled: the installed app would report the old VERSION, and the
+      # update notice (latest release tag > app version) would never go away.
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          v="$(tr -d '[:space:]' < apps/desktop/VERSION)"
+          if [ -z "${v}" ]; then
+            echo "::error::apps/desktop/VERSION is empty."
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "push" ] && [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            suffix=""
+            # v0.4.0-rc1 / v0.4.0-beta2 must match VERSION 0.4.0.
+            tagv="${GITHUB_REF_NAME%%-*}"
+            if [ "${tagv}" != "v${v}" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match apps/desktop/VERSION (${v}). Bump VERSION to the tag's version, commit, delete the tag and tag that commit again."
+              exit 1
+            fi
+          else
+            suffix="+${GITHUB_SHA:0:7}"
+          fi
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+          echo "suffix=${suffix}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
+      # bash runs with -e -o pipefail on every OS, and all requirements go
+      # through one pip call, so any failed install fails the step. (With the
+      # default pwsh shell on Windows only the last command's exit code counted,
+      # which could hide a missing pywebview/pythonnet.)
       - name: Install backend + reader-service + desktop deps
+        shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install -r apps/backend/requirements.txt
-          pip install -r apps/reader-service/requirements.txt
-          pip install -r apps/desktop/requirements.txt
-          # Pin to the 6.19.x line — that's what was verified locally for the
-          # mac bundle. Allow patch updates but block major-version drift.
-          pip install "pyinstaller==6.19.*"
+          # PyInstaller pinned to the 6.19.x line: that's what was verified
+          # locally for the mac bundle. Patch updates only.
+          python -m pip install \
+            -r apps/backend/requirements.txt \
+            -r apps/reader-service/requirements.txt \
+            -r apps/desktop/requirements.txt \
+            "pyinstaller==6.19.*"
+
+      # The GUI stack (pywebview WinForms/WebView2 backend on pythonnet) is not
+      # exercised by --selftest. Importing it here loads Python.Runtime.dll via
+      # clr_loader and runs clr.AddReference on WinForms and both WebView2
+      # interop DLLs, without opening a window or needing the WebView2 runtime.
+      - name: Check GUI stack imports (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: python
+        run: |
+          from importlib.metadata import version
+
+          import clr  # noqa: F401  (pythonnet)
+          import webview.platforms.winforms  # noqa: F401
+          import webview.platforms.edgechromium  # noqa: F401
+
+          for dist in ("pywebview", "pythonnet", "clr_loader"):
+              print(f"{dist} {version(dist)}")
+          print("GUI stack imports OK")
 
       - name: Generate Windows version info
         if: matrix.os == 'windows-latest'
         working-directory: apps/desktop
         run: python generate_win_version_info.py
 
-      - name: Read version
-        id: version
-        shell: bash
-        run: echo "version=$(cat apps/desktop/VERSION)" >> "$GITHUB_OUTPUT"
-
-      - name: Build with PyInstaller (macOS)
-        if: matrix.os == 'macos-latest'
+      # PyInstaller exits 0 when a module listed in the spec's hiddenimports is
+      # missing; it only logs "ERROR: Hidden import 'x' not found". Such a line
+      # fails the build here. (Hook-provided optional imports are logged as
+      # WARNING with double quotes and are not affected.)
+      - name: Build with PyInstaller
         working-directory: apps/desktop
-        run: pyinstaller ${{ matrix.spec }} --clean --noconfirm
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python -m PyInstaller ${{ matrix.spec }} --clean --noconfirm 2>&1 | tee pyinstaller-build.log
+          if grep -E "ERROR: Hidden import '[^']+' not found" pyinstaller-build.log; then
+            echo "::error::PyInstaller could not find modules listed in ${{ matrix.spec }} (see the lines above). Install the missing package or remove the entry from hiddenimports."
+            exit 1
+          fi
 
-      - name: Build with PyInstaller (Windows)
+      # Hook-collected native files of the GUI stack. Without them the frozen
+      # exe passes --selftest but dies at "import webview" on the race PC.
+      # Every DLL that the installed pythonnet, clr_loader and pywebview
+      # (webview/lib) ship must be in the bundle under the same package path,
+      # so a new package layout or a hook that stops collecting fails here.
+      - name: Check GUI stack DLLs in bundle (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: apps/desktop
-        run: pyinstaller ${{ matrix.spec }} --clean --noconfirm
+        shell: python
+        run: |
+          import sys
+          from importlib.metadata import PackageNotFoundError, files
+          from pathlib import Path
+
+          bundle = Path("dist/Racetag")
+          present = [
+              p.relative_to(bundle).as_posix().lower()
+              for p in bundle.rglob("*")
+              if p.is_file()
+          ]
+          missing = []
+          for dist, prefix in (
+              ("pythonnet", ""),
+              ("clr_loader", ""),
+              ("pywebview", "webview/lib/"),
+          ):
+              try:
+                  entries = files(dist) or []
+              except PackageNotFoundError:
+                  print(f"::error::{dist} is not installed in the build environment")
+                  sys.exit(1)
+              dlls = sorted(
+                  e.as_posix()
+                  for e in entries
+                  if e.suffix.lower() == ".dll" and e.as_posix().startswith(prefix)
+              )
+              if not dlls:
+                  print(f"::error::{dist} ships no DLLs under '{prefix}'; its layout changed, check the bundle by hand")
+                  sys.exit(1)
+              for rel in dlls:
+                  low = rel.lower()
+                  if not any(p == low or p.endswith("/" + low) for p in present):
+                      missing.append(rel)
+              print(f"{dist}: {len(dlls)} DLLs expected")
+          if missing:
+              for rel in missing:
+                  print(f"missing: {rel}")
+              print(f"::error::{len(missing)} GUI stack DLLs are missing from dist/Racetag (see above)")
+              sys.exit(1)
+          print("GUI stack DLLs present")
+
+      # Runs the frozen exe headless (backend, frontend files, reader-service
+      # child, heartbeat). A missing data file or backend/reader-service
+      # dependency fails here instead of on race day; the GUI stack is checked
+      # by the two "GUI stack" steps above. The exe is windowed (no console),
+      # so the exit code comes from Start-Process and the details from
+      # selftest.log.
+      - name: Self-test frozen exe (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: apps/desktop
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $logDir = Join-Path $env:RUNNER_TEMP "racetag-selftest-logs"
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+          $env:RACETAG_LOG_DIR = $logDir
+          # A crash before the self-test starts (e.g. a missing hidden import)
+          # must write crash.log and exit, not wait on a MessageBox until the
+          # step timeout kills the job without printing the logs.
+          $env:RACETAG_NO_DIALOGS = "1"
+          $exe = (Resolve-Path "dist\Racetag\Racetag.exe").Path
+          $proc = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
+          $logs = @(Get-ChildItem -Path $logDir -Recurse -File -ErrorAction SilentlyContinue)
+          if ($logs.Count -eq 0) { Write-Host "No log files were written to $logDir" }
+          foreach ($log in $logs) {
+            Write-Host "===== $($log.FullName)"
+            Get-Content -Path $log.FullName
+          }
+          $code = $proc.ExitCode
+          if ($null -eq $code -or $code -ne 0) {
+            Write-Host "::error::Frozen self-test failed (exit code: $code)"
+            exit 1
+          }
+          Write-Host "Frozen self-test passed"
 
       - name: Package artefact (macOS)
         if: matrix.os == 'macos-latest'
@@ -81,25 +223,91 @@ jobs:
       - name: Rename artefact with version
         shell: bash
         run: |
-          v="${{ steps.version.outputs.version }}"
-          sha="${GITHUB_SHA:0:7}"
+          base="Racetag-${{ steps.version.outputs.version }}${{ steps.version.outputs.suffix }}"
           case "${{ matrix.os }}" in
-            macos-latest)   mv "${{ matrix.zip_name }}" "Racetag-${v}+${sha}-mac.zip" ;;
-            windows-latest) mv "${{ matrix.zip_name }}" "Racetag-${v}+${sha}-win.zip" ;;
+            macos-latest)   mv "${{ matrix.zip_name }}" "${base}-mac.zip" ;;
+            windows-latest) mv "${{ matrix.zip_name }}" "${base}-win.zip" ;;
           esac
+
+      # The installer bundles the Evergreen bootstrapper; it is not committed.
+      - name: Download WebView2 bootstrapper (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $dest = "apps/desktop/installer/MicrosoftEdgeWebview2Setup.exe"
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $dest -MaximumRetryCount 3 -RetryIntervalSec 5
+          $sig = Get-AuthenticodeSignature -FilePath $dest
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            Write-Host "::error::WebView2 bootstrapper signature check failed: $($sig.Status) $($sig.SignerCertificate.Subject)"
+            exit 1
+          }
+          Write-Host "WebView2 bootstrapper: $((Get-Item $dest).Length) bytes, signed by $($sig.SignerCertificate.Subject)"
+
+      - name: Build installer (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: apps/desktop/installer
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+          BUILD_SUFFIX: ${{ steps.version.outputs.suffix }}
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Host "Inno Setup not preinstalled, installing via Chocolatey"
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not (Test-Path $iscc)) {
+            Write-Host "::error::ISCC.exe not found at $iscc"
+            exit 1
+          }
+          $sourceDir = (Resolve-Path "..\dist\Racetag").Path
+          $isccArgs = @("/DMyAppVersion=$($env:BUILD_VERSION)", "/DSourceDir=$sourceDir")
+          if ($env:BUILD_SUFFIX) { $isccArgs += "/DMyVersionSuffix=$($env:BUILD_SUFFIX)" }
+          $isccArgs += "racetag.iss"
+          & $iscc @isccArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setup = "output\Racetag-Setup-$($env:BUILD_VERSION)$($env:BUILD_SUFFIX).exe"
+          if (-not (Test-Path $setup)) {
+            Write-Host "::error::Expected installer $setup was not produced"
+            exit 1
+          }
+          Move-Item -Path $setup -Destination ..\..\..\
 
       - name: Upload artefact
         uses: actions/upload-artifact@v4
         with:
           name: racetag-${{ matrix.os }}
-          path: Racetag-*.zip
+          path: |
+            Racetag-*.zip
+            Racetag-Setup-*.exe
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
     needs: build
+    # Only tag pushes publish; workflow_dispatch builds stay workflow artefacts.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      # Same guard as in the build job, repeated here so a release named after
+      # a tag can never carry files built from a different VERSION, even if
+      # the build matrix changes.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: apps/desktop/VERSION
+          sparse-checkout-cone-mode: false
+
+      - name: Check tag matches VERSION
+        shell: bash
+        run: |
+          v="$(tr -d '[:space:]' < apps/desktop/VERSION)"
+          tagv="${GITHUB_REF_NAME%%-*}"
+          if [ -z "${v}" ] || [ "${tagv}" != "v${v}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match apps/desktop/VERSION (${v}); not publishing."
+            exit 1
+          fi
+
       - name: Download all artefacts
         uses: actions/download-artifact@v4
         with:
@@ -109,10 +317,10 @@ jobs:
         id: collect
         run: |
           mkdir -p release
-          find dist -type f -name "Racetag-*.zip" -exec cp {} release/ \;
+          find dist -type f \( -name "Racetag-*.zip" -o -name "Racetag-Setup-*.exe" \) -exec cp {} release/ \;
           ls -la release/
           echo "assets<<EOF" >> "$GITHUB_OUTPUT"
-          for f in release/*.zip; do echo "$f" >> "$GITHUB_OUTPUT"; done
+          for f in release/*; do echo "$f" >> "$GITHUB_OUTPUT"; done
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create Release
