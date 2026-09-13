@@ -86,9 +86,14 @@ hiddenimports = [
     "fastapi",
     "fastapi.staticfiles",
     "fastapi.responses",
+    "fastapi.middleware",
+    "fastapi.middleware.cors",
+    "fastapi.security",
+    "starlette.middleware",
     "starlette.middleware.cors",
     "starlette.routing",
     "starlette.staticfiles",
+    "starlette.responses",
     # Pydantic v2.
     "pydantic",
     "pydantic.deprecated.class_validators",
@@ -117,6 +122,24 @@ hiddenimports = [
     "clr_loader",
     # multiprocessing (freeze_support is a function in it, not a module).
     "multiprocessing",
+]
+
+# Imports of the backend and reader-service sources. Both are loaded from the
+# bundled backend_src/reader_src directories at runtime, so static analysis
+# never follows their imports; collect them from the sources instead of relying
+# on the hand-maintained list above (the 0.2.0 Windows self-test failed on a
+# missing fastapi.middleware.cors). Only modules importable in this build
+# environment are added, so no "Hidden import not found" errors are produced.
+sys.path.insert(0, str(SPEC_DIR))
+from pyinstaller_source_imports import external_imports  # noqa: E402
+
+hiddenimports += [
+    name
+    for name in external_imports([
+        REPO_ROOT / "apps" / "backend" / "racetag-backend",
+        REPO_ROOT / "apps" / "reader-service" / "src",
+    ])
+    if name not in hiddenimports
 ]
 
 # ---------------------------------------------------------------------------

@@ -117,6 +117,24 @@ hiddenimports = [
     "multiprocessing",
 ]
 
+# Imports of the backend and reader-service sources. Both are loaded from the
+# bundled backend_src/reader_src directories at runtime, so static analysis
+# never follows their imports; collect them from the sources instead of relying
+# on the hand-maintained list above (the 0.2.0 Windows self-test failed on a
+# missing fastapi.middleware.cors). Only modules importable in this build
+# environment are added, so no "Hidden import not found" errors are produced.
+sys.path.insert(0, str(SPEC_DIR))
+from pyinstaller_source_imports import external_imports  # noqa: E402
+
+hiddenimports += [
+    name
+    for name in external_imports([
+        REPO_ROOT / "apps" / "backend" / "racetag-backend",
+        REPO_ROOT / "apps" / "reader-service" / "src",
+    ])
+    if name not in hiddenimports
+]
+
 # ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
