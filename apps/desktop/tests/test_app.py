@@ -5,6 +5,8 @@ pywebview, so they run headlessly in CI. ``webview`` is replaced by a fake
 module wherever the JS bridge is tested.
 """
 import ast
+import base64
+import logging
 import os
 import re
 import socket
@@ -964,7 +966,7 @@ def test_api_exposes_exactly_the_bridge_methods(tmp_path):
     desktop_app = _import_desktop_app()
     api = _api(desktop_app, tmp_path)
     public = sorted(name for name in dir(api) if not name.startswith("_"))
-    assert public == ["app_info", "create_support_bundle", "open_data_folder", "save_csv"]
+    assert public == ["app_info", "create_support_bundle", "open_data_folder", "save_binary", "save_csv"]
 
 
 def test_save_csv_writes_file(tmp_path, monkeypatch):
@@ -1010,6 +1012,140 @@ def test_save_csv_write_failure_is_reported_not_cancelled(tmp_path, monkeypatch)
     assert title == "Racetag – Export" and kind == "error"
     assert str(target) in text and "Excel" in text
     assert target.read_text(encoding="utf-8") == "alte Ergebnisse"
+
+
+# --- save_binary (Excel exports, PLAN-EXCEL-EXPORT section 3) ---------------
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def test_save_binary_writes_bytes(tmp_path, monkeypatch, caplog):
+    """The workbook must land on disk byte-identical, and its size is logged."""
+    desktop_app = _import_desktop_app()
+    target = tmp_path / "Racetag-Ergebnis.xlsx"
+    window = _install_fake_webview(monkeypatch, [str(target)])
+    payload = b"PK\x03\x04\x00\xffnicht UTF-8\x00"
+
+    with caplog.at_level(logging.INFO, logger="racetag.shell"):
+        result = _api(desktop_app, tmp_path).save_binary(_b64(payload), "Racetag-Ergebnis.xlsx")
+
+    assert result == {"ok": True, "path": str(target), "error": None}
+    assert target.read_bytes() == payload
+    dialog_type, kwargs = window.calls[0]
+    assert dialog_type == 30  # FileDialog.SAVE
+    assert kwargs["save_filename"] == "Racetag-Ergebnis.xlsx"
+    # Sensible default filter: .xlsx first, "Alle Dateien" as the escape hatch.
+    assert kwargs["file_types"] == ("Excel Dateien (*.xlsx)", "Alle Dateien (*.*)")
+    assert any(
+        f"{len(payload)} bytes" in record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_save_binary_uses_given_file_types_and_adds_missing_extension(tmp_path, monkeypatch):
+    """A dialog that returns the typed name without extension must not produce
+    an extension-less file the operator cannot open."""
+    desktop_app = _import_desktop_app()
+    window = _install_fake_webview(monkeypatch, [str(tmp_path / "Lesungen")])
+
+    result = _api(desktop_app, tmp_path).save_binary(
+        _b64(b"xlsx"), "Racetag-Lesungen.xlsx", ["Excel Dateien (*.xlsx)"]
+    )
+
+    assert result["ok"] is True
+    assert result["path"] == str(tmp_path / "Lesungen.xlsx")
+    assert (tmp_path / "Lesungen.xlsx").read_bytes() == b"xlsx"
+    assert window.calls[0][1]["file_types"] == ("Excel Dateien (*.xlsx)",)
+
+
+def test_save_binary_cancel_returns_ok_false_without_error(tmp_path, monkeypatch):
+    """Cancel is not a failure: error stays null so the UI says 'abgebrochen'."""
+    desktop_app = _import_desktop_app()
+    _install_fake_webview(monkeypatch, None)
+
+    assert _api(desktop_app, tmp_path).save_binary(_b64(b"x"), "e.xlsx") == {
+        "ok": False,
+        "path": None,
+        "error": None,
+    }
+
+
+def test_save_binary_without_window_reports_a_german_error(tmp_path, monkeypatch):
+    desktop_app = _import_desktop_app()
+    _install_fake_webview(monkeypatch, None, with_window=False)
+
+    result = _api(desktop_app, tmp_path).save_binary(_b64(b"x"), "e.xlsx")
+
+    assert result["ok"] is False and result["path"] is None
+    assert "Racetag" in result["error"]  # German text, not a silent cancel
+
+
+def test_save_binary_dialog_failure_is_reported(tmp_path, monkeypatch):
+    """pywebview raises ValueError on a malformed file filter: report it in
+    German instead of rejecting the JS promise."""
+    desktop_app = _import_desktop_app()
+    window = _install_fake_webview(monkeypatch, [str(tmp_path / "e.xlsx")])
+    monkeypatch.setattr(window, "create_file_dialog", MagicMock(side_effect=ValueError("bad filter")))
+
+    result = _api(desktop_app, tmp_path).save_binary(_b64(b"x"), "e.xlsx")
+
+    assert result["ok"] is False and result["path"] is None
+    assert "Speichern" in result["error"]
+    assert not (tmp_path / "e.xlsx").exists()
+
+
+def test_save_binary_write_failure_names_the_file_and_excel(tmp_path, monkeypatch):
+    """Read-only target (the workbook is still open in Excel): the operator
+    must get the same hint the CSV export gives, and the old file survives."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root may write read-only files")
+    desktop_app = _import_desktop_app()
+    target = tmp_path / "Ergebnis.xlsx"
+    target.write_bytes(b"alte Mappe")
+    target.chmod(0o444)
+    _install_fake_webview(monkeypatch, [str(target)])
+
+    try:
+        result = _api(desktop_app, tmp_path).save_binary(_b64(b"neue Mappe"), "Ergebnis.xlsx")
+    finally:
+        target.chmod(0o644)
+
+    assert result["ok"] is False and result["path"] is None
+    assert str(target) in result["error"] and "Excel" in result["error"]
+    assert target.read_bytes() == b"alte Mappe"
+
+
+@pytest.mark.parametrize("payload", ["keine base64!!", "QQ", "", "   "])
+def test_save_binary_rejects_broken_payload(tmp_path, monkeypatch, payload):
+    desktop_app = _import_desktop_app()
+    window = _install_fake_webview(monkeypatch, [str(tmp_path / "e.xlsx")])
+
+    result = _api(desktop_app, tmp_path).save_binary(payload, "e.xlsx")
+
+    assert result["ok"] is False and result["path"] is None
+    assert "gespeichert" in result["error"]  # German, and not the cancel case
+    assert window.calls == [], "no save dialog for a payload we cannot write"
+    assert not (tmp_path / "e.xlsx").exists()
+
+
+def test_save_binary_rejects_oversize_payload(tmp_path, monkeypatch):
+    """An absurd payload is refused before it is decoded into memory."""
+    desktop_app = _import_desktop_app()
+    monkeypatch.setattr(desktop_app, "MAX_EXPORT_BYTES", 1024 * 1024)
+    window = _install_fake_webview(monkeypatch, [str(tmp_path / "e.xlsx")])
+
+    result = _api(desktop_app, tmp_path).save_binary(_b64(b"x" * 4 * 1024 * 1024), "e.xlsx")
+
+    assert result["ok"] is False and result["path"] is None
+    assert "zu groß" in result["error"] and "4 MB" in result["error"]
+    assert window.calls == []
+    assert not (tmp_path / "e.xlsx").exists()
+
+
+def test_save_binary_export_limit_is_200_mb():
+    assert _import_desktop_app().MAX_EXPORT_BYTES == 200 * 1024 * 1024
 
 
 def test_open_data_folder(tmp_path, monkeypatch):

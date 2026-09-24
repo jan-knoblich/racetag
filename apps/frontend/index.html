@@ -45,8 +45,9 @@
         <button id="endRaceBtn" class="btn-warn">Rennen beenden</button>
         <!-- Reopen (undo accidental End race) — hidden unless race ended -->
         <button id="reopenRaceBtn" hidden>Rennen wieder öffnen</button>
-        <!-- Export CSV results -->
-        <button id="exportCsvBtn">Ergebnisse exportieren</button>
+        <!-- Results workbook (.xlsx) — the operator's primary export. The CSV
+             variant kept its id and moved into Einstellungen → Erweitert. -->
+        <button id="exportXlsxBtn" class="btn-primary">Ergebnisse (Excel)</button>
         <!-- W-036: Reset race -->
         <button id="resetRaceBtn" class="btn-warn">Rennen zurücksetzen</button>
         <!-- W-074: Settings -->
@@ -358,7 +359,8 @@
     <!-- W-074: Settings modal (C4, D4, D6)
          Sections: Reader (live status, discovery, reconnect, IP, power),
          Rennen (lap interval, total laps, snapshot interval), Erweitert
-         (desktop only; receives the tag-column toggle), Hilfe & Support
+         (Excel readings export, results CSV; desktop also gets the
+         tag-column toggle), Hilfe & Support
          (assistant, desktop-only data folder + support bundle, version).
          Only the input fields are applied by "Speichern" (sticky footer); the
          action buttons act immediately.
@@ -426,9 +428,33 @@
           </div>
         </section>
 
-        <details id="settingsAdvanced" class="settings-details" hidden>
+        <details id="settingsAdvanced" class="settings-details">
           <summary id="settingsAdvancedSummary">Erweitert</summary>
-          <div id="settingsAdvancedBody" class="settings-details-body"></div>
+          <div id="settingsAdvancedBody" class="settings-details-body">
+            <!-- Raw readings workbook (data check): GET /races/{id}/readings.xlsx
+                 for the active race, GET /readings.xlsx for every race. -->
+            <div class="settings-button-row">
+              <button id="exportReadingsXlsxBtn" type="button">Alle Lesungen (Excel)</button>
+              <label class="toggle-control" for="readingsScopeSelect">
+                Umfang:
+                <select id="readingsScopeSelect">
+                  <option value="race" selected>Nur dieses Rennen</option>
+                  <option value="all">Alle Rennen</option>
+                </select>
+              </label>
+            </div>
+            <p class="settings-hint">
+              Für die Datenprüfung: enthält jede gespeicherte Lesung – auch die,
+              die keine Runde ergeben hat.
+            </p>
+            <div id="exportReadingsStatus" class="inline-status" hidden></div>
+            <!-- Results as CSV, moved out of the header (id unchanged). -->
+            <div class="settings-button-row">
+              <button id="exportCsvBtn" type="button">Ergebnisse als CSV</button>
+            </div>
+            <!-- Desktop build: script.js applyAppMode() appends the
+                 tag-column toggle from the header here. -->
+          </div>
         </details>
 
         <section class="settings-section" aria-labelledby="settingsSupportHeading">

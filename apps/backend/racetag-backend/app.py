@@ -43,6 +43,7 @@ from models_api import (
 )
 from storage import Storage
 from reader_status_hub import ReaderStatusHub, ReaderStatusIn
+import exports_xlsx
 
 logger = logging.getLogger("racetag.backend")
 
@@ -762,6 +763,271 @@ def _iso_or_none(dt) -> Optional[str]:
     if dt is None:
         return None
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------------------
+# Excel exports (docs/PLAN-EXCEL-EXPORT.md)
+#
+# Two workbooks, because the operator and the data check need different files:
+#   results.xlsx   — the race result, opened by double-click by the marshal.
+#   readings.xlsx  — every stored reading, for fixing couplings and missed
+#                    passes afterwards. Never hides a row.
+# The workbook layout lives in exports_xlsx.py; here we only assemble rows.
+# ---------------------------------------------------------------------------
+
+def _xlsx_response(payload: bytes, filename: str):
+    from fastapi.responses import Response
+
+    return Response(
+        content=payload,
+        media_type=exports_xlsx.XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(payload)),
+        },
+    )
+
+
+def _race_meta(race_row, *, min_pass_interval_s: float) -> Dict[str, Any]:
+    return {
+        "id": race_row.id,
+        "name": race_row.name,
+        "scheduled_at": _iso_or_none(race_row.scheduled_at),
+        "started_at": _iso_or_none(race_row.started_at),
+        "ended_at": _iso_or_none(race_row.ended_at),
+        "total_laps": race_row.total_laps,
+        "finish_mode": race_row.finish_mode,
+        "duration_s": race_row.duration_s,
+        "min_pass_interval_s": min_pass_interval_s,
+    }
+
+
+def _rider_dicts(race_id: str) -> List[Dict[str, Any]]:
+    return [
+        {
+            "tag_id": r.tag_id,
+            "bib": r.bib,
+            "name": r.name,
+            "verein": getattr(r, "verein", "") or "",
+            "uci_id": getattr(r, "uci_id", "") or "",
+            "status": r.status,
+            "created_at": _iso_or_none(r.created_at),
+        }
+        for r in storage.list_riders(race_id)
+    ]
+
+
+def _effective_min_pass_interval_s() -> float:
+    persisted = config_store.get_min_lap_interval_s()
+    return float(persisted if persisted is not None else _RACE_MIN_PASS_INTERVAL_S)
+
+
+def _collect_readings(race_row, riders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Every stored reading of one race, with the lap reconstruction.
+
+    Racetag stores readings but not the verdict "this one counted as a lap",
+    so we replay them through a fresh RaceState built exactly like the live
+    one (same cooldown, same start time, same post-end cutoff, same
+    registered-tags-only rule as _replay_event). Manual lap corrections are
+    not part of tag_events and therefore not part of the reconstruction —
+    the column carries a comment saying so.
+    """
+    from domain.race import RaceState, parse_iso as _parse_iso
+
+    min_pass_interval_s = _effective_min_pass_interval_s()
+    rs = RaceState(
+        total_laps=race_row.total_laps,
+        min_pass_interval_s=min_pass_interval_s,
+        race_id=race_row.id,
+        finish_mode=race_row.finish_mode,
+        duration_s=race_row.duration_s,
+        final_laps=race_row.final_laps,
+    )
+    if race_row.started_at is not None:
+        rs.start(now=race_row.started_at)
+    ended_cutoff = (
+        _iso_or_none(race_row.ended_at)
+        if (race_row.ended and race_row.ended_at is not None)
+        else None
+    )
+
+    by_tag = {r["tag_id"]: r for r in riders}
+    started_at = race_row.started_at
+    previous_any: Dict[str, str] = {}
+    previous_lap: Dict[str, str] = {}
+    rows: List[Dict[str, Any]] = []
+
+    for row in storage.iter_event_rows(race_row.id):
+        tag_id = row["tag_id"]
+        timestamp = row["timestamp"]
+        rider = by_tag.get(tag_id)
+
+        counted = False
+        lap: Optional[int] = None
+        if (
+            row["event_type"] == "arrive"
+            and rider is not None
+            and (ended_cutoff is None or timestamp <= ended_cutoff)
+        ):
+            before = rs.participants[tag_id].laps if tag_id in rs.participants else 0
+            participant = rs.add_lap(tag_id, timestamp)
+            if participant.laps > before:
+                counted = True
+                lap = participant.laps
+
+        def _gap(previous: Optional[str]) -> Optional[float]:
+            if previous is None:
+                return None
+            try:
+                return round(
+                    (_parse_iso(timestamp) - _parse_iso(previous)).total_seconds(), 3
+                )
+            except (ValueError, TypeError):
+                return None
+
+        seconds_since_start: Optional[float] = None
+        if started_at is not None:
+            try:
+                seconds_since_start = round(
+                    (_parse_iso(timestamp) - started_at).total_seconds(), 3
+                )
+            except (ValueError, TypeError):
+                seconds_since_start = None
+
+        rows.append({
+            "race_id": race_row.id,
+            "race_name": race_row.name,
+            "timestamp": timestamp,
+            "seconds_since_start": seconds_since_start,
+            "tag_id": tag_id,
+            "bib": rider["bib"] if rider else "",
+            "name": rider["name"] if rider else "",
+            "verein": rider["verein"] if rider else "",
+            "antenna": row["antenna"],
+            "rssi": row["rssi"],
+            "event_type": row["event_type"],
+            "reader_serial": row["reader_serial"],
+            "counted": counted,
+            "lap": lap,
+            "gap_previous_s": _gap(previous_any.get(tag_id)),
+            "gap_previous_lap_s": _gap(previous_lap.get(tag_id)),
+        })
+        previous_any[tag_id] = timestamp
+        if counted:
+            previous_lap[tag_id] = timestamp
+
+    return rows
+
+
+def _results_workbook_response():
+    """Results of the ACTIVE race (the standings live in memory)."""
+    race_row = storage.get_race(race.race_id) if race.race_id else None
+    if race_row is None:
+        raise HTTPException(status_code=404, detail="race not found")
+
+    riders = _rider_dicts(race_row.id)
+    by_tag = {r["tag_id"]: r for r in riders}
+    standings = []
+    for item in _build_standings_items():
+        rider = by_tag.get(item.get("tag_id"))
+        standings.append({
+            **item,
+            "verein": rider["verein"] if rider else "",
+            "uci_id": rider["uci_id"] if rider else "",
+        })
+
+    payload = exports_xlsx.build_results_workbook(
+        race=_race_meta(race_row, min_pass_interval_s=race.min_pass_interval_s),
+        standings=standings,
+        riders=riders,
+        version=os.getenv("RACETAG_VERSION"),
+    )
+    date_for_name = (race_row.scheduled_at or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    filename = exports_xlsx.sanitize_filename(
+        f"Racetag-Ergebnis-{race_row.name}-{date_for_name}"
+    )
+    logger.info("results.xlsx: %d rows, %d bytes", len(standings), len(payload))
+    return _xlsx_response(payload, filename)
+
+
+@app.get("/results.xlsx", responses={200: {"content": {exports_xlsx.XLSX_MEDIA_TYPE: {}}}})
+def get_results_xlsx():
+    """Race result as an Excel workbook (active race)."""
+    return _results_workbook_response()
+
+
+@app.get("/races/{race_id}/results.xlsx",
+         responses={200: {"content": {exports_xlsx.XLSX_MEDIA_TYPE: {}}}})
+def get_results_xlsx_for_race(race_id: str):
+    """Race result per race. Like classification.csv this needs the race to be
+    active, because the standings are computed in memory for the active race
+    only."""
+    if storage.get_race(race_id) is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    if race.race_id != race_id:
+        raise HTTPException(
+            status_code=409,
+            detail="race is not active; activate it first to export results",
+        )
+    return _results_workbook_response()
+
+
+def _readings_workbook_response(race_rows):
+    min_pass_interval_s = _effective_min_pass_interval_s()
+    races_meta = []
+    riders_by_race: Dict[str, List[Dict[str, Any]]] = {}
+    readings: List[Dict[str, Any]] = []
+
+    for race_row in race_rows:
+        # The active race's live cooldown may differ from the persisted config
+        # (PATCH /config updates both, but a test or a restart can diverge).
+        interval = (
+            race.min_pass_interval_s if race_row.id == race.race_id
+            else min_pass_interval_s
+        )
+        riders = _rider_dicts(race_row.id)
+        riders_by_race[race_row.id] = riders
+        rows = _collect_readings(race_row, riders)
+        readings.extend(rows)
+        meta = _race_meta(race_row, min_pass_interval_s=interval)
+        meta["reading_count"] = len(rows)
+        races_meta.append(meta)
+
+    payload = exports_xlsx.build_readings_workbook(
+        races=races_meta,
+        readings=readings,
+        riders_by_race=riders_by_race,
+        version=os.getenv("RACETAG_VERSION"),
+    )
+    if len(race_rows) == 1:
+        stem = f"Racetag-Lesungen-{race_rows[0].name}"
+    else:
+        stem = "Racetag-Lesungen-alle"
+    filename = exports_xlsx.sanitize_filename(
+        f"{stem}-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+    )
+    logger.info(
+        "readings.xlsx: %d races, %d readings, %d bytes",
+        len(races_meta), len(readings), len(payload),
+    )
+    return _xlsx_response(payload, filename)
+
+
+@app.get("/readings.xlsx", responses={200: {"content": {exports_xlsx.XLSX_MEDIA_TYPE: {}}}})
+def get_readings_xlsx():
+    """Every stored reading of EVERY race — the file for the data check."""
+    return _readings_workbook_response(storage.list_races())
+
+
+@app.get("/races/{race_id}/readings.xlsx",
+         responses={200: {"content": {exports_xlsx.XLSX_MEDIA_TYPE: {}}}})
+def get_readings_xlsx_for_race(race_id: str):
+    """Every stored reading of one race. Works for any race, active or not."""
+    race_row = storage.get_race(race_id)
+    if race_row is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    return _readings_workbook_response([race_row])
+
 
 
 @app.get("/race", response_model=RaceDTO)

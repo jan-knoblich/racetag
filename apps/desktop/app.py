@@ -37,6 +37,7 @@ Design:
   headless end-to-end check (selftest.py, contract 4.3).
 """
 
+import base64
 import datetime as _dt
 import json
 import logging
@@ -84,6 +85,12 @@ else:
 
 WINDOW_TITLE = "Racetag"
 MIN_FREE_DISK_BYTES = 200 * 1024 * 1024
+# Upper bound for one binary export handed to save_binary().  A readings
+# workbook of a long race day stays far below this; anything bigger is a bug
+# in the caller, and decoding it would freeze the UI thread.
+MAX_EXPORT_BYTES = 200 * 1024 * 1024
+# Save dialog filter for the Excel exports (plan PLAN-EXCEL-EXPORT section 3).
+EXCEL_FILE_TYPES = ("Excel Dateien (*.xlsx)", "Alle Dateien (*.*)")
 SERVER_START_TIMEOUT_S = 10.0
 WATCHDOG_INTERVAL_S = 5.0
 # A previous instance keeps the lock through its whole shutdown (WebView2
@@ -761,6 +768,36 @@ def _backend_watchdog(
 _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+def _write_failed_text(path: object) -> str:
+    """German explanation for a failed export write — the usual cause is Excel."""
+    return (
+        "Die Datei konnte nicht gespeichert werden:\n"
+        f"{path}\n\n"
+        "Ist sie noch in Excel oder einem anderen Programm geöffnet? Dann "
+        "das Programm schließen und erneut exportieren. Sonst bitte einen "
+        "anderen Speicherort wählen."
+    )
+
+
+def _export_too_large_text(size_bytes: int) -> str:
+    return (
+        f"Die Exportdatei ist mit {size_bytes / (1024 * 1024):.0f} MB zu groß "
+        f"(höchstens {MAX_EXPORT_BYTES // (1024 * 1024)} MB). "
+        "Bitte ein einzelnes Rennen statt aller Rennen exportieren."
+    )
+
+
+_EXPORT_DATA_BROKEN_TEXT = (
+    "Die Exportdaten sind unvollständig angekommen und konnten nicht "
+    "gespeichert werden. Bitte den Export noch einmal starten."
+)
+_NO_WINDOW_TEXT = "Das Programmfenster ist nicht verfügbar. Bitte Racetag neu starten."
+_DIALOG_FAILED_TEXT = (
+    "Das Fenster zum Speichern konnte nicht geöffnet werden. "
+    "Bitte Racetag neu starten und den Export noch einmal versuchen."
+)
+
+
 class _RacetagApi:
     """Methods callable from the frontend via ``window.pywebview.api``.
 
@@ -805,20 +842,80 @@ class _RacetagApi:
                 f.write(csv_text)
         except OSError:
             log.exception("save_csv failed for %s", path)
-            native.message_box(
-                "Racetag – Export",
-                "Die Datei konnte nicht gespeichert werden:\n"
-                f"{path}\n\n"
-                "Ist sie noch in Excel oder einem anderen Programm geöffnet? Dann "
-                "das Programm schließen und erneut exportieren. Sonst bitte einen "
-                "anderen Speicherort wählen.",
-                "error",
-            )
+            native.message_box("Racetag – Export", _write_failed_text(path), "error")
             # Re-raised on purpose: pywebview rejects the JS promise, so the
             # UI reports a failed export instead of "Export abgebrochen"
             # (False means the operator cancelled the dialog).
             raise
         return True
+
+    # Native save dialog for binary exports (.xlsx, plan PLAN-EXCEL-EXPORT
+    # section 3).  The frontend fetches the workbook and hands it over
+    # base64-encoded, because blob + <a download> opens the file inside the
+    # WebView instead of saving it.
+    def save_binary(
+        self,
+        data_base64: str,
+        default_filename: str = "racetag-export.xlsx",
+        file_types: Optional[Sequence[str]] = None,
+    ) -> dict:
+        """Write a base64 payload to a file the operator picks.
+
+        Returns ``{"ok", "path", "error"}``.  ``ok=False`` with ``error=None``
+        means the operator cancelled the dialog; every other failure carries a
+        German text the UI can show as it is (same wording as the save_csv
+        dialog, so "file still open in Excel" stays recognisable).
+        """
+        import webview  # noqa: PLC0415
+
+        default_filename = default_filename or "racetag-export.xlsx"
+        if not isinstance(data_base64, str) or not data_base64.strip():
+            log.error("save_binary: empty payload for %s", default_filename)
+            return {"ok": False, "path": None, "error": _EXPORT_DATA_BROKEN_TEXT}
+        encoded = "".join(data_base64.split())  # a JS caller may wrap long base64
+        # 4 base64 characters carry 3 bytes: reject an absurd payload before
+        # decoding it into memory.
+        max_encoded_chars = (MAX_EXPORT_BYTES // 3 + 2) * 4
+        if len(encoded) > max_encoded_chars:
+            estimated = len(encoded) // 4 * 3
+            log.error("save_binary: payload too large (~%d bytes) for %s", estimated, default_filename)
+            return {"ok": False, "path": None, "error": _export_too_large_text(estimated)}
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            log.exception("save_binary: undecodable payload for %s", default_filename)
+            return {"ok": False, "path": None, "error": _EXPORT_DATA_BROKEN_TEXT}
+        log.info("save_binary: %s, %d bytes", default_filename, len(raw))
+        if len(raw) > MAX_EXPORT_BYTES:
+            return {"ok": False, "path": None, "error": _export_too_large_text(len(raw))}
+
+        if not webview.windows:
+            log.error("save_binary: no window")
+            return {"ok": False, "path": None, "error": _NO_WINDOW_TEXT}
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.SAVE,
+                save_filename=default_filename,
+                file_types=tuple(str(t) for t in file_types) if file_types else EXCEL_FILE_TYPES,
+            )
+        except Exception:  # noqa: BLE001 - a bad filter must not reject the JS promise
+            log.exception("save_binary: save dialog failed")
+            return {"ok": False, "path": None, "error": _DIALOG_FAILED_TEXT}
+        if not result:
+            # Cancelled by the operator: not an error.
+            return {"ok": False, "path": None, "error": None}
+        path = Path(result if isinstance(result, str) else result[0])
+        # Some platforms return the typed name without the filter's extension.
+        if not path.suffix and Path(default_filename).suffix:
+            path = path.with_name(path.name + Path(default_filename).suffix)
+        try:
+            with open(path, "wb") as f:
+                f.write(raw)
+        except OSError:
+            log.exception("save_binary failed for %s", path)
+            return {"ok": False, "path": None, "error": _write_failed_text(path)}
+        log.info("save_binary wrote %d bytes to %s", len(raw), path)
+        return {"ok": True, "path": str(path), "error": None}
 
     def open_data_folder(self) -> bool:
         try:

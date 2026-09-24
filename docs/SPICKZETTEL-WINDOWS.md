@@ -9,7 +9,7 @@ Ausdrucken und an den Laptop legen. Ausführlich: [BEDIENUNGSANLEITUNG-WINDOWS.m
 3. **Racetag starten.** Doppelklick auf **Racetag** auf dem Desktop. Warten, bis in der Statusleiste steht: **Reader** grün „verbunden (…)“, **Verbindung** grün „live“. Das kann nach dem Einschalten des Readers bis zu einer Minute dauern.
 4. **Antennen testen.** Einen Tag vor jede Antenne halten. **Antennen** muss grün „1, 2 OK“ zeigen. „OK“ heißt nur „eingeschaltet“: Maus über das Feld halten – **jede Antenne muss Lesungen haben**.
 5. **Rennen vorbereiten und starten.** Oben bei **„Rennen:“** das richtige Rennen wählen (neu: **„+“**). Fahrer koppeln (**„CSV importieren“**, **„Tag → Fahrer koppeln“** oder **„Koppel-Modus“**). Beim Startschuss: **„Rennen starten“**.
-6. **Beenden und sichern.** **„Rennen beenden“** → OK. Sofort **„Ergebnisse exportieren“** → Speichern. Am Ende des Tages Racetag mit dem **X** schließen und die Frage „Racetag wirklich beenden?“ mit **OK** bestätigen. Solange Racetag geschlossen ist, wird nichts erfasst.
+6. **Beenden und sichern.** **„Rennen beenden“** → OK. Sofort **„Ergebnisse (Excel)“** → Speichern (öffnet sich in Excel). Am Ende des Tages Racetag mit dem **X** schließen und die Frage „Racetag wirklich beenden?“ mit **OK** bestätigen. Solange Racetag geschlossen ist, wird nichts erfasst.
 
 ## Wenn die Ampel gelb ist
 

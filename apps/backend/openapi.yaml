@@ -35,6 +35,84 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClassificationDTO'
+  /results.xlsx:
+    get:
+      summary: Race result of the ACTIVE race as an Excel workbook
+      description: >-
+        Sheets Ergebnis, Rennen, Fahrer (German headers, real Excel datetimes).
+        The operator's primary export; opens in Excel by double-click.
+      responses:
+        '200':
+          description: XLSX workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: No active race
+  /races/{race_id}/results.xlsx:
+    get:
+      summary: Race result per race as an Excel workbook
+      description: >-
+        Requires the race to be active, like /races/{race_id}/classification.csv,
+        because the standings are computed in memory for the active race only.
+      parameters:
+        - name: race_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: XLSX workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Race not found
+        '409':
+          description: Race is not active
+  /readings.xlsx:
+    get:
+      summary: Every stored reading of every race as an Excel workbook
+      description: >-
+        The raw-data export for the post-race data check. Sheets Lesungen (one
+        row per stored tag_events row, nothing filtered out), Zusammenfassung,
+        Rennen, Fahrer, Info. The columns Gewertet and Runde are reconstructed
+        by replaying the readings with the race start time and the configured
+        cooldown; manual lap corrections are not part of tag_events and are
+        therefore not reflected.
+      responses:
+        '200':
+          description: XLSX workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+  /races/{race_id}/readings.xlsx:
+    get:
+      summary: Every stored reading of one race as an Excel workbook
+      description: Works for any race, active or not.
+      parameters:
+        - name: race_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: XLSX workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Race not found
   /race:
     get:
       summary: Race state

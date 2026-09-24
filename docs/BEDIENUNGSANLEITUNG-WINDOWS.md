@@ -201,7 +201,7 @@ Läuft gerade ein Rennen, fragt Racetag vor dem Anlegen eines neuen Rennens noch
 
 Von oben nach unten siehst du:
 
-1. **Die Knopfleiste** mit „CSV importieren“, „Tags exportieren“, „Tag → Fahrer koppeln“, „Koppel-Modus“, „Fahrer“, der Rennauswahl „Rennen:“ mit dem „+“, „Rennen starten“, „Rennen beenden“, „Ergebnisse exportieren“, „Rennen zurücksetzen“, dem Zahnrad ⚙ (Einstellungen) und „Rundenzahl:“.
+1. **Die Knopfleiste** mit „CSV importieren“, „Tags exportieren“, „Tag → Fahrer koppeln“, „Koppel-Modus“, „Fahrer“, der Rennauswahl „Rennen:“ mit dem „+“, „Rennen starten“, „Rennen beenden“, „Ergebnisse (Excel)“, „Rennen zurücksetzen“, dem Zahnrad ⚙ (Einstellungen) und „Rundenzahl:“.
 2. **Die Statusleiste** mit drei farbigen Feldern: **Reader**, **Antennen**, **Verbindung**.
 3. **Den Rennstatus**, z. B. „Nicht gestartet – zum Beginnen „Rennen starten“ drücken“ oder „Läuft seit 10:02:13“.
 4. **Die Rangliste** mit allen Fahrern.
@@ -392,13 +392,29 @@ Ein **⚠** neben der Rundenzahl bedeutet: Der Reader hat bei diesem Fahrer verm
 ## 9. Ergebnisse exportieren
 
 1. Achte darauf, dass oben bei „Rennen:“ das Rennen ausgewählt ist, dessen Ergebnis du willst.
-2. Klicke auf **„Ergebnisse exportieren“**.
+2. Klicke oben auf **„Ergebnisse (Excel)“**.
 3. Es öffnet sich ein Speichern-Fenster. Wähle einen Ort (z. B. den Desktop) und klicke auf **„Speichern“**.
-4. Unten rechts erscheint „Exportiert: …“ mit dem Dateinamen.
+4. Unten rechts erscheint „Gespeichert: …“ mit dem Dateinamen.
 
-Die Datei ist eine CSV-Datei. Sie lässt sich mit Excel öffnen.
+Die Datei öffnet sich mit einem Doppelklick direkt in Excel. Sie hat drei
+Blätter: **Ergebnis** (die Rangliste mit Platz, Startnummer, Name, Verein,
+Runden und Zeiten), **Rennen** (die Eckdaten) und **Fahrer** (alle gekoppelten
+Fahrer, auch die ohne eine einzige Lesung).
 
 > [Screenshot: Speichern-Fenster für die Ergebnis-Datei]
+
+### Wenn etwas an den Ergebnissen nicht stimmt
+
+Fehlt eine Runde oder ist eine Startnummer falsch gekoppelt, schick Jan die
+Rohdaten. Er kann damit auf seinem Rechner nachrechnen, ohne dass am Renntag
+etwas repariert werden muss:
+
+1. Zahnrad ⚙ → Abschnitt **„Erweitert“** aufklappen.
+2. Bei **„Umfang“** „Nur dieses Rennen“ oder „Alle Rennen“ wählen.
+3. Auf **„Alle Lesungen (Excel)“** klicken und die Datei speichern.
+
+Darin steht **jede** Lesung des Readers, also auch die, die keine Runde ergeben
+hat. Bei vielen Lesungen dauert das Erstellen der Datei einen Moment.
 
 Zusätzlich speichert Racetag für das aktive Rennen alle 2 Minuten automatisch eine Sicherung der Rangliste und der Datenbank im Datenordner (Abschnitt 12), solange beim Rennen das „Auto-Snapshot-Intervall“ auf dem Standardwert 120 steht. Bei einem Absturz geht also nichts verloren.
 
