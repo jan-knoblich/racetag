@@ -31,6 +31,11 @@ XLSX_MEDIA_TYPE = (
 FMT_DATETIME = "DD.MM.YYYY HH:MM:SS.000"
 FMT_DURATION = "[h]:mm:ss.0"
 FMT_SECONDS = "0.000"
+# Tag IDs are identifiers, never numbers. Excel turns a digits-only EPC
+# such as "000000009969" into 9969 and the re-import then couples a tag
+# that does not exist (field report 2026-09-26), so every tag column is
+# written as a text cell.
+FMT_TEXT = "@"
 
 _HEADER_FONT = Font(bold=True)
 _HEADER_ALIGN = Alignment(vertical="center")
@@ -236,7 +241,7 @@ def build_results_workbook(
     _write_sheet(
         ws, RESULT_HEADERS, rows,
         widths=_RESULT_WIDTHS,
-        formats={7: FMT_DURATION, 8: FMT_DURATION, 9: FMT_DATETIME},
+        formats={7: FMT_DURATION, 8: FMT_DURATION, 9: FMT_DATETIME, 12: FMT_TEXT},
     )
 
     _meta_sheet(wb.create_sheet("Rennen"), [
@@ -257,7 +262,7 @@ def build_results_workbook(
 
     _write_sheet(
         wb.create_sheet("Fahrer"), RIDER_HEADERS, _rider_rows(riders, tz),
-        widths=_RIDER_WIDTHS, formats={7: FMT_DATETIME},
+        widths=_RIDER_WIDTHS, formats={5: FMT_TEXT, 7: FMT_DATETIME},
     )
     return _workbook_bytes(wb)
 
@@ -335,7 +340,7 @@ def build_readings_workbook(
         ws, READING_HEADERS, rows,
         widths=_READING_WIDTHS,
         formats={
-            3: FMT_DATETIME, 4: FMT_DATETIME, 5: FMT_SECONDS,
+            3: FMT_DATETIME, 4: FMT_DATETIME, 5: FMT_SECONDS, 6: FMT_TEXT,
             16: FMT_SECONDS, 17: FMT_SECONDS,
         },
     )
@@ -381,7 +386,8 @@ def build_readings_workbook(
         ])
     _write_sheet(
         wb.create_sheet("Zusammenfassung"), SUMMARY_HEADERS, summary_rows,
-        widths=_SUMMARY_WIDTHS, formats={8: FMT_DATETIME, 9: FMT_DATETIME},
+        widths=_SUMMARY_WIDTHS,
+        formats={4: FMT_TEXT, 8: FMT_DATETIME, 9: FMT_DATETIME},
     )
 
     # ---- Rennen ------------------------------------------------------------
@@ -412,7 +418,7 @@ def build_readings_workbook(
             rider_rows.append([name] + row)
     _write_sheet(
         wb.create_sheet("Fahrer"), ALL_RIDER_HEADERS, rider_rows,
-        widths=[24] + _RIDER_WIDTHS, formats={8: FMT_DATETIME},
+        widths=[24] + _RIDER_WIDTHS, formats={6: FMT_TEXT, 8: FMT_DATETIME},
     )
 
     # ---- Info --------------------------------------------------------------
@@ -442,3 +448,122 @@ def _counted_comment():
         height=150,
         width=360,
     )
+
+
+# ---------------------------------------------------------------------------
+# Tag inventory and start list
+# ---------------------------------------------------------------------------
+
+TAG_HEADERS = [
+    "tag_id", "bib", "name", "Lesungen", "Erste Lesung", "Verein", "UCI-ID",
+    "Name aus Rennen",
+]
+_TAG_WIDTHS = [34, 10, 26, 10, 22, 24, 16, 24]
+
+STARTLIST_HEADERS = [
+    "Startnummer", "Name", "Verein", "UCI-ID", "tag_id", "Status",
+    "Lesungen in diesem Rennen", "Erste Lesung",
+]
+_STARTLIST_WIDTHS = [12, 26, 24, 16, 34, 9, 22, 22]
+
+
+def build_tags_workbook(
+    *,
+    race: Dict[str, Any],
+    tags: List[Dict[str, Any]],
+    exported_at: Optional[datetime] = None,
+    version: Optional[str] = None,
+    tz=None,
+) -> bytes:
+    """Every tag read in one race, as a start-list template.
+
+    The first three columns are exactly the import format (``tag_id``, ``bib``,
+    ``name``); the rest is context the importer ignores. ``tag_id`` is a text
+    cell, so a digits-only EPC keeps its leading zeros and survives the trip
+    through Excel.
+    """
+    exported_at = exported_at or datetime.now(timezone.utc)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Tags"
+
+    rows: List[List[Any]] = []
+    for tag in tags:
+        rows.append([
+            tag.get("tag_id") or "",
+            tag.get("bib") or "",
+            tag.get("name") or "",
+            tag.get("reads"),
+            local_cell(tag.get("first_seen"), tz),
+            tag.get("verein") or "",
+            tag.get("uci_id") or "",
+            tag.get("source_race") or "",
+        ])
+    _write_sheet(
+        ws, TAG_HEADERS, rows,
+        widths=_TAG_WIDTHS, formats={1: FMT_TEXT, 5: FMT_DATETIME},
+    )
+
+    _meta_sheet(wb.create_sheet("Info"), [
+        ["Rennen", race.get("name") or ""],
+        ["Tags gelesen", len(tags)],
+        ["Davon mit Startnummer", sum(1 for t in tags if t.get("bib"))],
+        ["Spalten für den Import", "tag_id, bib, name (die weiteren werden ignoriert)"],
+        ["Name aus Rennen", "gefüllt, wenn die Nummer aus einem anderen Rennen stammt"],
+        ["tag_id", "Textspalte – bitte nicht in eine Zahl umwandeln"],
+        ["Racetag-Version", version or ""],
+        ["Exportiert am", exported_at.astimezone(tz).replace(tzinfo=None)],
+    ])
+    return _workbook_bytes(wb)
+
+
+def build_startlist_workbook(
+    *,
+    race: Dict[str, Any],
+    riders: List[Dict[str, Any]],
+    exported_at: Optional[datetime] = None,
+    version: Optional[str] = None,
+    tz=None,
+) -> bytes:
+    """The coupled riders of one race, with their tag IDs.
+
+    This is the file to keep as the master start list: it also contains riders
+    who never passed the antenna, and it can be re-imported (the first columns
+    carry bib and name, the tag id is column E).
+    """
+    exported_at = exported_at or datetime.now(timezone.utc)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Startliste"
+
+    def sort_key(rider: Dict[str, Any]):
+        bib = str(rider.get("bib") or "")
+        return (0, int(bib), "") if bib.isdigit() else (1, 0, bib or rider.get("tag_id") or "")
+
+    rows: List[List[Any]] = []
+    for rider in sorted(riders, key=sort_key):
+        rows.append([
+            rider.get("bib") or "",
+            rider.get("name") or "",
+            rider.get("verein") or "",
+            rider.get("uci_id") or "",
+            rider.get("tag_id") or "",
+            _status_text(rider.get("status")),
+            rider.get("reads"),
+            local_cell(rider.get("first_seen"), tz),
+        ])
+    _write_sheet(
+        ws, STARTLIST_HEADERS, rows,
+        widths=_STARTLIST_WIDTHS, formats={5: FMT_TEXT, 8: FMT_DATETIME},
+    )
+
+    _meta_sheet(wb.create_sheet("Info"), [
+        ["Rennen", race.get("name") or ""],
+        ["Geplant", local_cell(race.get("scheduled_at"), tz)],
+        ["Gekoppelte Fahrer", len(riders)],
+        ["Ohne Lesung", sum(1 for r in riders if not r.get("reads"))],
+        ["tag_id", "Textspalte – bitte nicht in eine Zahl umwandeln"],
+        ["Racetag-Version", version or ""],
+        ["Exportiert am", exported_at.astimezone(tz).replace(tzinfo=None)],
+    ])
+    return _workbook_bytes(wb)

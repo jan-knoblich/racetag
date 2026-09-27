@@ -1013,6 +1013,111 @@ def _readings_workbook_response(race_rows):
     return _xlsx_response(payload, filename)
 
 
+def _tags_workbook_response(race_row):
+    """Tag inventory of one race as a start-list template.
+
+    Couplings are per race, so a tag waved in a fresh race has no rider there.
+    We therefore fall back to the most recent coupling of that tag in any other
+    race and name the race it came from, instead of handing the operator empty
+    columns (field report 2026-09-26).
+    """
+    own = {r["tag_id"]: r for r in _rider_dicts(race_row.id)}
+    elsewhere = storage.rider_lookup_across_races(exclude_race_id=race_row.id)
+
+    tags = []
+    for row in storage.tag_read_summary(race_row.id):
+        tag_id = row["tag_id"]
+        rider = own.get(tag_id)
+        source_race = ""
+        if rider is None:
+            rider = elsewhere.get(tag_id)
+            if rider is not None:
+                source_race = rider.get("race_name") or ""
+        tags.append({
+            "tag_id": tag_id,
+            "reads": row["reads"],
+            "first_seen": row["first_seen"],
+            "bib": rider["bib"] if rider else "",
+            "name": rider["name"] if rider else "",
+            "verein": rider.get("verein") if rider else "",
+            "uci_id": rider.get("uci_id") if rider else "",
+            "source_race": source_race,
+        })
+
+    payload = exports_xlsx.build_tags_workbook(
+        race=_race_meta(race_row, min_pass_interval_s=_effective_min_pass_interval_s()),
+        tags=tags,
+        version=os.getenv("RACETAG_VERSION"),
+    )
+    filename = exports_xlsx.sanitize_filename(
+        f"Racetag-Tags-{race_row.name}-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+    )
+    logger.info("tags.xlsx: %d tags, %d bytes", len(tags), len(payload))
+    return _xlsx_response(payload, filename)
+
+
+@app.get("/tags.xlsx", responses={200: {"content": {exports_xlsx.XLSX_MEDIA_TYPE: {}}}})
+def get_tags_xlsx():
+    """Tag inventory of the active race as an Excel start-list template."""
+    race_row = storage.get_race(race.race_id) if race.race_id else None
+    if race_row is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    return _tags_workbook_response(race_row)
+
+
+@app.get("/races/{race_id}/tags.xlsx",
+         responses={200: {"content": {exports_xlsx.XLSX_MEDIA_TYPE: {}}}})
+def get_tags_xlsx_for_race(race_id: str):
+    """Tag inventory per race. Works for any race, active or not."""
+    race_row = storage.get_race(race_id)
+    if race_row is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    return _tags_workbook_response(race_row)
+
+
+def _startlist_workbook_response(race_row):
+    """The coupled riders of one race, with their tag ids."""
+    reads = {r["tag_id"]: r for r in storage.tag_read_summary(race_row.id)}
+    riders = []
+    for rider in _rider_dicts(race_row.id):
+        summary = reads.get(rider["tag_id"])
+        riders.append({
+            **rider,
+            "reads": summary["reads"] if summary else 0,
+            "first_seen": summary["first_seen"] if summary else None,
+        })
+
+    payload = exports_xlsx.build_startlist_workbook(
+        race=_race_meta(race_row, min_pass_interval_s=_effective_min_pass_interval_s()),
+        riders=riders,
+        version=os.getenv("RACETAG_VERSION"),
+    )
+    filename = exports_xlsx.sanitize_filename(
+        f"Racetag-Startliste-{race_row.name}-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+    )
+    logger.info("startlist.xlsx: %d riders, %d bytes", len(riders), len(payload))
+    return _xlsx_response(payload, filename)
+
+
+@app.get("/startlist.xlsx", responses={200: {"content": {exports_xlsx.XLSX_MEDIA_TYPE: {}}}})
+def get_startlist_xlsx():
+    """Start list of the active race: bib, name, club, UCI id and tag id."""
+    race_row = storage.get_race(race.race_id) if race.race_id else None
+    if race_row is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    return _startlist_workbook_response(race_row)
+
+
+@app.get("/races/{race_id}/startlist.xlsx",
+         responses={200: {"content": {exports_xlsx.XLSX_MEDIA_TYPE: {}}}})
+def get_startlist_xlsx_for_race(race_id: str):
+    """Start list per race. Works for any race, active or not."""
+    race_row = storage.get_race(race_id)
+    if race_row is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    return _startlist_workbook_response(race_row)
+
+
 @app.get("/readings.xlsx", responses={200: {"content": {exports_xlsx.XLSX_MEDIA_TYPE: {}}}})
 def get_readings_xlsx():
     """Every stored reading of EVERY race — the file for the data check."""
@@ -1833,10 +1938,18 @@ def get_rider(tag_id: str):
 
 @app.delete("/riders/{tag_id}", status_code=204)
 def delete_rider(tag_id: str):
-    """Delete a rider by tag_id. 404 if not found."""
+    """Delete a rider (the tag-to-bib coupling) by tag_id. 404 if not found.
+
+    Used by "Kopplung löschen" when a tag was coupled to the wrong number. The
+    readings stay in tag_events for the audit trail, but the rider must vanish
+    from the standings right away, so the in-memory race state is rebuilt from
+    the remaining registered tags (the replay skips unregistered ones).
+    """
     removed = rider_store.delete(tag_id)
     if not removed:
         raise HTTPException(status_code=404, detail=f"No rider registered for tag '{tag_id}'")
+    _rebuild_active_race_state_in_place()
+    _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
 
 
 @app.delete("/riders/{tag_id}/passes", status_code=200)

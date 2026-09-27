@@ -302,6 +302,16 @@ In der Auswahl **„Rennen:“** steht das **aktive** Rennen. Alle Durchgänge a
 
 Die Rundenzahl lässt sich jederzeit oben bei **„Rundenzahl:“** ändern. Danach **„Übernehmen“** klicken.
 
+### 6.2a Rennen umbenennen oder löschen
+
+Neben dem **„+“** sitzt ein Stift **✎**. Er öffnet das gerade gewählte Rennen zum Bearbeiten.
+
+- **Umbenennen:** Name ändern, **„Speichern“**. Die gemessenen Runden bleiben erhalten. Das hilft, wenn beim Anlegen etwas schiefgegangen ist oder zwei Rennen zu ähnlich heißen.
+- **Geplanter Start und Rundenzahl** lassen sich hier ebenfalls ändern.
+- **Löschen:** **„Rennen löschen“**. Racetag fragt vorher nach und sagt, wie viele gekoppelte Fahrer verloren gehen. Mit dem Rennen verschwinden auch alle seine Lesungen, und das lässt sich **nicht** rückgängig machen. Das gerade laufende Rennen kann nicht gelöscht werden, Racetag wechselt deshalb vorher zum anderen Rennen und sagt in der Frage, zu welchem. Gibt es nur ein einziges Rennen, ist der Knopf grau.
+
+> [Screenshot: Dialog „Rennen bearbeiten“]
+
 ### 6.3 Rennen starten
 
 Wenn der Startschuss fällt: Klicke auf **„Rennen starten“**.
@@ -374,6 +384,23 @@ Mit **„Auto-Zuweisung starten“** vergibt Racetag die Nummern sogar selbst: T
 ### 7.4 Fahrer nachträglich ändern
 
 Klicke auf **„Fahrer“**, suche nach Startnummer oder Name, klicke den Treffer an, ändere die Angaben und klicke auf **„Speichern“**. Das geht auch ohne Reader, z. B. bei Nachmeldungen. Ein Doppelklick auf eine Zeile der Rangliste öffnet den Fahrer direkt.
+
+### 7.5 Falsche Kopplung löschen
+
+Landet ein Tag auf der falschen Startnummer, gibt es zwei Wege:
+
+- Im **Koppel-Modus** zeigt Racetag beim Vorhalten des Tags „BEREITS GEKOPPELT“. Dort steht neben **„Ändern (neu koppeln)“** jetzt **„Kopplung löschen“**.
+- Im Dialog **„Fahrer“** den Fahrer anklicken und auf **„Kopplung löschen“** klicken.
+
+In beiden Fällen fragt Racetag nach. Danach ist der Tag wieder frei, und der Fahrer verschwindet aus der Rangliste. Die gemessenen Lesungen bleiben gespeichert, gehen also für die spätere Prüfung nicht verloren.
+
+### 7.6 Startliste mit Tag-IDs aufheben
+
+Im Dialog **„Fahrer“** gibt es den Knopf **„Startliste (Excel)“**. Die Datei enthält Startnummer, Name, Verein, UCI-ID und die dazugehörige Tag-ID, auch von Fahrern ohne eine einzige Lesung. Das ist die Datei zum Aufheben und Weitergeben.
+
+Der Knopf **„Tags exportieren“** oben ist etwas anderes: Er listet alle Tags, die in diesem Rennen gelesen wurden, als Vorlage zum Ausfüllen. Ist eine Nummer schon aus einem anderen Rennen bekannt, trägt Racetag sie mit ein und schreibt in die letzte Spalte, aus welchem Rennen sie stammt.
+
+Beide Dateien öffnen sich direkt in Excel. Die Spalte **tag_id** ist als Text gespeichert, damit führende Nullen erhalten bleiben. Bitte diese Spalte in Excel nicht in eine Zahl umwandeln, sonst passt der Tag beim späteren Import nicht mehr.
 
 ---
 

@@ -725,6 +725,41 @@ class Storage:
             for r in rows
         ]
 
+    def rider_lookup_across_races(
+        self, exclude_race_id: Optional[str] = None
+    ) -> dict:
+        """``tag_id`` -> the most recent coupling of that tag in ANY race.
+
+        Couplings are per race, so a tag waved in a fresh race has no rider
+        there even when the operator coupled it minutes earlier in the
+        previous race. The tag-inventory export uses this to still show the
+        name it had, together with the race it came from, instead of an empty
+        cell (field report 2026-09-26).
+        """
+        sql = (
+            "SELECT r.tag_id, r.bib, r.name, r.verein, r.uci_id, "
+            "       r.race_id, ra.name AS race_name "
+            "FROM riders r JOIN races ra ON ra.id = r.race_id "
+        )
+        params: tuple = ()
+        if exclude_race_id is not None:
+            sql += "WHERE r.race_id != ? "
+            params = (exclude_race_id,)
+        # Oldest first: later rows overwrite earlier ones, so the newest
+        # coupling of a tag wins.
+        sql += "ORDER BY ra.created_at, r.rowid;"
+        out: dict = {}
+        for row in self._conn.execute(sql, params).fetchall():
+            out[row["tag_id"]] = {
+                "bib": row["bib"],
+                "name": row["name"],
+                "verein": row["verein"],
+                "uci_id": row["uci_id"],
+                "race_id": row["race_id"],
+                "race_name": row["race_name"],
+            }
+        return out
+
     def clear_events(self, race_id: Optional[str] = None) -> None:
         rid = self._require_race_id(race_id)
         self._execute("DELETE FROM tag_events WHERE race_id = ?;", (rid,))

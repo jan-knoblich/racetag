@@ -35,6 +35,82 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClassificationDTO'
+  /tags.xlsx:
+    get:
+      summary: Tag inventory of the active race as a start-list template
+      description: >-
+        Columns tag_id, bib, name (the import format) plus reads, first read,
+        club and UCI id. tag_id is a TEXT cell: Excel would otherwise turn a
+        digits-only EPC into a number and the re-import would couple a tag that
+        does not exist. Couplings are per race, so a tag coupled in another
+        race is still shown with its number and the race it came from.
+      responses:
+        '200':
+          description: XLSX workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: No active race
+  /races/{race_id}/tags.xlsx:
+    get:
+      summary: Tag inventory per race
+      description: Works for any race, active or not.
+      parameters:
+        - name: race_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: XLSX workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Race not found
+  /startlist.xlsx:
+    get:
+      summary: Start list of the active race, including tag ids
+      description: >-
+        Bib, name, club, UCI id, tag id, status and the read count of this
+        race. Includes riders that never passed an antenna. The file to keep as
+        the master start list.
+      responses:
+        '200':
+          description: XLSX workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: No active race
+  /races/{race_id}/startlist.xlsx:
+    get:
+      summary: Start list per race
+      description: Works for any race, active or not.
+      parameters:
+        - name: race_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: XLSX workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Race not found
   /results.xlsx:
     get:
       summary: Race result of the ACTIVE race as an Excel workbook

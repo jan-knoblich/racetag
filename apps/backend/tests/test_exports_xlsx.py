@@ -265,3 +265,150 @@ def test_filename_sanitising():
         "Racetag-Ergebnis-Strassenrennen-Sued-2026-09-24.xlsx"
     )
     assert sanitize_filename("///").endswith("export.xlsx")
+
+
+# ---------------------------------------------------------------------------
+# Tag inventory, start list, coupling delete (field report 2026-09-26)
+# ---------------------------------------------------------------------------
+
+def test_tags_workbook_keeps_leading_zeros_as_text(app_client):
+    """Excel turns a digits-only EPC into a number and the re-import then
+    couples a tag that does not exist. The cell must stay text."""
+    client, app_module = app_client
+    client.post("/riders", json={"tag_id": "000000009969", "bib": "7", "name": "Mit Nullen"})
+    _post_arrive(client, "000000009969", START + timedelta(seconds=30))
+
+    wb = load_workbook(io.BytesIO(client.get("/tags.xlsx").content))
+    ws = wb["Tags"]
+    assert ws["A1"].value == "tag_id"
+    cell = ws["A2"]
+    assert cell.value == "000000009969"
+    assert isinstance(cell.value, str)
+    assert cell.number_format == "@"
+    assert ws["B2"].value == "7"
+    assert ws["C2"].value == "Mit Nullen"
+
+
+def test_tags_workbook_finds_the_name_in_another_race(app_client):
+    """Couplings are per race. A tag waved in a fresh race still shows the
+    number it was coupled to before, plus the race it came from."""
+    client, app_module = app_client
+    client.post("/riders", json={"tag_id": "AAA1", "bib": "7", "name": "Jürgen Öhler"})
+
+    second = client.post("/races", json={"name": "Lauf 2", "total_laps": 2}).json()
+    client.post(f"/races/{second['id']}/activate")
+    _post_arrive(client, "AAA1", START + timedelta(hours=1))
+
+    _, _, header, rows = _sheet_rows(client.get("/tags.xlsx").content, "Tags")
+    cols = {name: i for i, name in enumerate(header)}
+    row = next(r for r in rows if r[cols["tag_id"]] == "AAA1")
+    assert row[cols["bib"]] == "7"
+    assert row[cols["name"]] == "Jürgen Öhler"
+    assert row[cols["Name aus Rennen"]] == "Default race"
+
+
+def test_tags_workbook_prefers_the_coupling_of_this_race(app_client):
+    client, app_module = app_client
+    client.post("/riders", json={"tag_id": "AAA1", "bib": "7", "name": "Erstes Rennen"})
+
+    second = client.post("/races", json={"name": "Lauf 2", "total_laps": 2}).json()
+    client.post(f"/races/{second['id']}/activate")
+    client.post("/riders", json={"tag_id": "AAA1", "bib": "99", "name": "Zweites Rennen"})
+    _post_arrive(client, "AAA1", START + timedelta(hours=1))
+
+    _, _, header, rows = _sheet_rows(client.get("/tags.xlsx").content, "Tags")
+    cols = {name: i for i, name in enumerate(header)}
+    row = next(r for r in rows if r[cols["tag_id"]] == "AAA1")
+    assert row[cols["bib"]] == "99"
+    assert row[cols["Name aus Rennen"]] is None  # no foreign race involved
+
+
+def test_startlist_workbook_lists_riders_without_readings(app_client):
+    client, app_module = app_client
+    _seed(client, app_module)
+    client.post("/riders", json={"tag_id": "DDD4", "bib": "99", "name": "Ohne Lesung"})
+
+    res = client.get("/startlist.xlsx")
+    assert res.status_code == 200
+    wb, ws, header, rows = _sheet_rows(res.content, "Startliste")
+    assert wb.sheetnames == ["Startliste", "Info"]
+    cols = {name: i for i, name in enumerate(header)}
+    by_bib = {r[cols["Startnummer"]]: r for r in rows}
+    assert by_bib["99"][cols["Lesungen in diesem Rennen"]] == 0
+    assert by_bib["7"][cols["Lesungen in diesem Rennen"]] == 3
+    assert by_bib["7"][cols["tag_id"]] == "AAA1"
+    assert ws.cell(row=2, column=cols["tag_id"] + 1).number_format == "@"
+
+
+def test_startlist_workbook_works_for_an_inactive_race(app_client):
+    client, app_module = app_client
+    _seed(client, app_module)
+    race_id = client.get("/race").json()["id"]
+    second = client.post("/races", json={"name": "Lauf 2", "total_laps": 2}).json()
+    client.post(f"/races/{second['id']}/activate")
+
+    res = client.get(f"/races/{race_id}/startlist.xlsx")
+    assert res.status_code == 200
+    _, _, header, rows = _sheet_rows(res.content, "Startliste")
+    cols = {name: i for i, name in enumerate(header)}
+    assert {r[cols["Startnummer"]] for r in rows} == {"7", "12"}
+    assert client.get("/races/does-not-exist/startlist.xlsx").status_code == 404
+    assert client.get("/races/does-not-exist/tags.xlsx").status_code == 404
+
+
+def test_deleting_a_coupling_removes_the_standings_row(app_client):
+    """"Kopplung löschen" for a tag coupled to a wrong number: the rider has
+    to disappear from the standings right away, while the readings stay."""
+    client, app_module = app_client
+    _seed(client, app_module)
+    before = client.get("/classification").json()["standings"]
+    assert any(p["tag_id"] == "AAA1" for p in before)
+
+    assert client.delete("/riders/AAA1").status_code == 204
+
+    after = client.get("/classification").json()["standings"]
+    assert not any(p["tag_id"] == "AAA1" for p in after)
+    assert client.get("/riders/AAA1").status_code == 404
+    # The readings survive for the audit trail.
+    _, _, header, rows = _sheet_rows(client.get("/readings.xlsx").content, "Lesungen")
+    cols = {name: i for i, name in enumerate(header)}
+    assert sum(1 for r in rows if r[cols["tag_id".replace("tag_id", "Tag-ID")]] == "AAA1") == 3
+    assert client.delete("/riders/AAA1").status_code == 404
+
+
+def test_deleting_a_race_removes_its_riders_and_readings(app_client):
+    """Erik created a race by mistake; deleting it must not leave orphans."""
+    client, app_module = app_client
+    _seed(client, app_module)
+    doomed = client.post("/races", json={"name": "Versehen", "total_laps": 2}).json()
+    client.post(f"/races/{doomed['id']}/activate")
+    client.post("/riders", json={"tag_id": "ZZZ9", "bib": "5", "name": "Falsch"})
+    _post_arrive(client, "ZZZ9", START + timedelta(hours=2))
+
+    # The active race is protected.
+    assert client.delete(f"/races/{doomed['id']}").status_code == 409
+
+    first = [r["id"] for r in client.get("/races").json()["items"] if r["id"] != doomed["id"]][0]
+    client.post(f"/races/{first}/activate")
+    assert client.delete(f"/races/{doomed['id']}").status_code == 204
+
+    assert client.get(f"/races/{doomed['id']}").status_code == 404
+    rows = app_module.storage._conn.execute(
+        "SELECT (SELECT COUNT(*) FROM riders WHERE race_id = ?) AS riders, "
+        "       (SELECT COUNT(*) FROM tag_events WHERE race_id = ?) AS events;",
+        (doomed["id"], doomed["id"]),
+    ).fetchone()
+    assert rows["riders"] == 0
+    assert rows["events"] == 0
+
+
+def test_renaming_a_race_keeps_its_data(app_client):
+    client, app_module = app_client
+    _seed(client, app_module)
+    race_id = client.get("/race").json()["id"]
+
+    res = client.patch(f"/races/{race_id}", json={"name": "10 km Lauf"})
+    assert res.status_code == 200
+    assert res.json()["name"] == "10 km Lauf"
+    assert client.get("/race").json()["name"] == "10 km Lauf"
+    assert len(client.get("/classification").json()["standings"]) == 2
