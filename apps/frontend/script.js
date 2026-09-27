@@ -1983,16 +1983,17 @@ function applyAppMode() {
   const input = $('#backendUrl');
   if (input) input.value = state.backend;
 
+  // Settings → Erweitert holds the exports and is visible in both modes.
   // The tag column is an expert option in the desktop build: move the
-  // existing control (its change listener travels with it) into
-  // Settings → Erweitert. Browser mode keeps it in the header.
+  // existing control (its change listener travels with it) there.
+  // Browser mode keeps it in the header.
   const advanced = $('#settingsAdvanced');
   const advancedBody = $('#settingsAdvancedBody');
   const tagToggle = $('#tagColumnToggle');
   const tagControl = tagToggle ? tagToggle.closest('label') : null;
-  if (desktop && advanced && advancedBody && tagControl) {
+  if (advanced) advanced.hidden = false;
+  if (desktop && advancedBody && tagControl) {
     advancedBody.appendChild(tagControl);
-    advanced.hidden = false;
   }
   ['#openDataFolderBtn', '#supportBundleBtn'].forEach((sel) => {
     const el = $(sel);
@@ -3446,14 +3447,71 @@ function init() {
     });
   }
 
-  // Export CSV buttons (results + tag inventory).
+  // Exports: results workbook (.xlsx, header), results/tag-inventory CSV and
+  // the readings workbook for the data check (Einstellungen → Erweitert).
   //
   // In the packaged desktop app (pywebview/WKWebView) the usual Blob +
-  // <a download> trick fails — WKWebView opens the CSV INSIDE the app
-  // window instead of downloading it. So we first try the pywebview-
-  // exposed Python API (`save_csv`), which pops a native macOS/Windows
-  // save dialog. Fallback for a normal browser keeps the Blob+anchor
-  // path so /classification.csv still works when opened directly.
+  // <a download> trick fails — WKWebView opens the file INSIDE the app
+  // window instead of downloading it. So we first try the pywebview-exposed
+  // Python API (`save_csv` for text, `save_binary` for a workbook), which
+  // pops a native macOS/Windows save dialog. Fallback for a normal browser
+  // keeps the Blob+anchor path so /classification.csv still works when
+  // opened directly.
+  const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  // Filename the backend suggests (plain and RFC 5987 form), else the fallback.
+  function exportFilename(res, fallbackFilename) {
+    const cd = res.headers.get('content-disposition') || '';
+    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";\n]+)"?/i);
+    if (m && m[1]) {
+      try { return decodeURIComponent(m[1]); }
+      catch { return m[1]; }
+    }
+    return fallbackFilename;
+  }
+
+  // Browser save path: Blob + <a download>.
+  function saveBlobInBrowser(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  // Base64 for the pywebview bridge, in chunks on purpose: a single
+  // String.fromCharCode(...bytes) over a ~20 MB readings workbook exceeds the
+  // argument limit and throws "Maximum call stack size exceeded".
+  const BASE64_CHUNK_BYTES = 0x8000;
+
+  function bytesToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += BASE64_CHUNK_BYTES) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + BASE64_CHUNK_BYTES));
+    }
+    return btoa(binary);
+  }
+
+  // Disabled + spinner while an export runs: a full readings workbook takes a
+  // moment and a second click would start it all over again.
+  function setExportBusy(btn, busy) {
+    if (!btn) return;
+    if (busy) {
+      if (btn.dataset.idleLabel === undefined) btn.dataset.idleLabel = btn.textContent;
+      btn.textContent = RT.S.exportRunning;
+    } else if (btn.dataset.idleLabel !== undefined) {
+      btn.textContent = btn.dataset.idleLabel;
+      delete btn.dataset.idleLabel;
+    }
+    btn.disabled = busy;
+    btn.classList.toggle('btn-busy', busy);
+    btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+  }
+
   async function downloadCsvFromBackend(path, fallbackFilename) {
     try {
       const res = await fetch(`${state.backend}${path}`, {
@@ -3464,14 +3522,7 @@ function init() {
         return;
       }
 
-      // Pull filename out of Content-Disposition if present.
-      let filename = fallbackFilename;
-      const cd = res.headers.get('content-disposition') || '';
-      const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";\n]+)"?/i);
-      if (m && m[1]) {
-        try { filename = decodeURIComponent(m[1]); }
-        catch { filename = m[1]; }
-      }
+      const filename = exportFilename(res, fallbackFilename);
 
       // res.text() strips the backend's UTF-8 BOM while decoding; put it
       // back so German Excel detects the encoding when opening the file.
@@ -3490,15 +3541,7 @@ function init() {
       }
 
       // Path 2: fallback for plain browsers — Blob + <a download>.
-      const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
+      saveBlobInBrowser(new Blob([csvText], { type: 'text/csv;charset=utf-8' }), filename);
       showToast(RT.fmt('toastExported', { filename }));
     } catch (e) {
       console.warn('CSV export failed:', e);
@@ -3506,6 +3549,90 @@ function init() {
     }
   }
 
+  // Excel workbook download. `button` gets the busy state, `statusSelector`
+  // (settings modal) an inline progress/result line next to the toast.
+  async function downloadXlsxFromBackend(path, fallbackFilename, options) {
+    const { button = null, statusSelector = null } = options || {};
+    const report = (level, text, busy) => {
+      if (statusSelector) setInlineStatus(statusSelector, level, text, busy);
+    };
+    setExportBusy(button, true);
+    report('info', RT.S.exportRunning, true);
+    try {
+      const res = await fetch(`${state.backend}${path}`, { headers: getApiHeaders() });
+      if (!res.ok) {
+        const message = await rtResponseError(res, 'exportFailed');
+        showToast(message, 'error');
+        report('error', message);
+        return;
+      }
+      const filename = exportFilename(res, fallbackFilename);
+      const buffer = await res.arrayBuffer();
+
+      // Path 1: pywebview's native save dialog (desktop app). save_binary
+      // answers {ok, path, error}; ok:false without an error text means the
+      // operator closed the dialog.
+      const api = window.pywebview && window.pywebview.api;
+      if (api && typeof api.save_binary === 'function') {
+        const saved = await api.save_binary(bytesToBase64(buffer), filename);
+        if (saved === true || (saved && saved.ok)) {
+          const message = RT.fmt('toastExportedTo', { path: (saved && saved.path) || filename });
+          showToast(message);
+          report('ok', message);
+        } else if (saved && saved.error) {
+          console.warn('save_binary failed:', saved.error);
+          const message = RT.fmt('exportSaveFailed', { error: saved.error });
+          showToast(message, 'error');
+          report('error', message);
+        } else {
+          showToast(RT.S.toastExportCancelled, 'warn');
+          report('neutral', RT.S.toastExportCancelled);
+        }
+        return;
+      }
+
+      // Path 2: fallback for plain browsers — Blob + <a download>.
+      saveBlobInBrowser(new Blob([buffer], { type: XLSX_MIME }), filename);
+      const message = RT.fmt('toastExported', { filename });
+      showToast(message);
+      report('ok', message);
+    } catch (e) {
+      console.warn('Excel export failed:', e);
+      const message = RT.apiError(0, null, 'exportFailed');
+      showToast(message, 'error');
+      report('error', message);
+    } finally {
+      setExportBusy(button, false);
+    }
+  }
+
+  // Header, primary: the operator's result file — opens straight in Excel.
+  const exportXlsxBtn = $('#exportXlsxBtn');
+  if (exportXlsxBtn) {
+    exportXlsxBtn.addEventListener('click', () =>
+      downloadXlsxFromBackend('/results.xlsx', 'racetag-ergebnis.xlsx', { button: exportXlsxBtn }));
+  }
+
+  // Einstellungen → Erweitert: every stored reading, for the data check.
+  const exportReadingsXlsxBtn = $('#exportReadingsXlsxBtn');
+  if (exportReadingsXlsxBtn) {
+    exportReadingsXlsxBtn.addEventListener('click', () => {
+      const scope = $('#readingsScopeSelect');
+      const allRaces = !!scope && scope.value === 'all';
+      if (!allRaces && !state.activeRaceId) {
+        showToast(RT.S.exportNoActiveRace, 'warn');
+        setInlineStatus('#exportReadingsStatus', 'warn', RT.S.exportNoActiveRace);
+        return;
+      }
+      const path = allRaces
+        ? '/readings.xlsx'
+        : `/races/${encodeURIComponent(state.activeRaceId)}/readings.xlsx`;
+      downloadXlsxFromBackend(path, allRaces ? 'racetag-lesungen-alle.xlsx' : 'racetag-lesungen.xlsx',
+        { button: exportReadingsXlsxBtn, statusSelector: '#exportReadingsStatus' });
+    });
+  }
+
+  // Einstellungen → Erweitert: the same standings as CSV, for other tools.
   const exportBtn = $('#exportCsvBtn');
   if (exportBtn) {
     exportBtn.addEventListener('click', () =>

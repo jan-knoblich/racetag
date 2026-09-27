@@ -657,6 +657,22 @@ class Storage:
                 rssi=row["rssi"],
             )
 
+    def iter_event_rows(self, race_id: Optional[str] = None) -> Iterator[dict]:
+        """Yield the raw tag_events rows of a race in chronological order.
+
+        Unlike :meth:`iter_events` this keeps the row id and returns plain
+        dicts: the readings export is an audit view of the stored table, not a
+        replay of DTOs.
+        """
+        rid = self._require_race_id(race_id)
+        rows = self._conn.execute(
+            "SELECT id, tag_id, event_type, timestamp, antenna, rssi, reader_serial "
+            "FROM tag_events WHERE race_id = ? ORDER BY timestamp, id;",
+            (rid,),
+        ).fetchall()
+        for row in rows:
+            yield dict(row)
+
     def count_events(self, race_id: Optional[str] = None) -> int:
         rid = self._require_race_id(race_id)
         row = self._conn.execute(

@@ -240,8 +240,12 @@
 
     // ---- Export / clipboard ------------------------------------------------------
     exportFailed: 'Export fehlgeschlagen',
+    exportRunning: 'Export läuft…',
     toastExported: 'Exportiert: {filename}',
+    toastExportedTo: 'Gespeichert: {path}',
     toastExportCancelled: 'Export abgebrochen',
+    exportSaveFailed: 'Datei konnte nicht gespeichert werden: {error}',
+    exportNoActiveRace: 'Kein Rennen ausgewählt – bitte „Alle Rennen“ wählen.',
     toastTagCopied: 'Tag-ID kopiert: {tag}…',
     toastCopyFailed: 'Kopieren fehlgeschlagen',
 
