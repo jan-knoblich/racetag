@@ -88,3 +88,23 @@ Open:
 - Not run on Windows, and not opened in real Excel — only read back with openpyxl.
 - Results export for a **non-active** race still needs the race to be activated first (inherited from the CSV behaviour).
 - The reconstruction ignores manual lap corrections (documented in the sheet comment and in `OPERATOR_GUIDE.md`).
+
+---
+
+## 8. Field feedback round (2026-09-27)
+
+From the WhatsApp exchange after the first real event. Five items, all implemented on top of section 7.
+
+| # | Field report | What was built |
+| --- | --- | --- |
+| 1 | "wie kann ich ein angelegtes rennen löschen?" / "oder kann ich es ändern? will nicht 2 oder 3 mit ähnlichem namen haben" | Pencil next to the race selector: rename, scheduled start, lap count, delete. The endpoints already existed and had no UI. Deleting the active race switches to another race first and names it in the confirmation; with one race left the button is disabled. |
+| 2 | "ich kann gekoppelte blödsinns-ID nicht löschen" | "Kopplung löschen" in the riders dialog and on the "BEREITS GEKOPPELT" card. `DELETE /riders/{tag_id}` now rebuilds the race state and publishes standings, so the row disappears at once; the readings stay for the audit trail. |
+| 3 | Excel screenshot showing `tag_id` as `9969` instead of `000000009969` | The tag inventory is an `.xlsx` with `tag_id` as a text cell (`@`). Every other sheet that carries a tag id got the same treatment. Without it a re-import couples a tag that does not exist. `GET /tags.csv` is unchanged for scripts. |
+| 4 | "wie komme ich sonst an eine startliste, in der die ID-tags hinterlegt sind?" | `GET /startlist.xlsx` and `GET /races/{id}/startlist.xlsx` plus a "Startliste (Excel)" button in the riders dialog. Works for any race, includes riders without readings. |
+| 5 | Tag export came out with empty bib/name columns | Couplings are per race, and the operator had switched races while coupling. `storage.rider_lookup_across_races()` fills bib, name, club and UCI id from the most recent coupling in any other race and names that race in "Name aus Rennen". |
+
+Verified on macOS: backend 260 tests, desktop 143 (+7 skipped), reader-service 148, all passing. 17 headless-Chrome checks drive the real UI against the combined desktop app: rename, delete with race switch, coupling delete via the dialog, all four workbooks downloading as real xlsx, no JS errors.
+
+Not covered: nothing has been opened in real Excel on Windows, and point 5's root cause is inferred from the screenshots plus the per-race data model, not from Erik's database.
+
+Still open from the same conversation and deliberately not built here: separate classification per distance, so the 5 km winner does not wait for the last 10 km finisher. That needs a class or distance per rider with its own lap target and touches the scoring core.

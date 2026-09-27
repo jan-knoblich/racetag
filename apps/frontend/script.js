@@ -520,6 +520,7 @@ function coupleToIdle() {
     couple.infoTimer = null;
   }
   $('#coupleRecoupleBtn').hidden = true;
+  $('#coupleDeleteBtn').hidden = true;
   $('#coupleBib').value = '';
   $('#coupleName').value = '';
   coupleClearWarn();
@@ -537,6 +538,7 @@ function coupleArm(tagId, opts = {}) {
     couple.infoTimer = null;
   }
   $('#coupleRecoupleBtn').hidden = true;
+  $('#coupleDeleteBtn').hidden = true;
   coupleClearWarn();
   if (opts.recouple) {
     coupleSetCard('recouple', RT.S.coupleStateRecouple,
@@ -560,6 +562,7 @@ function coupleShowInfo(data) {
   couple.infoTag = { tag_id: data.tag_id, bib: data.bib, name: data.name };
   coupleSetCard('known', RT.S.coupleStateKnown, coupleRiderText(data), data.tag_id);
   $('#coupleRecoupleBtn').hidden = false;
+  $('#coupleDeleteBtn').hidden = false;
   if (couple.infoTimer) clearTimeout(couple.infoTimer);
   couple.infoTimer = setTimeout(() => {
     if (couple.phase === 'info') coupleToIdle();
@@ -807,6 +810,7 @@ function coupleAutoStart() {
     couple.infoTimer = null;
   }
   $('#coupleRecoupleBtn').hidden = true;
+  $('#coupleDeleteBtn').hidden = true;
   coupleClearWarn();
   coupleSetInputsEnabled(false);
   $('#coupleAutoStartBtn').hidden = true;
@@ -943,6 +947,7 @@ function selectRiderForEdit(tagId) {
   $('#riderEditVerein').value = r.verein || '';
   $('#riderEditUci').value = r.uci_id || '';
   $('#riderEditSaveBtn').disabled = false;
+  $('#riderDeleteBtn').disabled = false;
   const err = $('#riderEditError');
   err.hidden = true;
   renderRidersUiList();
@@ -962,6 +967,7 @@ function openRidersModal(preselectTag) {
   $('#riderEditVerein').value = '';
   $('#riderEditUci').value = '';
   $('#riderEditSaveBtn').disabled = true;
+  $('#riderDeleteBtn').disabled = true;
   $('#riderEditError').hidden = true;
   refreshRidersUiList().then(() => {
     if (preselectTag) selectRiderForEdit(preselectTag);
@@ -1717,6 +1723,195 @@ async function loadRaces() {
 }
 
 // Multi-race: switch the active race on the backend, then reload everything.
+// ---------------------------------------------------------------------------
+// Rennen bearbeiten: umbenennen, Eckdaten ändern, löschen.
+//
+// The dropdown always activates the race it selects, so this dialog edits the
+// ACTIVE race. Deleting it is the one case the backend refuses (409), so we
+// switch to another race first and say so in the confirmation.
+// ---------------------------------------------------------------------------
+
+const raceEditUi = { race: null, others: [] };
+
+// ISO-8601 UTC <-> the "YYYY-MM-DDTHH:MM" a datetime-local input wants. The
+// create-race dialog treats the typed time as UTC; we stay consistent.
+function isoToLocalInput(iso) {
+  if (!iso) return '';
+  const match = String(iso).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+  return match ? `${match[1]}T${match[2]}` : '';
+}
+
+async function openEditRaceModal() {
+  const modal = $('#editRaceModal');
+  if (!modal) return;
+  const err = $('#editRaceError');
+  if (err) err.hidden = true;
+
+  let races = [];
+  try {
+    const res = await fetch(`${state.backend}/races`, { headers: getApiHeaders() });
+    if (res.ok) races = (await res.json()).items || [];
+  } catch (e) {
+    console.warn('Race list failed:', e);
+  }
+  const current = races.find((r) => r.is_active) || null;
+  if (!current) {
+    showToast(RT.S.raceEditNoRace, 'warn');
+    return;
+  }
+  raceEditUi.race = current;
+  raceEditUi.others = races.filter((r) => r.id !== current.id);
+
+  $('#editRaceName').value = current.name || '';
+  $('#editRaceScheduled').value = isoToLocalInput(current.scheduled_at);
+  $('#editRaceTotalLaps').value = current.total_laps || 5;
+
+  // Spell out what deleting would cost before the operator clicks it.
+  const info = $('#editRaceInfo');
+  const del = $('#editRaceDeleteBtn');
+  const notes = [];
+  if (!raceEditUi.others.length) {
+    notes.push(RT.S.raceEditInfoOnly);
+    if (del) del.disabled = true;
+  } else {
+    if (del) del.disabled = false;
+    notes.push(RT.fmt('raceEditInfoActive', {
+      other: rtRaceDisplayName(raceEditUi.others[raceEditUi.others.length - 1].name),
+    }));
+    if (current.started) notes.push(RT.S.raceEditInfoStarted);
+  }
+  if (info) info.textContent = notes.join(' ');
+
+  modal.hidden = false;
+  const nameInput = $('#editRaceName');
+  nameInput.focus();
+  nameInput.select();
+}
+
+function closeEditRaceModal() {
+  const modal = $('#editRaceModal');
+  if (modal) modal.hidden = true;
+}
+
+async function saveRaceEdit() {
+  const race = raceEditUi.race;
+  if (!race) return;
+  const err = $('#editRaceError');
+  const name = ($('#editRaceName').value || '').trim();
+  const laps = parseInt($('#editRaceTotalLaps').value || '0', 10);
+  const schedRaw = ($('#editRaceScheduled').value || '').trim();
+  if (!name) {
+    if (err) { err.textContent = RT.S.raceEditNameRequired; err.hidden = false; }
+    return;
+  }
+  if (!Number.isFinite(laps) || laps < 1 || laps > 999) {
+    if (err) { err.textContent = RT.S.raceEditLapsRange; err.hidden = false; }
+    return;
+  }
+  try {
+    const res = await fetch(`${state.backend}/races/${encodeURIComponent(race.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+      body: JSON.stringify({
+        name,
+        total_laps: laps,
+        scheduled_at: schedRaw ? `${schedRaw}:00.000Z` : '',
+      }),
+    });
+    if (!res.ok) {
+      if (err) { err.textContent = await rtResponseError(res, 'raceSaveFailed'); err.hidden = false; }
+      return;
+    }
+    closeEditRaceModal();
+    showToast(RT.fmt('toastRaceRenamed', { name: rtRaceDisplayName(name) }));
+    await Promise.all([loadRaces(), loadRaceConfig()]);
+  } catch (e) {
+    console.warn('Race save failed:', e);
+    if (err) { err.textContent = RT.apiError(0, null, 'raceSaveFailed'); err.hidden = false; }
+  }
+}
+
+async function deleteRaceFlow() {
+  const race = raceEditUi.race;
+  if (!race || !raceEditUi.others.length) return;
+  const successor = raceEditUi.others[raceEditUi.others.length - 1];
+
+  let riderCount = 0;
+  try {
+    const res = await fetch(`${state.backend}/riders`, { headers: getApiHeaders() });
+    if (res.ok) riderCount = ((await res.json()).items || []).length;
+  } catch {
+    // count is only used in the confirmation text
+  }
+  const question = RT.fmt('raceDeleteConfirm', {
+    name: rtRaceDisplayName(race.name),
+    riders: riderCount,
+  }) + RT.fmt('raceDeleteConfirmSwitch', { other: rtRaceDisplayName(successor.name) });
+  if (!window.confirm(question)) return;
+
+  const err = $('#editRaceError');
+  try {
+    // The backend refuses to delete the active race, so move away first.
+    const act = await fetch(`${state.backend}/races/${encodeURIComponent(successor.id)}/activate`, {
+      method: 'POST', headers: getApiHeaders(),
+    });
+    if (!act.ok) {
+      if (err) { err.textContent = await rtResponseError(act, 'raceDeleteFailed'); err.hidden = false; }
+      return;
+    }
+    const res = await fetch(`${state.backend}/races/${encodeURIComponent(race.id)}`, {
+      method: 'DELETE', headers: getApiHeaders(),
+    });
+    if (!res.ok) {
+      if (err) { err.textContent = await rtResponseError(res, 'raceDeleteFailed'); err.hidden = false; }
+      await Promise.all([loadRaces(), loadRaceConfig(), loadSnapshot()]);
+      return;
+    }
+    closeEditRaceModal();
+    showToast(RT.fmt('toastRaceDeleted', { name: rtRaceDisplayName(race.name) }));
+    await Promise.all([loadRaces(), loadRaceConfig(), loadSnapshot()]);
+  } catch (e) {
+    console.warn('Race delete failed:', e);
+    if (err) { err.textContent = RT.apiError(0, null, 'raceDeleteFailed'); err.hidden = false; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Kopplung löschen — a tag coupled to the wrong number ("Blödsinns-ID").
+// The readings stay in the database; only the tag-to-bib link goes away, and
+// with it the rider's row in the standings.
+// ---------------------------------------------------------------------------
+
+async function deleteRiderCoupling(tagId, label, options) {
+  const opts = options || {};
+  if (!tagId) return false;
+  const question = RT.fmt('riderDeleteConfirm', { rider: label || coupleShortTag(tagId) });
+  if (!window.confirm(question)) return false;
+  try {
+    const res = await fetch(`${state.backend}/riders/${encodeURIComponent(tagId)}`, {
+      method: 'DELETE', headers: getApiHeaders(),
+    });
+    if (!res.ok) {
+      const text = await rtResponseError(res, 'riderDeleteFailed');
+      if (opts.errorSelector) {
+        const box = $(opts.errorSelector);
+        if (box) { box.textContent = text; box.hidden = false; }
+      } else {
+        showToast(text, 'error');
+      }
+      return false;
+    }
+    showToast(RT.fmt('toastRiderDeleted', { rider: label || coupleShortTag(tagId) }));
+    await loadSnapshot();
+    if (couple.active) refreshCoupleRiders();
+    return true;
+  } catch (e) {
+    console.warn('Rider delete failed:', e);
+    showToast(RT.apiError(0, null, 'riderDeleteFailed'), 'error');
+    return false;
+  }
+}
+
 async function activateRace(raceId) {
   try {
     const res = await fetch(`${state.backend}/races/${raceId}/activate`, {
@@ -3644,7 +3839,68 @@ function init() {
   const exportTagsBtn = $('#exportTagsBtn');
   if (exportTagsBtn) {
     exportTagsBtn.addEventListener('click', () =>
-      downloadCsvFromBackend('/tags.csv', 'racetag-tags.csv'));
+      downloadXlsxFromBackend('/tags.xlsx', 'racetag-tags.xlsx', { button: exportTagsBtn }));
+  }
+
+  // Start list of the active race incl. tag ids — the file to keep as the
+  // master list. Lives in the riders dialog, where the operator manages them.
+  const exportStartlistBtn = $('#exportStartlistBtn');
+  if (exportStartlistBtn) {
+    exportStartlistBtn.addEventListener('click', () =>
+      downloadXlsxFromBackend('/startlist.xlsx', 'racetag-startliste.xlsx',
+        { button: exportStartlistBtn }));
+  }
+
+  // Rennen umbenennen / löschen
+  const editRaceBtn = $('#editRaceBtn');
+  if (editRaceBtn) editRaceBtn.addEventListener('click', () => { openEditRaceModal(); });
+  const editRaceSaveBtn = $('#editRaceSaveBtn');
+  if (editRaceSaveBtn) editRaceSaveBtn.addEventListener('click', () => { saveRaceEdit(); });
+  const editRaceDeleteBtn = $('#editRaceDeleteBtn');
+  if (editRaceDeleteBtn) editRaceDeleteBtn.addEventListener('click', () => { deleteRaceFlow(); });
+  const editRaceCancelBtn = $('#editRaceCancelBtn');
+  if (editRaceCancelBtn) editRaceCancelBtn.addEventListener('click', closeEditRaceModal);
+  const editRaceModal = $('#editRaceModal');
+  if (editRaceModal) {
+    editRaceModal.addEventListener('click', (e) => {
+      if (e.target === editRaceModal) closeEditRaceModal();
+    });
+    editRaceModal.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); saveRaceEdit(); }
+    });
+  }
+
+  // Kopplung löschen — aus dem Fahrer-Dialog und aus dem Koppel-Modus.
+  const riderDeleteBtn = $('#riderDeleteBtn');
+  if (riderDeleteBtn) {
+    riderDeleteBtn.addEventListener('click', async () => {
+      const tagId = ($('#riderEditTag').value || '').trim();
+      const bib = ($('#riderEditBib').value || '').trim();
+      const name = ($('#riderEditName').value || '').trim();
+      const label = bib ? rtRiderLabel(bib, name || RT.S.riderNoName) : coupleShortTag(tagId);
+      const done = await deleteRiderCoupling(tagId, label, { errorSelector: '#riderEditError' });
+      if (!done) return;
+      ridersUi.selectedTag = null;
+      $('#riderEditTag').value = '';
+      $('#riderEditBib').value = '';
+      $('#riderEditName').value = '';
+      $('#riderEditVerein').value = '';
+      $('#riderEditUci').value = '';
+      $('#riderEditSaveBtn').disabled = true;
+      riderDeleteBtn.disabled = true;
+      refreshRidersUiList();
+    });
+  }
+  const coupleDeleteBtn = $('#coupleDeleteBtn');
+  if (coupleDeleteBtn) {
+    coupleDeleteBtn.addEventListener('click', async () => {
+      const info = couple.infoTag;
+      if (!info) return;
+      const label = info.bib
+        ? rtRiderLabel(info.bib, info.name || RT.S.riderNoName)
+        : coupleShortTag(info.tag_id);
+      if (await deleteRiderCoupling(info.tag_id, label)) coupleToIdle();
+    });
   }
 
   // CSV file upload handler (W-013: now POSTs to /riders)
