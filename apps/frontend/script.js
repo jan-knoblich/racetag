@@ -97,6 +97,81 @@ function rtRaceDisplayName(name) {
   return name === BOOTSTRAP_RACE_NAME ? RT.S.raceDefaultName : name;
 }
 
+// ---------------------------------------------------------------------------
+// Wertung, Mindestabstand, Startschuss (field report Hubland 2026-09-27)
+// ---------------------------------------------------------------------------
+
+// "45 Sekunden" / "4:00 Minuten"
+function rtDuration(seconds) {
+  const total = Math.round(Number(seconds) || 0);
+  if (total < 90) return RT.fmt('durationSeconds', { n: total });
+  return RT.fmt('durationMinutes', { m: Math.floor(total / 60), ss: String(total % 60).padStart(2, '0') });
+}
+
+// The lap cooldown is half the fastest lap: a crossing sooner than that is
+// the same crossing read twice. Returns seconds, null for "use the default"
+// (empty input) and NaN for an invalid entry. Accepts "7,5" as well as "7.5".
+function cooldownFromFastestLap(raw) {
+  const text = String(raw == null ? '' : raw).trim().replace(',', '.');
+  if (text === '') return null;
+  const minutes = Number(text);
+  if (!Number.isFinite(minutes) || minutes < 0.1 || minutes > 120) return NaN;
+  return Math.round((minutes * 60) / 2);
+}
+
+function fastestLapFromCooldown(seconds) {
+  if (seconds == null) return '';
+  return String(Math.round(((Number(seconds) * 2) / 60) * 10) / 10);
+}
+
+// Global default cooldown (Settings), shown when a race has none of its own.
+let rtDefaultCooldownS = null;
+
+async function loadDefaultCooldown() {
+  try {
+    const res = await fetch(`${state.backend}/config`, { headers: getApiHeaders() });
+    if (!res.ok) return;
+    const cfg = await res.json();
+    if (typeof cfg.min_lap_interval_s === 'number') rtDefaultCooldownS = cfg.min_lap_interval_s;
+  } catch {
+    // the hint just stays without the default
+  }
+}
+
+function updateFastestLapHint(inputSel, hintSel) {
+  const hint = $(hintSel);
+  if (!hint) return;
+  const cooldown = cooldownFromFastestLap($(inputSel)?.value);
+  if (cooldown === null) {
+    hint.textContent = rtDefaultCooldownS == null
+      ? '' : RT.fmt('fastestLapHintDefault', { cooldown: rtDuration(rtDefaultCooldownS) });
+  } else if (Number.isNaN(cooldown)) {
+    hint.textContent = RT.S.fastestLapInvalid;
+  } else {
+    hint.textContent = RT.fmt('fastestLapHint', { cooldown: rtDuration(cooldown) });
+  }
+}
+
+// "HH:MM:SS" in local time for <input type="time" step="1">.
+function isoToLocalTimeInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+// Local "HH:MM[:SS]" on the calendar day of `dayIso` (default: today) as ISO UTC.
+function localTimeToIso(timeValue, dayIso) {
+  const m = String(timeValue || '').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  const base = dayIso ? new Date(dayIso) : new Date();
+  if (Number.isNaN(base.getTime())) return null;
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate(),
+    Number(m[1]), Number(m[2]), Number(m[3] || 0));
+  return d.toISOString();
+}
+
 // "1 Runde" / "N Runden"
 function rtLapsText(n) {
   return Number(n) === 1 ? RT.S.lapsCountOne : RT.fmt('lapsCountMany', { n });
@@ -328,7 +403,12 @@ async function importCSVToBackend(csvText) {
 // ---------------------------------------------------------------------------
 // W-012 — Register-rider modal helpers
 // ---------------------------------------------------------------------------
-function openRegisterModal(tag_id) {
+// Register modal state: `recount` asks the backend to count the tag's passes
+// stored before the coupling (a runner who ran uncoupled).
+const registerUi = { recount: false };
+
+function openRegisterModal(tag_id, options) {
+  const opts = options || {};
   state.awaitingRead = false; // Clear flag immediately so no stacking
   const modal = $('#registerModal');
   const tagInput = $('#modalTagId');
@@ -339,9 +419,12 @@ function openRegisterModal(tag_id) {
   if (!modal) return;
 
   tagInput.value = tag_id;
-  bibInput.value = '';
-  nameInput.value = '';
+  bibInput.value = opts.knownAs && opts.knownAs.bib ? opts.knownAs.bib : '';
+  nameInput.value = opts.knownAs && opts.knownAs.name ? opts.knownAs.name : '';
   if (errBanner) errBanner.hidden = true;
+  registerUi.recount = !!opts.recount;
+  const note = $('#modalRecountNote');
+  if (note) note.hidden = !registerUi.recount;
 
   modal.hidden = false;
   bibInput.focus();
@@ -351,6 +434,7 @@ function closeRegisterModal() {
   const modal = $('#registerModal');
   if (modal) modal.hidden = true;
   state.awaitingRead = false;
+  registerUi.recount = false;
 }
 
 async function submitRegisterModal() {
@@ -365,7 +449,7 @@ async function submitRegisterModal() {
     const res = await fetch(`${state.backend}/riders`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
-      body: JSON.stringify({ tag_id, bib, name }),
+      body: JSON.stringify({ tag_id, bib, name, recount_past_reads: registerUi.recount }),
     });
 
     if (res.ok) {
@@ -377,6 +461,7 @@ async function submitRegisterModal() {
       state.lastUnknownTag = null;
       closeRegisterModal();
       showToast(RT.fmt('toastRiderRegistered', { bib, name: name || RT.S.riderNoName }));
+      refreshUnknownTags();
     } else {
       if (errBanner) {
         errBanner.textContent = await rtResponseError(res, 'saveFailed');
@@ -1373,6 +1458,11 @@ function renderStandings(items) {
     const missedMarker = missed > 0
       ? ` <span class="missed-read" title="${htmlEscape(RT.fmt('rowTipMissedReads', { n: missed }))}">⚠︎${missed > 1 ? '×' + missed : ''}</span>`
       : '';
+    // Crossings after the rider's own finish: shown, never counted.
+    const afterFinish = p.post_finish_passes || 0;
+    const postFinishMarker = afterFinish > 0
+      ? ` <span class="post-finish" title="${htmlEscape(RT.fmt('rowTipPostFinish', { n: afterFinish }))}">+${afterFinish}</span>`
+      : '';
 
     // Manual-lap-correction buttons. Disabled when the row has NO registered
     // rider (bib null/undefined). An empty string OR the literal '0' is still
@@ -1396,7 +1486,7 @@ function renderStandings(items) {
       <td class="tag-col"><span class="tag-id-copyable" data-tag-id="${tagId}" title="${htmlEscape(RT.S.rowTipCopyTag)}">${tagId}</span></td>
       <td>${bib}</td>
       <td>${name}${statusBadge}</td>
-      <td>${p.laps}${missedMarker}</td>
+      <td>${p.laps}${missedMarker}${postFinishMarker}</td>
       <td class="${p.finished ? 'finished' : ''}">${p.finished ? RT.S.standingsFinishedYes : RT.S.standingsFinishedNo}</td>
       <td>${formatTimestampForDisplay(p.last_pass_time)}</td>
       <td>${gap}</td>
@@ -1646,6 +1736,8 @@ async function loadRaceConfig() {
     state.finishing = !!data.finishing;
     state.lapsToGo = (typeof data.laps_to_go === 'number') ? data.laps_to_go : null;
     renderRaceStatus();
+    checkStartWarning();
+    refreshUnknownTags();
   } catch {
     // silently ignore — config sync is best-effort
   }
@@ -1765,6 +1857,16 @@ async function openEditRaceModal() {
   $('#editRaceName').value = current.name || '';
   $('#editRaceScheduled').value = isoToLocalInput(current.scheduled_at);
   $('#editRaceTotalLaps').value = current.total_laps || 5;
+  $('#editRaceFinishMode').value = current.finish_mode === 'per_rider' ? 'per_rider' : 'leader';
+  $('#editRaceFastestLap').value = fastestLapFromCooldown(current.min_pass_interval_s);
+  await loadDefaultCooldown();
+  updateFastestLapHint('#editRaceFastestLap', '#editRaceFastestLapHint');
+  // The start can only be corrected once the race has one.
+  const startField = $('#editRaceStartField');
+  const startInput = $('#editRaceStartTime');
+  if (startField) startField.hidden = !current.started;
+  if (startInput) startInput.value = current.started ? isoToLocalTimeInput(current.started_at) : '';
+  raceEditUi.startValue = startInput ? startInput.value : '';
 
   // Spell out what deleting would cost before the operator clicks it.
   const info = $('#editRaceInfo');
@@ -1808,6 +1910,17 @@ async function saveRaceEdit() {
     if (err) { err.textContent = RT.S.raceEditLapsRange; err.hidden = false; }
     return;
   }
+  const cooldown = cooldownFromFastestLap($('#editRaceFastestLap').value);
+  if (Number.isNaN(cooldown)) {
+    if (err) { err.textContent = RT.S.fastestLapInvalid; err.hidden = false; }
+    return;
+  }
+  const startValue = ($('#editRaceStartTime')?.value || '').trim();
+  const startChanged = race.started && startValue !== raceEditUi.startValue;
+  if (startChanged && !startValue) {
+    if (err) { err.textContent = RT.S.startTimeRequired; err.hidden = false; }
+    return;
+  }
   try {
     const res = await fetch(`${state.backend}/races/${encodeURIComponent(race.id)}`, {
       method: 'PATCH',
@@ -1816,15 +1929,32 @@ async function saveRaceEdit() {
         name,
         total_laps: laps,
         scheduled_at: schedRaw ? `${schedRaw}:00.000Z` : '',
+        finish_mode: $('#editRaceFinishMode').value,
+        // null clears the race's own value (back to the Settings default).
+        min_pass_interval_s: cooldown,
       }),
     });
     if (!res.ok) {
       if (err) { err.textContent = await rtResponseError(res, 'raceSaveFailed'); err.hidden = false; }
       return;
     }
+    if (startChanged) {
+      const iso = localTimeToIso(startValue, race.started_at);
+      const startRes = await fetch(`${state.backend}/race/start-time`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+        body: JSON.stringify({ started_at: iso }),
+      });
+      if (!startRes.ok) {
+        if (err) { err.textContent = await rtResponseError(startRes, 'startTimeSaveFailed'); err.hidden = false; }
+        return;
+      }
+      showToast(RT.fmt('toastStartCorrected', { time: startValue }));
+    } else {
+      showToast(RT.fmt('toastRaceRenamed', { name: rtRaceDisplayName(name) }));
+    }
     closeEditRaceModal();
-    showToast(RT.fmt('toastRaceRenamed', { name: rtRaceDisplayName(name) }));
-    await Promise.all([loadRaces(), loadRaceConfig()]);
+    await Promise.all([loadRaces(), loadRaceConfig(), loadSnapshot()]);
   } catch (e) {
     console.warn('Race save failed:', e);
     if (err) { err.textContent = RT.apiError(0, null, 'raceSaveFailed'); err.hidden = false; }
@@ -1910,6 +2040,240 @@ async function deleteRiderCoupling(tagId, label, options) {
     showToast(RT.apiError(0, null, 'riderDeleteFailed'), 'error');
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Starting a race that is already running (Hubland 2026-09-27)
+// ---------------------------------------------------------------------------
+
+const startUi = { candidate: null, dismissed: new Set() };
+
+async function fetchStartCandidate(beforeIso) {
+  try {
+    const url = beforeIso
+      ? `${state.backend}/race/start-candidate?before=${encodeURIComponent(beforeIso)}`
+      : `${state.backend}/race/start-candidate`;
+    const res = await fetch(url, { headers: getApiHeaders() });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function startRaceNow() {
+  try {
+    const res = await fetch(`${state.backend}/race/start`, { method: 'POST', headers: getApiHeaders() });
+    if (!res.ok) {
+      showToast(await rtResponseError(res, 'raceStartFailed'), 'error');
+      return false;
+    }
+    const data = await res.json();
+    state.raceStarted = true;
+    state.raceStartedAt = data.started_at || null;
+    renderRaceStatus();
+    showToast(RT.S.toastRaceStarted);
+    return true;
+  } catch (err) {
+    console.warn('Start race failed:', err);
+    showToast(RT.apiError(0, null, 'raceStartFailed'), 'error');
+    return false;
+  }
+}
+
+async function startRaceAt(iso) {
+  const res = await fetch(`${state.backend}/race/start-time`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
+    body: JSON.stringify({ started_at: iso }),
+  });
+  if (!res.ok) throw new Error(await rtResponseError(res, 'raceStartFailed'));
+  const data = await res.json();
+  state.raceStarted = true;
+  state.raceStartedAt = data.started_at || iso;
+  renderRaceStatus();
+  showToast(RT.fmt('toastRaceStartedAt', { time: isoToLocalTimeInput(state.raceStartedAt) }));
+  await loadSnapshot();
+}
+
+// "Rennen starten": if most of the field was already read, the gun has
+// probably gone already — offer that time instead of silently starting now.
+// A failed detection never blocks the start.
+async function onStartRaceClicked(button) {
+  if (button) button.disabled = true;
+  try {
+    const candidate = await fetchStartCandidate(new Date().toISOString());
+    if (!candidate || !candidate.detected || !candidate.first_reading) {
+      await startRaceNow();
+      return;
+    }
+    startUi.candidate = candidate;
+    $('#startRaceModalText').textContent = RT.fmt('startDetectText', {
+      n: candidate.riders_in_burst,
+      total: candidate.registered,
+      time: isoToLocalTimeInput(candidate.first_reading),
+    });
+    $('#startRaceTime').value = isoToLocalTimeInput(candidate.first_reading);
+    $('#startRaceError').hidden = true;
+    $('#startRaceModal').hidden = false;
+    $('#startRaceTime').focus();
+  } finally {
+    renderRaceStatus();
+  }
+}
+
+function closeStartRaceModal() {
+  const modal = $('#startRaceModal');
+  if (modal) modal.hidden = true;
+}
+
+async function confirmStartWithTime() {
+  const value = ($('#startRaceTime').value || '').trim();
+  const err = $('#startRaceError');
+  if (!value) {
+    err.textContent = RT.S.startTimeRequired;
+    err.hidden = false;
+    return;
+  }
+  const dayIso = startUi.candidate ? startUi.candidate.first_reading : null;
+  try {
+    await startRaceAt(localTimeToIso(value, dayIso));
+    closeStartRaceModal();
+  } catch (e) {
+    err.textContent = e.message || RT.S.raceStartFailed;
+    err.hidden = false;
+  }
+}
+
+// After a start: were many riders read in the minutes BEFORE it? Then the
+// button was pressed late; say so and offer the correction.
+async function checkStartWarning() {
+  const box = $('#startWarning');
+  if (!box) return;
+  const key = `${state.activeRaceId}|${state.raceStartedAt}`;
+  if (!state.raceStarted || state.raceEnded || !state.raceStartedAt || startUi.dismissed.has(key)) {
+    box.hidden = true;
+    return;
+  }
+  const candidate = await fetchStartCandidate(state.raceStartedAt);
+  const firstMs = candidate && candidate.first_reading ? Date.parse(candidate.first_reading) : NaN;
+  const startMs = Date.parse(state.raceStartedAt);
+  // 30 s grace: a mat right at the start line reads the field as the gun goes.
+  if (!candidate || !candidate.detected || !(firstMs < startMs - 30000)) {
+    box.hidden = true;
+    return;
+  }
+  $('#startWarningText').textContent = RT.fmt('startWarningText', {
+    n: candidate.riders_in_burst,
+    time: isoToLocalTimeInput(candidate.first_reading),
+  });
+  box.dataset.key = key;
+  box.hidden = false;
+}
+
+// ---------------------------------------------------------------------------
+// Unknown tags: a runner without a coupling runs for nothing (Hubland
+// 2026-09-27: seven did). A visible counter instead of a dismissable pop-up.
+// ---------------------------------------------------------------------------
+
+const unknownUi = { items: [], scope: 'recent', timer: null, loading: false };
+
+function scheduleUnknownRefresh(delayMs) {
+  if (unknownUi.timer) clearTimeout(unknownUi.timer);
+  unknownUi.timer = setTimeout(() => { unknownUi.timer = null; refreshUnknownTags(); }, delayMs);
+}
+
+async function refreshUnknownTags() {
+  if (unknownUi.loading) return;
+  unknownUi.loading = true;
+  try {
+    const res = await fetch(`${state.backend}/race/unknown-tags`, { headers: getApiHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    unknownUi.items = data.items || [];
+    unknownUi.scope = data.scope || 'recent';
+    renderUnknownPill();
+    if (isShown('#unknownTagsModal')) renderUnknownTagsList();
+  } catch {
+    // the pill keeps its last state; the next refresh tries again
+  } finally {
+    unknownUi.loading = false;
+  }
+}
+
+function renderUnknownPill() {
+  const pill = $('#pillUnknown');
+  if (!pill) return;
+  const n = unknownUi.items.length;
+  pill.hidden = n === 0;
+  if (!n) return;
+  const running = unknownUi.scope === 'race' && state.raceStarted && !state.raceEnded;
+  const tip = RT.fmt(unknownUi.scope === 'race' ? 'pillUnknownTipRace' : 'pillUnknownTipRecent', { n });
+  setPill('pillUnknown', running ? 'warn' : 'neutral', String(n), tip, false);
+}
+
+function renderUnknownTagsList() {
+  const list = $('#unknownTagsList');
+  const intro = $('#unknownTagsIntro');
+  if (!list) return;
+  if (intro) intro.textContent = unknownUi.scope === 'race' ? RT.S.unknownTagsIntroRace : RT.S.unknownTagsIntroRecent;
+  list.innerHTML = '';
+  if (!unknownUi.items.length) {
+    const li = document.createElement('li');
+    li.className = 'riders-list-empty';
+    li.textContent = RT.S.unknownTagsEmpty;
+    list.appendChild(li);
+    return;
+  }
+  unknownUi.items.forEach((item) => {
+    const li = document.createElement('li');
+    li.className = 'unknown-tag-row';
+    const text = document.createElement('span');
+    text.className = 'unknown-tag-text';
+    const known = item.known_as
+      ? ` · ${RT.fmt('unknownTagKnownAs', {
+        bib: item.known_as.bib,
+        name: item.known_as.name ? ` ${item.known_as.name}` : '',
+        race: rtRaceDisplayName(item.known_as.race_name),
+      })}`
+      : '';
+    text.innerHTML = `<strong class="riders-list-tag">${htmlEscape(coupleShortTag(item.tag_id))}</strong> `
+      + htmlEscape(RT.fmt('unknownTagMeta', { reads: item.reads, time: isoToLocalTimeInput(item.last_seen) }))
+      + htmlEscape(known);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn-primary';
+    btn.textContent = RT.S.btnCoupleUnknown;
+    btn.setAttribute('data-tip', RT.S.btnCoupleUnknownTip);
+    btn.addEventListener('click', () => {
+      closeUnknownTagsModal();
+      // Count the passes it already made only when it ran in this race.
+      openRegisterModal(item.tag_id, { recount: unknownUi.scope === 'race', knownAs: item.known_as });
+    });
+    li.appendChild(text);
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+}
+
+function openUnknownTagsModal() {
+  const modal = $('#unknownTagsModal');
+  if (!modal) return;
+  renderUnknownTagsList();
+  modal.hidden = false;
+  refreshUnknownTags();
+}
+
+function closeUnknownTagsModal() {
+  const modal = $('#unknownTagsModal');
+  if (modal) modal.hidden = true;
+}
+
+// Riders who have laps but have not finished are probably still on the course.
+function ridersStillOnCourse() {
+  return (state.lastStandings || []).filter((p) => (
+    !p.status && !p.finished && (p.laps || 0) > 0 && p.bib != null
+  )).length;
 }
 
 async function activateRace(raceId) {
@@ -2023,6 +2387,7 @@ function connectSSE() {
         // W-012: handle unknown_tag SSE event
         if (data?.type === 'unknown_tag') {
           state.lastUnknownTag = { tag_id: data.tag_id, timestamp: data.timestamp };
+          scheduleUnknownRefresh(1500);
           // W-075: while coupling mode is on, the panel owns tag handling —
           // never pop the one-shot register modal over it.
           if (state.awaitingRead && !couple.active) {
@@ -2062,6 +2427,7 @@ function connectSSE() {
           state.raceStarted = true;
           state.raceStartedAt = data.started_at || null;
           renderRaceStatus();
+          checkStartWarning();
         }
 
         // Race ended — multi-race
@@ -3056,6 +3422,9 @@ function assistantGoTo(step) {
   updateAssistantFinishLabel();
 
   stopAssistantPoll();
+  if (current === 3) {
+    loadDefaultCooldown().then(() => updateFastestLapHint('#assistantRaceFastestLap', '#assistantRaceFastestLapHint'));
+  }
   if (current === 2) {
     startAntennaTest();
     // reader_status SSE frames can be up to 5 s apart; the heartbeat behind
@@ -3263,6 +3632,16 @@ async function assistantCreateRace() {
     showError(RT.S.assistantRaceNameRequired);
     return;
   }
+  const finishMode = $('#assistantRaceFinishMode')?.value || '';
+  if (!finishMode) {
+    showError(RT.S.finishModeRequired);
+    return;
+  }
+  const cooldown = cooldownFromFastestLap($('#assistantRaceFastestLap')?.value);
+  if (Number.isNaN(cooldown)) {
+    showError(RT.S.fastestLapInvalid);
+    return;
+  }
   if (!Number.isInteger(laps) || laps < 1 || laps > 999) {
     showError(RT.S.assistantRaceLapsInvalid);
     return;
@@ -3283,7 +3662,8 @@ async function assistantCreateRace() {
 
     if (assistantKeepsRace()) {
       failKey = 'assistantRaceKeepFailed';
-      const patch = { name, total_laps: laps };
+      const patch = { name, total_laps: laps, finish_mode: finishMode };
+      if (cooldown !== null) patch.min_pass_interval_s = cooldown;
       if (ctx.snapshotIntervalS == null) patch.snapshot_interval_s = 120; // assistant default
       const res = await fetch(`${state.backend}/races/${encodeURIComponent(ctx.id)}`, {
         method: 'PATCH',
@@ -3309,14 +3689,16 @@ async function assistantCreateRace() {
       return;
     }
 
-    // Same defaults as the create-race modal: fixed laps, criterium finish,
-    // 120 s auto-snapshots.
+    // Same defaults as the create-race modal: fixed laps, 120 s
+    // auto-snapshots; finish model and cooldown as chosen.
+    const createBody = {
+      name, total_laps: laps, snapshot_interval_s: 120, finish_mode: finishMode, scheduled_at: null,
+    };
+    if (cooldown !== null) createBody.min_pass_interval_s = cooldown;
     const res = await fetch(`${state.backend}/races`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
-      body: JSON.stringify({
-        name, total_laps: laps, snapshot_interval_s: 120, finish_mode: 'leader', scheduled_at: null,
-      }),
+      body: JSON.stringify(createBody),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -3391,6 +3773,9 @@ const MODAL_CLOSERS = [
   ['#settingsModal', closeSettingsModal],
   ['#lapEditModal', closeLapEditModal],
   ['#newRaceModal', () => { $('#newRaceModal').hidden = true; }],
+  ['#startRaceModal', closeStartRaceModal],
+  ['#unknownTagsModal', closeUnknownTagsModal],
+  ['#editRaceModal', closeEditRaceModal],
   ['#ridersModal', closeRidersModal],
   ['#registerModal', closeRegisterModal],
 ];
@@ -3506,8 +3891,14 @@ function init() {
       // Reset race-format controls to fixed-laps default.
       const fmt = $('#newRaceFormat');
       if (fmt) { fmt.value = 'laps'; applyRaceFormatVisibility(); }
-      const perRider = $('#newRacePerRider');
-      if (perRider) perRider.checked = false;
+      // No default for the finish model: a run scored as a criterium marks
+      // the whole field finished after the winner (Hubland 2026-09-27).
+      const finishSel = $('#newRaceFinishMode');
+      if (finishSel) finishSel.value = '';
+      const fastest = $('#newRaceFastestLap');
+      if (fastest) fastest.value = '';
+      updateFastestLapHint('#newRaceFastestLap', '#newRaceFastestLapHint');
+      loadDefaultCooldown().then(() => updateFastestLapHint('#newRaceFastestLap', '#newRaceFastestLapHint'));
     });
   }
 
@@ -3538,10 +3929,20 @@ function init() {
         return;
       }
 
-      // Race format (F1/F2).
-      const finish_mode = $('#newRacePerRider')?.checked ? 'per_rider' : 'leader';
+      // Race format (F1/F2). The finish model is a required choice.
+      const finish_mode = $('#newRaceFinishMode')?.value || '';
+      if (!finish_mode) {
+        if (errBox) { errBox.textContent = RT.S.finishModeRequired; errBox.hidden = false; }
+        return;
+      }
+      const cooldown = cooldownFromFastestLap($('#newRaceFastestLap')?.value);
+      if (Number.isNaN(cooldown)) {
+        if (errBox) { errBox.textContent = RT.S.fastestLapInvalid; errBox.hidden = false; }
+        return;
+      }
       const isTimeBased = $('#newRaceFormat')?.value === 'time';
       const body = { name, total_laps: totalLaps, snapshot_interval_s, finish_mode };
+      if (cooldown !== null) body.min_pass_interval_s = cooldown;
       if (isTimeBased) {
         const mins = parseInt($('#newRaceDurationMin')?.value || '0', 10) || 0;
         const finalLaps = Math.max(0, parseInt($('#newRaceFinalLaps')?.value || '0', 10) || 0);
@@ -3592,7 +3993,11 @@ function init() {
   const endRaceBtn = $('#endRaceBtn');
   if (endRaceBtn) {
     endRaceBtn.addEventListener('click', async () => {
-      if (!confirm(RT.S.confirmEndRace)) return;
+      const onCourse = ridersStillOnCourse();
+      const question = onCourse > 0
+        ? RT.fmt('confirmEndRaceUnfinished', { n: onCourse })
+        : RT.S.confirmEndRace;
+      if (!confirm(question)) return;
       try {
         const res = await fetch(`${state.backend}/race/end`, {
           method: 'POST',
@@ -3851,6 +4256,63 @@ function init() {
         { button: exportStartlistBtn }));
   }
 
+  // Unknown tags: pill opens the list; refreshed on unknown_tag frames and
+  // every 20 s as a safety net.
+  const pillUnknown = $('#pillUnknown');
+  if (pillUnknown) pillUnknown.addEventListener('click', openUnknownTagsModal);
+  const unknownClose = $('#unknownTagsCloseBtn');
+  if (unknownClose) unknownClose.addEventListener('click', closeUnknownTagsModal);
+  const unknownModal = $('#unknownTagsModal');
+  if (unknownModal) {
+    unknownModal.addEventListener('click', (e) => { if (e.target === unknownModal) closeUnknownTagsModal(); });
+  }
+  setInterval(refreshUnknownTags, 20000);
+
+  // Start dialog (field already on the course) and the late-start warning.
+  const startWithTimeBtn = $('#startRaceWithTimeBtn');
+  if (startWithTimeBtn) startWithTimeBtn.addEventListener('click', () => { confirmStartWithTime(); });
+  const startNowBtn = $('#startRaceNowBtn');
+  if (startNowBtn) {
+    startNowBtn.addEventListener('click', async () => {
+      closeStartRaceModal();
+      await startRaceNow();
+    });
+  }
+  const startCancelBtn = $('#startRaceCancelBtn');
+  if (startCancelBtn) startCancelBtn.addEventListener('click', closeStartRaceModal);
+  const startTimeInput = $('#startRaceTime');
+  if (startTimeInput) {
+    startTimeInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); confirmStartWithTime(); }
+    });
+  }
+  const startWarningFix = $('#startWarningFixBtn');
+  if (startWarningFix) {
+    startWarningFix.addEventListener('click', async () => {
+      await openEditRaceModal();
+      const field = $('#editRaceStartTime');
+      if (field && !$('#editRaceModal').hidden) field.focus();
+    });
+  }
+  const startWarningDismiss = $('#startWarningDismissBtn');
+  if (startWarningDismiss) {
+    startWarningDismiss.addEventListener('click', () => {
+      const box = $('#startWarning');
+      if (box && box.dataset.key) startUi.dismissed.add(box.dataset.key);
+      if (box) box.hidden = true;
+    });
+  }
+
+  // Live explanation of the cooldown under every "Schnellste Runde" field.
+  [
+    ['#newRaceFastestLap', '#newRaceFastestLapHint'],
+    ['#editRaceFastestLap', '#editRaceFastestLapHint'],
+    ['#assistantRaceFastestLap', '#assistantRaceFastestLapHint'],
+  ].forEach(([inputSel, hintSel]) => {
+    const field = $(inputSel);
+    if (field) field.addEventListener('input', () => updateFastestLapHint(inputSel, hintSel));
+  });
+
   // Rennen umbenennen / löschen
   const editRaceBtn = $('#editRaceBtn');
   if (editRaceBtn) editRaceBtn.addEventListener('click', () => { openEditRaceModal(); });
@@ -3961,26 +4423,7 @@ function init() {
   // Start race button (explicit-start model)
   const startRaceBtn = $('#startRaceBtn');
   if (startRaceBtn) {
-    startRaceBtn.addEventListener('click', async () => {
-      try {
-        const res = await fetch(`${state.backend}/race/start`, {
-          method: 'POST',
-          headers: getApiHeaders(),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          state.raceStarted = true;
-          state.raceStartedAt = data.started_at || null;
-          renderRaceStatus();
-          showToast(RT.S.toastRaceStarted);
-        } else {
-          showToast(await rtResponseError(res, 'raceStartFailed'), 'error');
-        }
-      } catch (err) {
-        console.warn('Start race failed:', err);
-        showToast(RT.apiError(0, null, 'raceStartFailed'), 'error');
-      }
-    });
+    startRaceBtn.addEventListener('click', () => { onStartRaceClicked(startRaceBtn); });
   }
 
   // W-036: Reset race button

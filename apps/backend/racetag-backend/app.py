@@ -107,6 +107,15 @@ config_store = ConfigStore(storage)
 # and migrates the legacy single-race tables into a default race on an old DB.
 # RaceState here mirrors the active Race row; switching active rebuilds it.
 
+def _race_min_pass_interval_s(race_row) -> float:
+    """Cooldown in force for a race: its own value, else the global default."""
+    own = getattr(race_row, "min_pass_interval_s", None) if race_row is not None else None
+    if own is not None:
+        return float(own)
+    persisted = config_store.get_min_lap_interval_s()
+    return float(persisted if persisted is not None else _RACE_MIN_PASS_INTERVAL_S)
+
+
 def _load_active_race_state() -> "tuple[RaceState, RiderStore]":
     """Build a RaceState + RiderStore for whatever race is currently active.
 
@@ -137,9 +146,9 @@ def _load_active_race_state() -> "tuple[RaceState, RiderStore]":
     # nothing read back, so the operator-configured cooldown was dead and the
     # live gate always used the env default. Fall back to the env default only
     # when no value was ever persisted.
-    min_pass_interval_s = config_store.get_min_lap_interval_s()
-    if min_pass_interval_s is None:
-        min_pass_interval_s = _RACE_MIN_PASS_INTERVAL_S
+    # Field report 2026-09-27: the race's own cooldown wins over the global
+    # default, because a run and a criterium need values minutes apart.
+    min_pass_interval_s = _race_min_pass_interval_s(race_row)
 
     rs = RaceState(
         total_laps=total_laps,
@@ -818,6 +827,7 @@ def _rider_dicts(race_id: str) -> List[Dict[str, Any]]:
 
 
 def _effective_min_pass_interval_s() -> float:
+    """Global default cooldown: Settings value, else the env default."""
     persisted = config_store.get_min_lap_interval_s()
     return float(persisted if persisted is not None else _RACE_MIN_PASS_INTERVAL_S)
 
@@ -834,7 +844,7 @@ def _collect_readings(race_row, riders: List[Dict[str, Any]]) -> List[Dict[str, 
     """
     from domain.race import RaceState, parse_iso as _parse_iso
 
-    min_pass_interval_s = _effective_min_pass_interval_s()
+    min_pass_interval_s = _race_min_pass_interval_s(race_row)
     rs = RaceState(
         total_laps=race_row.total_laps,
         min_pass_interval_s=min_pass_interval_s,
@@ -864,16 +874,32 @@ def _collect_readings(race_row, riders: List[Dict[str, Any]]) -> List[Dict[str, 
 
         counted = False
         lap: Optional[int] = None
-        if (
-            row["event_type"] == "arrive"
-            and rider is not None
-            and (ended_cutoff is None or timestamp <= ended_cutoff)
-        ):
-            before = rs.participants[tag_id].laps if tag_id in rs.participants else 0
+        # Why a stored reading did not become a lap, in the operator's words,
+        # so the data check can tell a double read from a pre-start read.
+        reason = ""
+        if row["event_type"] != "arrive":
+            reason = "kein Durchfahrts-Ereignis"
+        elif rider is None:
+            reason = "Tag nicht gekoppelt"
+        elif ended_cutoff is not None and timestamp > ended_cutoff:
+            reason = "nach dem Rennende"
+        elif race_row.started_at is None or _parse_iso(timestamp) < race_row.started_at:
+            reason = "vor dem Rennstart"
+        else:
+            existing = rs.participants.get(tag_id)
+            before = existing.laps if existing else 0
+            extra_before = existing.post_finish_passes if existing else 0
             participant = rs.add_lap(tag_id, timestamp)
             if participant.laps > before:
                 counted = True
                 lap = participant.laps
+            elif participant.post_finish_passes > extra_before:
+                # A real crossing (outside the cooldown) after the finish.
+                reason = "nach dem eigenen Zieleinlauf"
+            elif existing is None or existing.last_pass_time is None:
+                reason = "zu kurz nach dem Start (Mindestabstand)"
+            else:
+                reason = "zu kurz nach der letzten Runde (Mindestabstand)"
 
         def _gap(previous: Optional[str]) -> Optional[float]:
             if previous is None:
@@ -911,6 +937,7 @@ def _collect_readings(race_row, riders: List[Dict[str, Any]]) -> List[Dict[str, 
             "lap": lap,
             "gap_previous_s": _gap(previous_any.get(tag_id)),
             "gap_previous_lap_s": _gap(previous_lap.get(tag_id)),
+            "reason": reason,
         })
         previous_any[tag_id] = timestamp
         if counted:
@@ -973,7 +1000,6 @@ def get_results_xlsx_for_race(race_id: str):
 
 
 def _readings_workbook_response(race_rows):
-    min_pass_interval_s = _effective_min_pass_interval_s()
     races_meta = []
     riders_by_race: Dict[str, List[Dict[str, Any]]] = {}
     readings: List[Dict[str, Any]] = []
@@ -983,7 +1009,7 @@ def _readings_workbook_response(race_rows):
         # (PATCH /config updates both, but a test or a restart can diverge).
         interval = (
             race.min_pass_interval_s if race_row.id == race.race_id
-            else min_pass_interval_s
+            else _race_min_pass_interval_s(race_row)
         )
         riders = _rider_dicts(race_row.id)
         riders_by_race[race_row.id] = riders
@@ -1045,7 +1071,7 @@ def _tags_workbook_response(race_row):
         })
 
     payload = exports_xlsx.build_tags_workbook(
-        race=_race_meta(race_row, min_pass_interval_s=_effective_min_pass_interval_s()),
+        race=_race_meta(race_row, min_pass_interval_s=_race_min_pass_interval_s(race_row)),
         tags=tags,
         version=os.getenv("RACETAG_VERSION"),
     )
@@ -1088,7 +1114,7 @@ def _startlist_workbook_response(race_row):
         })
 
     payload = exports_xlsx.build_startlist_workbook(
-        race=_race_meta(race_row, min_pass_interval_s=_effective_min_pass_interval_s()),
+        race=_race_meta(race_row, min_pass_interval_s=_race_min_pass_interval_s(race_row)),
         riders=riders,
         version=os.getenv("RACETAG_VERSION"),
     )
@@ -1173,7 +1199,212 @@ def post_race_start():
     if race.race_id:
         storage.update_race(race.race_id, started=True, started_at=started_at)
     _publish({"type": "race_started", "started_at": started_at_iso})
+    logger.info("operator: race %s started at %s", race.race_id, started_at_iso)
     return {"started": True, "started_at": started_at_iso}
+
+
+# ---------------------------------------------------------------------------
+# Start time after the fact + mass-start detection (field report 2026-09-27)
+#
+# At Hubland the start button was pressed 5.5 minutes after the gun. Every
+# reading before that was stored but ignored, and the result had to be
+# rebuilt by hand. Two tools close that gap:
+#   PATCH /race/start-time  — set or correct the start of the active race; the
+#                             stored readings are replayed under the new start.
+#   GET   /race/start-candidate — "many riders were already read" detector,
+#                             so the UI can offer the real start time.
+# ---------------------------------------------------------------------------
+
+_START_BURST_WINDOW_S = 180          # a mass start passes the mat within ~3 min
+# How far back from the reference to look. Generous on purpose: a start
+# pressed half an hour late must still be caught, and the burst rule (30 %
+# of the field within 3 minutes) keeps a coupling session from matching.
+_START_LOOKBACK_S = 45 * 60
+_START_BURST_MIN_RIDERS = 5          # absolute floor for tiny fields
+_START_BURST_MIN_SHARE = 0.30        # share of registered riders in the burst
+
+
+class RaceStartTimeBody(BaseModel):
+    started_at: str = Field(..., description="ISO 8601 start time (UTC, Z suffix)")
+
+
+@app.patch("/race/start-time", status_code=200)
+def patch_race_start_time(body: RaceStartTimeBody):
+    """Set or correct the start time of the active race.
+
+    Starts the race if it has not been started yet. All readings are stored
+    regardless of the start, so moving the start earlier recovers passes that
+    were made before the button was pressed, and moving it later drops passes
+    that came before the real start. The lap counters are rebuilt from the
+    stored readings either way.
+    """
+    from datetime import datetime, timedelta, timezone
+    from domain.race import parse_iso as _parse_iso
+
+    try:
+        new_start = _parse_iso(body.started_at)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="started_at must be ISO 8601")
+    if new_start.tzinfo is None:
+        new_start = new_start.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if new_start > now + timedelta(seconds=5):
+        raise HTTPException(status_code=422, detail="started_at is in the future")
+    race_row = storage.get_race(race.race_id) if race.race_id else None
+    if race_row is None:
+        raise HTTPException(status_code=404, detail="race not found")
+    if race_row.ended and race_row.ended_at is not None and new_start >= race_row.ended_at:
+        raise HTTPException(status_code=422, detail="started_at must be before the race end")
+
+    previous = _iso_or_none(race_row.started_at)
+    started_at_iso = new_start.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    storage.update_race(race.race_id, started=True, started_at=new_start)
+    # The legacy meta key wins over the race row when the state is loaded
+    # after a restart; keep both in agreement.
+    storage.set_meta("race_started_at", started_at_iso)
+    _rebuild_active_race_state_in_place()
+    logger.info(
+        "operator: race %s start time set to %s (was %s)",
+        race.race_id, started_at_iso, previous,
+    )
+    _publish({"type": "race_started", "started_at": started_at_iso, "corrected": previous is not None})
+    _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
+    return {"started": True, "started_at": started_at_iso, "previous_started_at": previous}
+
+
+def _detect_start_burst(race_id: str, reference, registered: set) -> Dict[str, Any]:
+    """Densest ~3-minute burst of registered riders before ``reference``.
+
+    A mass start puts most of the field over the timing point within a couple
+    of minutes; a coupling session reads tags one by one. The burst counts
+    DISTINCT registered riders inside a sliding window; it is reported when it
+    reaches 30 % of the registered riders, but at least 5 (or the whole field
+    when it is smaller than that).
+    """
+    from datetime import timedelta
+    from domain.race import parse_iso as _parse_iso
+
+    start_iso = (reference - timedelta(seconds=_START_LOOKBACK_S)).isoformat(
+        timespec="milliseconds").replace("+00:00", "Z")
+    ref_iso = reference.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    rows = [
+        (_parse_iso(r["timestamp"]), r["tag_id"])
+        for r in storage.event_rows_between(race_id, start_iso, ref_iso)
+        if r["tag_id"] in registered
+    ]
+    # Tiny fields (a training with three riders) cannot reach the absolute
+    # floor, so the floor never exceeds the field itself.
+    threshold = max(
+        min(_START_BURST_MIN_RIDERS, len(registered)),
+        int(len(registered) * _START_BURST_MIN_SHARE + 0.999),
+    )
+    best_count, best_first = 0, None
+    counts: Dict[str, int] = {}
+    j = 0
+    for i, (t_i, tag_i) in enumerate(rows):
+        while j < len(rows) and (rows[j][0] - t_i).total_seconds() <= _START_BURST_WINDOW_S:
+            counts[rows[j][1]] = counts.get(rows[j][1], 0) + 1
+            j += 1
+        if len(counts) > best_count:
+            best_count, best_first = len(counts), t_i
+        counts[tag_i] -= 1
+        if counts[tag_i] == 0:
+            del counts[tag_i]
+
+    return {
+        "detected": bool(registered) and best_count >= threshold,
+        "first_reading": (
+            best_first.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            if best_first is not None else None
+        ),
+        "riders_in_burst": best_count,
+        "registered": len(registered),
+        "threshold": threshold,
+        "window_s": _START_BURST_WINDOW_S,
+        "reference": ref_iso,
+    }
+
+
+@app.get("/race/start-candidate")
+def get_race_start_candidate(before: Optional[str] = None):
+    """Was the field already on the course before ``before``?
+
+    ``before`` defaults to the race's start time when it has been started,
+    else to now. Used twice by the UI: when "Rennen starten" is pressed (were
+    riders already read? then offer that time), and after a start (were many
+    riders read in the minutes BEFORE it? then offer to correct it).
+    """
+    from datetime import datetime, timezone
+    from domain.race import parse_iso as _parse_iso
+
+    if before:
+        try:
+            reference = _parse_iso(before)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="before must be ISO 8601")
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+    elif race.started and race.started_at is not None:
+        reference = race.started_at
+    else:
+        reference = datetime.now(timezone.utc)
+    if not race.race_id:
+        raise HTTPException(status_code=404, detail="race not found")
+    registered = {r.tag_id for r in rider_store.list()}
+    return _detect_start_burst(race.race_id, reference, registered)
+
+
+_UNKNOWN_TAGS_RECENT_S = 30 * 60
+
+
+@app.get("/race/unknown-tags")
+def get_race_unknown_tags():
+    """Tags read in the active race that are not coupled to a rider.
+
+    During and after a race: everything read since the start (until the end).
+    Before the start: the last 30 minutes, i.e. tags waved but not yet coupled.
+    Their passes do not count, so the UI keeps a visible counter instead of a
+    dismissable pop-up (field report 2026-09-27: seven runners ran the whole
+    race uncoupled and nobody noticed). ``known_as`` names the most recent
+    coupling of the tag in another race, as a one-click suggestion.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    if not race.race_id:
+        raise HTTPException(status_code=404, detail="race not found")
+    now = datetime.now(timezone.utc)
+    if race.started and race.started_at is not None:
+        since, until, scope = race.started_at, (race.ended_at if race.ended and race.ended_at else now), "race"
+    else:
+        since, until, scope = now - timedelta(seconds=_UNKNOWN_TAGS_RECENT_S), now, "recent"
+    iso = lambda d: d.isoformat(timespec="milliseconds").replace("+00:00", "Z")  # noqa: E731
+    registered = {r.tag_id for r in rider_store.list()}
+    agg: Dict[str, Dict[str, Any]] = {}
+    for row in storage.event_rows_between(race.race_id, iso(since), iso(until)):
+        tag = row["tag_id"]
+        if tag in registered:
+            continue
+        item = agg.get(tag)
+        if item is None:
+            item = agg[tag] = {"tag_id": tag, "reads": 0, "first_seen": row["timestamp"],
+                               "last_seen": row["timestamp"], "antennas": set()}
+        item["reads"] += 1
+        item["last_seen"] = row["timestamp"]
+        if row["antenna"] is not None:
+            item["antennas"].add(row["antenna"])
+    elsewhere = storage.rider_lookup_across_races(exclude_race_id=race.race_id)
+    items = []
+    for item in sorted(agg.values(), key=lambda x: x["first_seen"]):
+        known = elsewhere.get(item["tag_id"])
+        items.append({
+            **item,
+            "antennas": sorted(item["antennas"]),
+            "known_as": (
+                {"bib": known["bib"], "name": known["name"], "race_name": known["race_name"]}
+                if known else None
+            ),
+        })
+    return {"scope": scope, "since": iso(since), "count": len(items), "items": items}
 
 
 # ---------------------------------------------------------------------------
@@ -1214,6 +1445,7 @@ def post_race_reset():
     with _tag_seen_lock:
         _tag_seen_last.clear()
     _publish({"type": "race_reset"})
+    logger.info("operator: race %s reset (all passes deleted)", race.race_id)
 
 
 class PatchRaceFullBody(BaseModel):
@@ -1277,6 +1509,7 @@ def post_race_end():
     if race.race_id:
         storage.update_race(race.race_id, ended=True, ended_at=ended_at)
     _publish({"type": "race_ended", "ended_at": ended_at_iso})
+    logger.info("operator: race %s ended at %s", race.race_id, ended_at_iso)
     return {"ended": True, "ended_at": ended_at_iso}
 
 
@@ -1303,6 +1536,7 @@ def post_race_reopen():
     # Rebuild replays ALL events — the ended cutoff is gone now, so passes
     # recorded during the accidental ended window count again.
     _rebuild_active_race_state_in_place()
+    logger.info("operator: race %s reopened", race.race_id)
     _publish({"type": "race_reopened"})
     _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
     return {"ended": False}
@@ -1328,6 +1562,8 @@ def _race_row_to_summary(row, *, active_id: Optional[str]) -> dict:
         "finish_mode": row.finish_mode,
         "duration_s": row.duration_s,
         "final_laps": row.final_laps,
+        "min_pass_interval_s": row.min_pass_interval_s,
+        "effective_min_pass_interval_s": _race_min_pass_interval_s(row),
     }
 
 
@@ -1398,8 +1634,14 @@ def post_race(body: RaceCreateDTO):
         finish_mode=body.finish_mode,
         duration_s=body.duration_s,
         final_laps=body.final_laps,
+        min_pass_interval_s=body.min_pass_interval_s,
     )
     storage.create_race(new_race)
+    logger.info(
+        "operator: race created %r (laps=%s, mode=%s, cooldown=%s)",
+        new_race.name, new_race.total_laps, new_race.finish_mode,
+        new_race.min_pass_interval_s,
+    )
     active_id = storage.get_active_race_id()
     return _race_row_to_summary(new_race, active_id=active_id)
 
@@ -1444,9 +1686,13 @@ def patch_race_by_id(race_id: str, body: RaceUpdateDTO):
         fields_to_update["duration_s"] = body.duration_s or None
     if body.final_laps is not None:
         fields_to_update["final_laps"] = body.final_laps
+    if "min_pass_interval_s" in body.model_fields_set:
+        # Explicit null clears the race's own value (back to the default).
+        fields_to_update["min_pass_interval_s"] = body.min_pass_interval_s
 
     if fields_to_update:
         storage.update_race(race_id, **fields_to_update)
+        logger.info("operator: race %s updated %s", race_id, sorted(fields_to_update))
 
     # Mirror format changes onto the live in-memory race if it's the active one
     # so they take effect without a restart. Changing race format mid-race is
@@ -1461,6 +1707,16 @@ def patch_race_by_id(race_id: str, body: RaceUpdateDTO):
             race.duration_s = fields_to_update["duration_s"]
         if "final_laps" in fields_to_update:
             race.final_laps = fields_to_update["final_laps"]
+        if "min_pass_interval_s" in fields_to_update:
+            race.min_pass_interval_s = _race_min_pass_interval_s(storage.get_race(race_id))
+        # Lap count, finish model and cooldown decide which passes count and
+        # who has finished. On a running race the live counters were built
+        # under the old values, so replay the stored readings under the new
+        # ones (all readings are persisted, nothing is lost).
+        if race.started and {"total_laps", "finish_mode", "min_pass_interval_s"} & set(fields_to_update):
+            _rebuild_active_race_state_in_place()
+            _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
+        _publish({"type": "race_updated"})
 
     active_id = storage.get_active_race_id()
     return _race_row_to_summary(storage.get_race(race_id), active_id=active_id)
@@ -1476,6 +1732,7 @@ def delete_race_by_id(race_id: str):
             detail="cannot delete the active race — switch to another race first",
         )
     storage.delete_race(race_id)
+    logger.info("operator: race %s deleted", race_id)
 
 
 @app.post("/races/{race_id}/activate", response_model=RaceSummaryDTO)
@@ -1483,6 +1740,7 @@ def post_race_activate(race_id: str):
     """Make race_id the active race: persist, rebuild in-memory state, replay events.
     Broadcasts active_race_changed SSE so clients can refresh."""
     _switch_active_race(race_id)
+    logger.info("operator: switched active race to %s", race_id)
     _publish({"type": "active_race_changed", "race_id": race_id})
     active_id = storage.get_active_race_id()
     return _race_row_to_summary(storage.get_race(race_id), active_id=active_id)
@@ -1642,11 +1900,14 @@ def patch_config(body: PatchConfigBody):
 
     if body.min_lap_interval_s is not None:
         config_store.set_min_lap_interval_s(body.min_lap_interval_s)
-        # Apply to the live race immediately (AUDIT-2026-07 H5): the cooldown
-        # is now a single source of truth, so a change takes effect on the
-        # next pass without a restart.
-        race.min_pass_interval_s = body.min_lap_interval_s
-        _publish({"type": "race_updated", "min_lap_interval_s": body.min_lap_interval_s})
+        # Apply to the live race immediately (AUDIT-2026-07 H5) — unless the
+        # active race carries its own cooldown: the Settings value is the
+        # default for races without one (field report 2026-09-27).
+        _active_row = storage.get_race(race.race_id) if race.race_id else None
+        if _active_row is None or _active_row.min_pass_interval_s is None:
+            race.min_pass_interval_s = body.min_lap_interval_s
+            _publish({"type": "race_updated", "min_lap_interval_s": body.min_lap_interval_s})
+        logger.info("operator: default lap cooldown set to %.1f s", body.min_lap_interval_s)
 
     if body.total_laps is not None:
         config_store.set_total_laps(body.total_laps)
@@ -1886,6 +2147,21 @@ def post_rider(body: RiderCreateDTO):
     )
     rider = rider_store.upsert(rider)  # merged result (keep-semantics!)
     dto = _rider_to_dto(rider)
+    # "Koppeln" from the unknown-tags list: this tag already ran, uncoupled.
+    # The replay skips unregistered tags, so its passes never counted; recount
+    # them from the stored readings (field report 2026-09-27: seven runners
+    # ran uncoupled). Only on request — a tag held to the antenna to couple a
+    # late entry during the race must not turn that read into a lap.
+    if (
+        body.recount_past_reads
+        and existing is None
+        and race.started
+        and storage.find_last_event_id_for_tag(body.tag_id, race_id=race.race_id,
+                                               event_type="arrive") is not None
+    ):
+        _rebuild_active_race_state_in_place()
+        logger.info("operator: tag %s coupled to %s after it was read; recounted", body.tag_id, body.bib)
+        _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
     if body.all_races:
         # Day model (Karli Krit): one tag + one number per PERSON. Propagate
         # bib/name to every race that has this tag registered — the active
@@ -1949,6 +2225,7 @@ def delete_rider(tag_id: str):
     if not removed:
         raise HTTPException(status_code=404, detail=f"No rider registered for tag '{tag_id}'")
     _rebuild_active_race_state_in_place()
+    logger.info("operator: coupling of tag %s deleted", tag_id)
     _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
 
 
@@ -2066,6 +2343,13 @@ def post_manual_lap(tag_id: str, body: ManualLapAddDTO):
         )
 
     timestamp = body.timestamp or _now_iso()
+
+    _existing = race.participants.get(tag_id)
+    if _existing is not None and _existing.finished:
+        raise HTTPException(
+            status_code=409,
+            detail="Rider has already finished — laps after the finish are not counted",
+        )
 
     # Try the in-memory add_lap FIRST. If add_lap is a no-op (cooldown debounce,
     # or post-end if ended state was applied), we MUST NOT persist a synthetic

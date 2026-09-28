@@ -119,8 +119,23 @@
     newRaceDurationMin: 'Wie lange gefahren wird, bevor die Schlussrunden beginnen (in Minuten).',
     newRaceFinalLaps: 'Anzahl Runden, die nach Ablauf der Zeit noch gefahren werden.',
     newRaceFinalLapsInfo: 'Standard: 3.\nIst die Zeit abgelaufen, legt die nächste Zieldurchfahrt des Führenden das Ziel fest: seine Runden plus diese Schlussrunden. 0 = diese Zieldurchfahrt ist schon der Zieleinlauf.',
-    newRacePerRider: 'Jeder Fahrer ist erst im Ziel, wenn er selbst die volle Rundenzahl gefahren ist.',
-    newRacePerRiderInfo: 'Standard: aus (Kriterium).\nAus: Erreicht der Führende die Rundenzahl, beginnt der Zieleinlauf – alle anderen sind bei ihrer nächsten Zieldurchfahrt im Ziel, egal in welcher Runde.\nAn: Jeder Fahrer ist erst im Ziel, wenn er selbst alle Runden gefahren ist, z. B. bei Zeitfahren oder Training.',
+    newRaceFinishMode: 'Pflichtangabe: Wie wird gewertet?',
+    newRaceFinishModeInfo: 'Lauf / Zeitfahren: Jeder ist im Ziel, sobald er selbst die volle Rundenzahl hinter sich hat. Das Richtige für Läufe und Zeitfahren.\nKriterium: Sobald der Sieger die Rundenzahl erreicht, ist jeder andere bei seiner nächsten Zieldurchfahrt im Ziel, egal in welcher Runde. Das Richtige für Radrennen im Rundkurs.\nBei einem Lauf mit Kriterium stehen nach dem Sieger alle auf „im Ziel“, obwohl sie noch laufen.',
+    newRaceFastestLap: 'Schnellste Rundenzeit in Minuten. Daraus ergibt sich der Mindestabstand zwischen zwei gezählten Runden.',
+    newRaceFastestLapInfo: 'Die Zeit, die die Schnellsten für eine Runde brauchen, z. B. 8 Minuten.\nRacetag zählt eine Durchfahrt erst, wenn seit der letzten mindestens die Hälfte davon vergangen ist. Das filtert Doppellesungen heraus, wenn jemand länger im Lesefeld steht.\nDas gilt auch nach dem Start: Steht die Messstelle ein paar hundert Meter hinter dem Start, zählt dieser erste Durchgang nicht als Runde.\nLeer lassen nimmt den Standard aus den Einstellungen.',
+    editRaceFinishMode: 'Wie wird gewertet? Eine Änderung zählt ein laufendes Rennen neu.',
+    editRaceFinishModeInfo: 'Lauf / Zeitfahren: Jeder ist im Ziel, sobald er selbst die volle Rundenzahl hinter sich hat. Das Richtige für Läufe und Zeitfahren.\nKriterium: Sobald der Sieger die Rundenzahl erreicht, ist jeder andere bei seiner nächsten Zieldurchfahrt im Ziel, egal in welcher Runde. Das Richtige für Radrennen im Rundkurs.\nBei einem Lauf mit Kriterium stehen nach dem Sieger alle auf „im Ziel“, obwohl sie noch laufen.',
+    editRaceFastestLap: 'Schnellste Rundenzeit in Minuten. Eine Änderung zählt ein laufendes Rennen aus den gespeicherten Lesungen neu.',
+    editRaceFastestLapInfo: 'Die Zeit, die die Schnellsten für eine Runde brauchen, z. B. 8 Minuten.\nRacetag zählt eine Durchfahrt erst, wenn seit der letzten mindestens die Hälfte davon vergangen ist. Das filtert Doppellesungen heraus, wenn jemand länger im Lesefeld steht.\nDas gilt auch nach dem Start: Steht die Messstelle ein paar hundert Meter hinter dem Start, zählt dieser erste Durchgang nicht als Runde.\nLeer lassen nimmt den Standard aus den Einstellungen.',
+    editRaceStartTime: 'Uhrzeit des Startschusses. Eine Änderung zählt alle Runden aus den gespeicherten Lesungen neu.',
+    editRaceStartTimeInfo: 'Wurde „Rennen starten“ zu spät gedrückt, hier die echte Uhrzeit des Startschusses eintragen.\nRacetag speichert jede Lesung, auch vor dem Startknopf. Nach der Änderung werden alle Runden aus diesen Lesungen neu gezählt – es geht nichts verloren.',
+    startRaceTime: 'Uhrzeit des Startschusses. Vorausgefüllt mit der ersten Lesung.',
+    startRaceWithTimeBtn: 'Startet das Rennen mit der eingetragenen Uhrzeit. Durchfahrten seit dieser Zeit werden sofort als Runden gezählt.',
+    startRaceNowBtn: 'Startet das Rennen ab jetzt. Die schon gelesenen Durchfahrten zählen dann nicht.',
+    unknownTagsCloseBtn: 'Liste schließen. Der Zähler oben bleibt sichtbar, solange es unbekannte Tags gibt.',
+    startWarningFixBtn: 'Öffnet das Rennen zum Bearbeiten, dort lässt sich die Uhrzeit des Startschusses korrigieren.',
+    assistantRaceFinishMode: 'Pflichtangabe: Lauf / Zeitfahren oder Kriterium.',
+    assistantRaceFastestLap: 'Schnellste Rundenzeit in Minuten. Filtert Doppellesungen heraus.',
     newRaceSnapshotInterval: 'Wie oft Racetag automatisch eine Sicherung dieses Rennens anlegt (in Sekunden, 0 = aus).',
     newRaceSnapshotIntervalInfo: 'Standard: 120 Sekunden.\nIn diesem Abstand speichert Racetag automatisch eine Kopie der Rangliste (CSV) und der Datenbank im Datenordner; die letzten 30 bleiben erhalten. So geht bei einem Absturz nichts verloren.\nNur auf 0 (aus) stellen, wenn der Speicherplatz knapp ist.',
     newRaceActivate: 'Das neue Rennen sofort zum aktiven Rennen machen. Aus: Es wird nur angelegt und kann später in der Rennauswahl gewählt werden.',
@@ -182,7 +197,7 @@
 
   // Ids whose `data-tip` script.js writes at runtime (not in RT_TIPS): the
   // status pills (live detail) and the update notice (installed version).
-  RT.DYNAMIC_TIP_IDS = Object.freeze(['pillReader', 'pillAntennas', 'pillConnection', 'updateNotice']);
+  RT.DYNAMIC_TIP_IDS = Object.freeze(['pillReader', 'pillAntennas', 'pillConnection', 'pillUnknown', 'updateNotice']);
   const BUBBLE_ID = 'rtTipBubble';
   const SHOW_DELAY_MS = 350;
   const TOUCH_MOUSE_GUARD_MS = 800; // synthetic mouse events follow a tap

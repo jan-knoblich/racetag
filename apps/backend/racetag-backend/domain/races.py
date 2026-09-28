@@ -57,6 +57,14 @@ class Race(BaseModel):
     # target of leader_laps + final_laps. Both None → fixed-distance race.
     duration_s: Optional[int] = None
     final_laps: Optional[int] = None
+    # Minimum seconds between two counted passes of the same tag, for THIS
+    # race. None falls back to the global default (Settings). A run with
+    # 12-minute laps needs minutes here, a criterium seconds — one global
+    # value cannot serve both (field report Hubland 2026-09-27: the global
+    # 8 s let one crossing count several times). The same value also gates
+    # the first counted pass after the start, so a timing point a few
+    # hundred metres after the start line is not counted as a lap.
+    min_pass_interval_s: Optional[float] = None
 
 
 __all__ = ["Race", "new_race_id"]

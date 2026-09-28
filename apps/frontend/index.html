@@ -42,7 +42,9 @@
                   aria-label="Rennen umbenennen oder löschen">&#9998;</button>
         </label>
         <!-- Race start (explicit-start model) -->
-        <button id="startRaceBtn" class="btn-primary">Rennen starten</button>
+        <!-- Disabled until the race state has loaded (renderRaceStatus), so a
+             click during start-up cannot silently go nowhere. -->
+        <button id="startRaceBtn" class="btn-primary" disabled>Rennen starten</button>
         <!-- End race (multi-race) -->
         <button id="endRaceBtn" class="btn-warn">Rennen beenden</button>
         <!-- Reopen (undo accidental End race) — hidden unless race ended -->
@@ -85,12 +87,25 @@
           <span class="status-pill-label">Verbindung</span>
           <span id="pillConnectionText" class="status-pill-text">verbinde&hellip;</span>
         </button>
+        <!-- Tags read but not coupled: their passes do not count. -->
+        <button id="pillUnknown" type="button" class="status-pill status-pill--neutral" hidden>
+          <span class="status-pill-dot" aria-hidden="true"></span>
+          <span class="status-pill-label">Unbekannte Tags</span>
+          <span id="pillUnknownText" class="status-pill-text">0</span>
+        </button>
         <span id="statusMessage" class="status-message" role="status" aria-live="polite" hidden></span>
         <!-- D7: shown only when GitHub has a newer release than /config version -->
         <a id="updateNotice" class="update-notice" href="https://github.com/jan-knoblich/racetag/releases/latest"
            target="_blank" rel="noopener noreferrer" hidden></a>
       </div>
       <div class="race-status" id="raceStatus">Rennen: nicht gestartet</div>
+      <!-- Riders were read before the recorded start: offer to correct it. -->
+      <div id="startWarning" class="start-warning" role="status" hidden>
+        <span id="startWarningText"></span>
+        <button id="startWarningFixBtn" type="button">Startzeit anpassen</button>
+        <button id="startWarningDismissBtn" type="button" class="btn-icon"
+                aria-label="Hinweis ausblenden">&times;</button>
+      </div>
     </header>
 
     <main>
@@ -274,6 +289,9 @@
           <input id="modalName" type="text" placeholder="z. B. Erika Mustermann" />
         </div>
 
+        <p id="modalRecountNote" class="settings-hint" hidden>
+          Dieser Tag ist schon gelaufen. Seine bisherigen Durchfahrten werden nach dem Koppeln mitgezählt.
+        </p>
         <div id="modalError" class="modal-error" hidden></div>
 
         <div class="modal-actions">
@@ -329,12 +347,29 @@
           <input id="newRaceFinalLaps" type="number" min="0" max="99" value="3" />
         </div>
 
-        <div class="modal-checkbox-row">
-          <input id="newRacePerRider" type="checkbox" />
-          <label for="newRacePerRider">
-            Einzelwertung (jeder Fahrer beendet sein Rennen selbst – aus = Kriterium)
-          </label>
-          <button type="button" id="newRacePerRiderInfo" class="rt-info" aria-label="Erklärung: Einzelwertung">i</button>
+        <!-- Field report 2026-09-27: the finish model was a checkbox that
+             defaulted to "criterium", and a run scored that way marks the
+             whole field finished as soon as the winner crosses. It is now an
+             explicit choice without a default. -->
+        <div class="modal-field">
+          <div class="modal-field-head">
+            <label for="newRaceFinishMode">Art der Wertung</label>
+            <button type="button" id="newRaceFinishModeInfo" class="rt-info" aria-label="Erklärung: Art der Wertung">i</button>
+          </div>
+          <select id="newRaceFinishMode">
+            <option value="" selected disabled>Bitte wählen …</option>
+            <option value="per_rider">Lauf / Zeitfahren – jeder ist nach seiner eigenen Rundenzahl im Ziel</option>
+            <option value="leader">Kriterium – das Rennen endet, sobald der Sieger im Ziel ist</option>
+          </select>
+        </div>
+
+        <div class="modal-field">
+          <div class="modal-field-head">
+            <label for="newRaceFastestLap">Schnellste Runde in Minuten (optional)</label>
+            <button type="button" id="newRaceFastestLapInfo" class="rt-info" aria-label="Erklärung: Schnellste Runde">i</button>
+          </div>
+          <input id="newRaceFastestLap" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 8" />
+          <p id="newRaceFastestLapHint" class="settings-hint"></p>
         </div>
 
         <div class="modal-field">
@@ -361,6 +396,42 @@
       </div>
     </div>
 
+    <!-- Tags read but not coupled to a start number (pill "Unbekannte Tags"). -->
+    <div id="unknownTagsModal" class="modal-backdrop" role="dialog" aria-modal="true"
+         aria-labelledby="unknownTagsModalTitle" hidden>
+      <div class="modal-box riders-box">
+        <h2 id="unknownTagsModalTitle" class="modal-title">Unbekannte Tags</h2>
+        <p id="unknownTagsIntro" class="assistant-text"></p>
+        <ul id="unknownTagsList" class="riders-list unknown-tags-list"></ul>
+        <div class="modal-actions">
+          <button id="unknownTagsCloseBtn">Schließen</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shown when "Rennen starten" is pressed although many riders were
+         already read in the minutes before (field report 2026-09-27: the
+         button was pressed 5.5 minutes after the gun). -->
+    <div id="startRaceModal" class="modal-backdrop" role="dialog" aria-modal="true"
+         aria-labelledby="startRaceModalTitle" hidden>
+      <div class="modal-box">
+        <h2 id="startRaceModalTitle" class="modal-title">Läuft das Rennen schon?</h2>
+        <p id="startRaceModalText" class="assistant-text"></p>
+        <div class="modal-field">
+          <label for="startRaceTime">Startschuss (Uhrzeit)</label>
+          <input id="startRaceTime" type="time" step="1" />
+          <p class="settings-hint">Steht die Messstelle nicht direkt am Start, fiel der Startschuss
+            etwas früher als die erste Lesung. Dann die Uhrzeit entsprechend vorstellen.</p>
+        </div>
+        <div id="startRaceError" class="modal-error" hidden></div>
+        <div class="modal-actions">
+          <button id="startRaceWithTimeBtn" class="btn-primary">Mit dieser Startzeit starten</button>
+          <button id="startRaceNowBtn">Jetzt starten</button>
+          <button id="startRaceCancelBtn">Abbrechen</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Rename / delete a race. Deleting removes its riders and readings, so
          the confirmation spells that out; the active race is switched away
          from first, because the backend refuses to delete it (409). -->
@@ -382,6 +453,37 @@
         <div class="modal-field">
           <label for="editRaceTotalLaps">Rundenzahl</label>
           <input id="editRaceTotalLaps" type="number" min="1" max="999" />
+        </div>
+
+        <div class="modal-field">
+          <div class="modal-field-head">
+            <label for="editRaceFinishMode">Art der Wertung</label>
+            <button type="button" id="editRaceFinishModeInfo" class="rt-info" aria-label="Erklärung: Art der Wertung">i</button>
+          </div>
+          <select id="editRaceFinishMode">
+            <option value="per_rider">Lauf / Zeitfahren – jeder ist nach seiner eigenen Rundenzahl im Ziel</option>
+            <option value="leader">Kriterium – das Rennen endet, sobald der Sieger im Ziel ist</option>
+          </select>
+        </div>
+
+        <div class="modal-field">
+          <div class="modal-field-head">
+            <label for="editRaceFastestLap">Schnellste Runde in Minuten (optional)</label>
+            <button type="button" id="editRaceFastestLapInfo" class="rt-info" aria-label="Erklärung: Schnellste Runde">i</button>
+          </div>
+          <input id="editRaceFastestLap" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 8" />
+          <p id="editRaceFastestLapHint" class="settings-hint"></p>
+        </div>
+
+        <!-- Only for a started race: correct the start after the fact. All
+             readings are stored, so the laps are recounted from them. -->
+        <div class="modal-field" id="editRaceStartField" hidden>
+          <div class="modal-field-head">
+            <label for="editRaceStartTime">Startschuss (Uhrzeit)</label>
+            <button type="button" id="editRaceStartTimeInfo" class="rt-info" aria-label="Erklärung: Startschuss">i</button>
+          </div>
+          <input id="editRaceStartTime" type="time" step="1" />
+          <p class="settings-hint">Änderst du die Uhrzeit, zählt Racetag alle Runden aus den gespeicherten Lesungen neu.</p>
         </div>
 
         <div id="editRaceInfo" class="settings-hint"></div>
@@ -641,6 +743,19 @@
           <div class="modal-field">
             <label for="assistantRaceLaps">Rundenzahl</label>
             <input id="assistantRaceLaps" type="number" min="1" max="999" step="1" value="5" />
+          </div>
+          <div class="modal-field">
+            <label for="assistantRaceFinishMode">Art der Wertung</label>
+            <select id="assistantRaceFinishMode">
+              <option value="" selected disabled>Bitte wählen …</option>
+            <option value="per_rider">Lauf / Zeitfahren – jeder ist nach seiner eigenen Rundenzahl im Ziel</option>
+            <option value="leader">Kriterium – das Rennen endet, sobald der Sieger im Ziel ist</option>
+            </select>
+          </div>
+          <div class="modal-field">
+            <label for="assistantRaceFastestLap">Schnellste Runde in Minuten (optional)</label>
+            <input id="assistantRaceFastestLap" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 8" />
+            <p id="assistantRaceFastestLapHint" class="settings-hint"></p>
           </div>
           <div id="assistantRaceError" class="modal-error" hidden></div>
         </section>

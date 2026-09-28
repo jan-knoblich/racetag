@@ -180,7 +180,9 @@ Klicke dann auf **„Weiter“**.
 
 1. **Name des Rennens** eintragen, z. B. „Volksradrennen Sonntag“.
 2. **Rundenzahl** eintragen, z. B. 5.
-3. Klicke auf **„Rennen anlegen und fertig“**.
+3. **Art der Wertung** wählen (Pflicht, siehe [6.1](#61-rennen-anlegen)).
+4. **Schnellste Runde in Minuten** eintragen, wenn du sie ungefähr kennst (freiwillig, siehe 6.1).
+5. Klicke auf **„Rennen anlegen und fertig“**.
 
 Das Rennen ist jetzt angelegt und ausgewählt. Gestartet ist es noch nicht; das machst du erst, wenn es losgeht (Abschnitt 6). Unten rechts erscheint dazu die Meldung „… – zum Start „Rennen starten“ drücken, erst dann zählen Runden“, und der Knopf **„Rennen starten“** blinkt kurz. **Vor dem Druck auf „Rennen starten“ werden keine Runden gezählt.**
 
@@ -227,6 +229,7 @@ Jedes der drei Felder hat einen farbigen Punkt:
 - **Reader** → öffnet die Einstellungen.
 - **Antennen** → öffnet die Antennen-Diagnose unten im Fenster.
 - **Verbindung** → verbindet das Fenster sofort neu.
+- **Unbekannte Tags** → öffnet die Liste der Tags, die gelesen wurden, aber keinem Fahrer gehören (siehe [7.7](#77-unbekannte-tags-nachträglich-koppeln)).
 
 > [Screenshot: Statusleiste, alles grün: Feld „Reader“ mit „verbunden (192.168.178.22)“, Feld „Antennen“ mit „1, 2 OK“, Feld „Verbindung“ mit „live“]
 
@@ -266,6 +269,8 @@ Ob eine Antenne wirklich liest, siehst du, wenn du die Maus über das Feld hält
 | verbinde… / verbinde neu in 3 s | Gelb | Kurze Unterbrechung, Racetag verbindet von selbst neu. |
 | getrennt – neuer Versuch in 10 s | Rot | Mehrere Versuche sind fehlgeschlagen. |
 
+**Unbekannte Tags** – erscheint nur, wenn es welche gibt. Die Zahl sagt, wie viele Tags gelesen wurden, die in diesem Rennen **keiner Startnummer gehören**. Ihre Durchfahrten zählen nicht. Läuft das Rennen, zählt Racetag seit dem Start; vorher die letzten 30 Minuten. Draufklicken und koppeln, siehe [7.7](#77-unbekannte-tags-nachträglich-koppeln).
+
 ### 5.3 Kurze Meldungen unten rechts
 
 Racetag blendet unten rechts kurze Meldungen ein, zum Beispiel:
@@ -289,7 +294,11 @@ Lege für jeden Lauf des Tages ein eigenes Rennen an (z. B. „Jedermann“, „
    - **Geplanter Start (Datum / Uhrzeit)** (freiwillig, nur zur Anzeige).
    - **Rennformat:** „Feste Rundenzahl“ oder „Zeit + Schlussrunden“. Im Zweifel „Feste Rundenzahl“.
    - **Rundenzahl.**
-   - **Einzelwertung:** normalerweise aus lassen. Nur einschalten, wenn jeder Fahrer seine Runden selbst zu Ende fährt (z. B. Zeitfahren).
+   - **Art der Wertung** (Pflicht, es gibt keine Vorauswahl):
+     - **„Lauf / Zeitfahren – jeder ist nach seiner eigenen Rundenzahl im Ziel“** – für Läufe, Volksläufe, Zeitfahren. Jeder ist im Ziel, wenn er seine Runden gefahren ist.
+     - **„Kriterium – das Rennen endet, sobald der Sieger im Ziel ist“** – für Radrennen, bei denen nach dem Sieger alle anderen mit ihrer nächsten Durchfahrt abgewunken werden.
+     Im Zweifel bei einem Lauf immer die erste Wahl.
+   - **Schnellste Runde in Minuten** (freiwillig): Wie lange braucht der Schnellste ungefähr für eine Runde? Racetag zählt eine weitere Durchfahrt erst nach der **Hälfte** dieser Zeit. Alles davor gilt als Doppellesung – z. B. wenn die Strecke zweimal nah an der Matte vorbeiführt oder jemand nach dem Ziel zurückgeht. Unter dem Feld steht, was eingestellt ist. Leer lassen heißt: Standard aus den Einstellungen (8 Sekunden). Beispiel Hubland: 2,4-km-Runde, der Schnellste braucht gut 8 Minuten → **8** eintragen.
    - **Auto-Snapshot-Intervall:** so lassen (120).
    - **„Dieses Rennen nach dem Anlegen aktivieren“** angehakt lassen.
 3. Klicke auf **„Anlegen“**.
@@ -307,18 +316,28 @@ Die Rundenzahl lässt sich jederzeit oben bei **„Rundenzahl:“** ändern. Dan
 Neben dem **„+“** sitzt ein Stift **✎**. Er öffnet das gerade gewählte Rennen zum Bearbeiten.
 
 - **Umbenennen:** Name ändern, **„Speichern“**. Die gemessenen Runden bleiben erhalten. Das hilft, wenn beim Anlegen etwas schiefgegangen ist oder zwei Rennen zu ähnlich heißen.
-- **Geplanter Start und Rundenzahl** lassen sich hier ebenfalls ändern.
+- **Geplanter Start, Rundenzahl, Art der Wertung und schnellste Runde** lassen sich hier ebenfalls ändern. Läuft das Rennen schon, zählt Racetag die Runden aus den gespeicherten Lesungen sofort neu.
+- **Startschuss (Uhrzeit)** – nur bei einem gestarteten Rennen. Hier korrigierst du die Startzeit nachträglich, z. B. wenn „Rennen starten“ zu spät gedrückt wurde. Alle Lesungen sind gespeichert; Racetag zählt die Runden mit der neuen Startzeit neu. Nichts geht verloren.
 - **Löschen:** **„Rennen löschen“**. Racetag fragt vorher nach und sagt, wie viele gekoppelte Fahrer verloren gehen. Mit dem Rennen verschwinden auch alle seine Lesungen, und das lässt sich **nicht** rückgängig machen. Das gerade laufende Rennen kann nicht gelöscht werden, Racetag wechselt deshalb vorher zum anderen Rennen und sagt in der Frage, zu welchem. Gibt es nur ein einziges Rennen, ist der Knopf grau.
 
 > [Screenshot: Dialog „Rennen bearbeiten“]
 
 ### 6.3 Rennen starten
 
-Wenn der Startschuss fällt: Klicke auf **„Rennen starten“**.
+Wenn der Startschuss fällt: Klicke auf **„Rennen starten“**. (Direkt nach dem Öffnen von Racetag ist der Knopf ein bis zwei Sekunden grau, bis alles geladen ist.)
 
 - Der Rennstatus zeigt **„Läuft seit …“** mit der Startuhrzeit.
 - Der Knopf zeigt jetzt **„Rennen läuft“**.
 - Erst ab jetzt zählen Durchgänge als Runden.
+
+**Zu spät gedrückt?** Hat der Reader in den letzten Minuten schon viele Fahrer auf einmal gelesen, fragt Racetag **„Läuft das Rennen schon?“** und schlägt die Uhrzeit der ersten Lesung vor.
+
+- **„Mit dieser Startzeit starten“** – das Rennen beginnt zur eingetragenen Uhrzeit. Steht die Messstelle nicht direkt am Start, war der Startschuss etwas früher als die erste Lesung: dann die Uhrzeit entsprechend vorstellen.
+- **„Jetzt starten“** – das Rennen beginnt jetzt (z. B. wenn die Lesungen nur vom Einlaufen kamen).
+
+Merkt Racetag erst nach dem Start, dass schon vorher viele Fahrer gelesen wurden, erscheint unter dem Rennstatus der Hinweis **„Vor dem Rennstart wurden schon … Fahrer gelesen, ab …. War der Startschuss früher?“** mit dem Knopf **„Startzeit anpassen“**. Der öffnet das Bearbeiten-Fenster (6.2a) mit dem Feld „Startschuss (Uhrzeit)“.
+
+**Nach dem Zieleinlauf** zählt Racetag für einen Fahrer keine Runden mehr, auch wenn er noch einmal über die Matte läuft. In der Rangliste steht dann neben der Rundenzahl ein kleines **„+1“** (Maus drüber: „weitere Durchfahrt nach dem Zieleinlauf – nicht als Runde gezählt“). Das ist nur ein Hinweis.
 
 Während des Rennens füllt sich die Rangliste von selbst. Im Rennstatus steht, wie viele Runden der Führende noch fahren muss („noch 1 Runde“, „LETZTE RUNDE / Zieleinlauf“).
 
@@ -328,6 +347,7 @@ Wenn alle im Ziel sind:
 
 1. Klicke auf **„Rennen beenden“**.
 2. Bestätige die Frage „Rennen beenden? Die Rangliste wird eingefroren.“ mit **OK**.
+   Haben noch Fahrer ihre Rundenzahl nicht erreicht, fragt Racetag stattdessen: **„… Fahrer haben ihre Rundenzahl noch nicht erreicht und sind vermutlich noch unterwegs. Rennen trotzdem beenden?“** Wenn noch jemand läuft: **Abbrechen** und warten. Nur mit **OK** bestätigen, wenn die Fehlenden wirklich aufgegeben haben.
 3. Der Rennstatus zeigt **„Beendet um …“**.
 4. **Gleich danach die Ergebnisse exportieren** (Abschnitt 9).
 
@@ -402,6 +422,16 @@ Der Knopf **„Tags exportieren“** oben ist etwas anderes: Er listet alle Tags
 
 Beide Dateien öffnen sich direkt in Excel. Die Spalte **tag_id** ist als Text gespeichert, damit führende Nullen erhalten bleiben. Bitte diese Spalte in Excel nicht in eine Zahl umwandeln, sonst passt der Tag beim späteren Import nicht mehr.
 
+### 7.7 Unbekannte Tags nachträglich koppeln
+
+Läuft jemand mit einem Tag, das in diesem Rennen keiner Startnummer gehört, erscheint in der Statusleiste das Feld **„Unbekannte Tags“** mit einer Zahl.
+
+1. Auf das Feld klicken. Es öffnet sich die Liste: Tag-ID, Anzahl Lesungen, letzte Lesung. War das Tag in einem anderen Rennen schon gekoppelt, steht dabei „war Nr. … in „…““ – oft ist das der richtige Fahrer.
+2. Beim passenden Tag auf **„Koppeln“** klicken.
+3. Startnummer und Name eintragen, **„Speichern“**.
+
+Die **bisherigen Durchfahrten dieses Tags seit dem Start werden dann mitgezählt** – der Fahrer bekommt seine Runden rückwirkend. Das gilt nur für „Koppeln“ aus dieser Liste. Koppelst du normal über „Tag → Fahrer koppeln“ oder den Koppel-Modus, zählen erst die Durchfahrten ab jetzt (sonst würde ein Ersatz-Tag, das du zum Koppeln an die Antenne hältst, falsche Runden bekommen).
+
 ---
 
 ## 8. Runden von Hand korrigieren
@@ -413,6 +443,8 @@ In der Rangliste hat jede Zeile rechts in der Spalte **„Runden ±“** drei kl
 - **✎** – öffnet **„Runde bearbeiten“**: Runde mit eigener Uhrzeit nachtragen, Runde entfernen oder einen Status setzen (**DNF** = aufgegeben, **DNS** = nicht gestartet, **DSQ** = disqualifiziert).
 
 Ein **⚠** neben der Rundenzahl bedeutet: Der Reader hat bei diesem Fahrer vermutlich eine Runde verpasst. Prüfe das und trage die Runde mit **+1** nach.
+
+Ist ein Fahrer schon im Ziel, lehnt Racetag **+1** ab („Der Fahrer ist schon im Ziel – Runden danach zählen nicht.“). Stimmt die Rundenzahl trotzdem nicht, ist meist die Rundenzahl des Rennens oder die Startzeit falsch: beides über den Stift ✎ neben „Rennen:“ korrigieren (6.2a).
 
 ---
 
