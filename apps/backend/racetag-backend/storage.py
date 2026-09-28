@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS races (
     snapshot_interval_s  INTEGER,
     finish_mode          TEXT NOT NULL DEFAULT 'leader',
     duration_s           INTEGER,
-    final_laps           INTEGER
+    final_laps           INTEGER,
+    min_pass_interval_s  REAL
 );
 
 CREATE TABLE IF NOT EXISTS riders (
@@ -264,6 +265,13 @@ class Storage:
                 self._conn.execute(
                     "ALTER TABLE races ADD COLUMN final_laps INTEGER;"
                 )
+            if "min_pass_interval_s" not in cols:
+                # Per-race lap cooldown (field report 2026-09-27). NULL means
+                # "use the global default", which is what every existing race
+                # did before this column existed.
+                self._conn.execute(
+                    "ALTER TABLE races ADD COLUMN min_pass_interval_s REAL;"
+                )
 
     def _migrate_legacy(self) -> None:
         """Migrate pre-multi-race ``riders`` / ``tag_events`` rows into the new
@@ -361,8 +369,8 @@ class Storage:
         INSERT INTO races
             (id, name, scheduled_at, total_laps, started, started_at, ended,
              ended_at, created_at, snapshot_interval_s, finish_mode,
-             duration_s, final_laps)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+             duration_s, final_laps, min_pass_interval_s)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """
 
     @staticmethod
@@ -381,6 +389,7 @@ class Storage:
             race.finish_mode,
             race.duration_s,
             race.final_laps,
+            race.min_pass_interval_s,
         )
 
     def _insert_race(self, race: "Race") -> None:
@@ -417,7 +426,7 @@ class Storage:
             return self.get_race(race_id)
         allowed = {"name", "scheduled_at", "total_laps", "started", "started_at",
                    "ended", "ended_at", "snapshot_interval_s", "finish_mode",
-                   "duration_s", "final_laps"}
+                   "duration_s", "final_laps", "min_pass_interval_s"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"unknown race fields: {sorted(unknown)}")
@@ -459,6 +468,12 @@ class Storage:
         except (KeyError, IndexError):
             finish_mode = "leader"
 
+        try:
+            raw_cooldown = row["min_pass_interval_s"]
+        except (KeyError, IndexError):
+            raw_cooldown = None
+        min_pass_interval_s = float(raw_cooldown) if raw_cooldown is not None else None
+
         return Race(
             id=row["id"],
             name=row["name"],
@@ -473,6 +488,7 @@ class Storage:
             finish_mode=finish_mode,
             duration_s=_opt_int("duration_s"),
             final_laps=_opt_int("final_laps"),
+            min_pass_interval_s=min_pass_interval_s,
         )
 
     # ---- Active race ----------------------------------------------------
@@ -672,6 +688,23 @@ class Storage:
         ).fetchall()
         for row in rows:
             yield dict(row)
+
+    def event_rows_between(
+        self, race_id: str, start_iso: str, end_iso: str
+    ) -> List[dict]:
+        """Raw ``arrive`` rows of a race with start_iso <= timestamp <= end_iso.
+
+        Timestamps are uniform ISO-8601 UTC "Z" strings, so the lexicographic
+        comparison in SQL is a chronological one. Used by the mass-start
+        detection, which only ever looks at a ~20-minute window.
+        """
+        rows = self._conn.execute(
+            "SELECT tag_id, timestamp, antenna FROM tag_events "
+            "WHERE race_id = ? AND event_type = 'arrive' "
+            "AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp, id;",
+            (race_id, start_iso, end_iso),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def count_events(self, race_id: Optional[str] = None) -> int:
         rid = self._require_race_id(race_id)

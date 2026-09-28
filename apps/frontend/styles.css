@@ -983,3 +983,28 @@ tbody tr:hover { background: #0b1220; }
   .assistant-progress li { font-size: 11px; padding: 4px; }
   .modal-actions { flex-wrap: wrap; }
 }
+
+/* Riders were read before the recorded start (Hubland 2026-09-27). */
+.start-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  background: rgba(255, 193, 7, 0.12);
+  color: var(--fg);
+  font-size: 13px;
+}
+.start-warning[hidden] { display: none; }
+.start-warning span { flex: 1 1 260px; }
+
+/* Crossings after the rider's own finish: shown, never counted. */
+.post-finish {
+  margin-left: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: help;
+}

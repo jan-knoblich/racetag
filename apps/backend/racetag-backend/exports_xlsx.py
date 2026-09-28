@@ -277,8 +277,9 @@ READING_HEADERS = [
     "Reader-Seriennummer", "Gewertet", "Runde",
     "Abstand zur vorherigen Lesung (s)",
     "Abstand zur vorherigen gewerteten Runde (s)",
+    "Warum nicht gewertet",
 ]
-_READING_WIDTHS = [7, 24, 22, 22, 18, 34, 12, 24, 22, 9, 9, 10, 20, 10, 8, 18, 18]
+_READING_WIDTHS = [7, 24, 22, 22, 18, 34, 12, 24, 22, 9, 9, 10, 20, 10, 8, 18, 18, 30]
 
 SUMMARY_HEADERS = [
     "Rennen", "Startnummer", "Name", "Tag-ID", "Lesungen", "Gewertet",
@@ -335,6 +336,7 @@ def build_readings_workbook(
             reading.get("lap") if reading.get("lap") else "",
             reading.get("gap_previous_s"),
             reading.get("gap_previous_lap_s"),
+            reading.get("reason") or "",
         ])
     _write_sheet(
         ws, READING_HEADERS, rows,

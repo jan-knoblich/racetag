@@ -55,6 +55,12 @@ class Participant(BaseModel):
     # F5 — the suspected midpoint timestamp for the FIRST detected gap, so the
     # UI can pre-fill the manual-lap dialog. None when nothing is suspected.
     suspected_gap_midpoint: Optional[str] = None
+    # Crossings after this rider's own finish (cool-down lap, walking back
+    # through the read zone). Counted for transparency only: they never add a
+    # lap and never move last_pass_time, so the result and the lap count stay
+    # at the finish (field report Hubland 2026-09-27: 36 of 112 runners crossed
+    # the line again after finishing and showed up to 12 "laps").
+    post_finish_passes: int = 0
 
 
 # Rider result statuses (AUDIT-2026-07 F3). Empty/None = classified/racing.
@@ -267,8 +273,9 @@ class RaceState:
         antenna at start can't register lap-1 immediately.
 
         If the participant crosses the finish threshold for the first time, marks finished and
-        freezes finish_time/total_time_ms. Subsequent passes will keep laps and last_pass_time
-        advancing, but standings/gaps are computed against the finish state.
+        freezes finish_time/total_time_ms. Passes after the rider's own finish are counted
+        in ``post_finish_passes`` only: laps, last_pass_time and the lap-time history stay
+        at the finish, so a cool-down crossing can neither add a lap nor show up as one.
         """
         # Defensive timestamp sanity check. If the upstream reader-service is
         # configured to push the host clock (sirit_client._maybe_bind_and_config)
@@ -327,6 +334,14 @@ class RaceState:
             # with min_pass_interval_s == 0 (exact duplicates from re-POSTs).
             if delta_s <= 0 or delta_s < self.min_pass_interval_s:
                 return p
+
+        # A rider who already finished does not ride on: any further crossing
+        # is a cool-down or someone walking back through the read zone. Keep
+        # the record (post_finish_passes) but leave laps, last_pass_time and
+        # pass_times at the finish.
+        if p.finished:
+            p.post_finish_passes += 1
+            return p
 
         p.laps += 1
         p.last_pass_time = pass_time_iso

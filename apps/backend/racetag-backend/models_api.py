@@ -68,6 +68,8 @@ class ParticipantDTO(BaseModel):
     # TT/net time: first counted pass → finish (or latest) pass. The correct
     # individual time for staggered-start formats. None until 2+ passes.
     net_time_ms: Optional[int] = None
+    # Crossings after the rider's own finish; informational, never a lap.
+    post_finish_passes: int = 0
     # Rider fields — populated from RiderStore at standings time (W-010)
     bib: Optional[str] = Field(None, description='Rider bib number (null if no rider registered for this tag)')
     name: Optional[str] = Field(None, description='Rider name (null if no rider registered for this tag)')
@@ -123,6 +125,10 @@ class RaceSummaryDTO(BaseModel):
     finish_mode: str = "leader"
     duration_s: Optional[int] = None
     final_laps: Optional[int] = None
+    # The race's own lap cooldown (null = uses the global default) and the
+    # value actually in force, so the UI can show both.
+    min_pass_interval_s: Optional[float] = None
+    effective_min_pass_interval_s: Optional[float] = None
 
 
 class RaceListDTO(BaseModel):
@@ -160,6 +166,14 @@ class RaceCreateDTO(BaseModel):
         default=None, ge=0, le=99,
         description="Laps to go once the timer expires (bell lap). Requires duration_s.",
     )
+    min_pass_interval_s: Optional[float] = Field(
+        default=None, ge=0, le=3600,
+        description=(
+            "Minimum seconds between two counted passes of the same tag in "
+            "this race (also the minimum time from the start to a first "
+            "counted pass). Null uses the global default from /config."
+        ),
+    )
 
 
 class RaceUpdateDTO(BaseModel):
@@ -172,6 +186,9 @@ class RaceUpdateDTO(BaseModel):
     finish_mode: Optional[str] = Field(default=None, pattern="^(leader|per_rider)$")
     duration_s: Optional[int] = Field(default=None, ge=0, le=86400)
     final_laps: Optional[int] = Field(default=None, ge=0, le=99)
+    # Explicit null clears the race's own value (back to the global default);
+    # omitting the field leaves it unchanged (model_fields_set tells them apart).
+    min_pass_interval_s: Optional[float] = Field(default=None, ge=0, le=3600)
 
 
 # ---------------------------------------------------------------------------
