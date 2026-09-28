@@ -132,6 +132,7 @@
     startRaceTime: 'Uhrzeit des Startschusses. Vorausgefüllt mit der ersten Lesung.',
     startRaceWithTimeBtn: 'Startet das Rennen mit der eingetragenen Uhrzeit. Durchfahrten seit dieser Zeit werden sofort als Runden gezählt.',
     startRaceNowBtn: 'Startet das Rennen ab jetzt. Die schon gelesenen Durchfahrten zählen dann nicht.',
+    unknownTagsCloseBtn: 'Liste schließen. Der Zähler oben bleibt sichtbar, solange es unbekannte Tags gibt.',
     startWarningFixBtn: 'Öffnet das Rennen zum Bearbeiten, dort lässt sich die Uhrzeit des Startschusses korrigieren.',
     assistantRaceFinishMode: 'Pflichtangabe: Lauf / Zeitfahren oder Kriterium.',
     assistantRaceFastestLap: 'Schnellste Rundenzeit in Minuten. Filtert Doppellesungen heraus.',
@@ -196,7 +197,7 @@
 
   // Ids whose `data-tip` script.js writes at runtime (not in RT_TIPS): the
   // status pills (live detail) and the update notice (installed version).
-  RT.DYNAMIC_TIP_IDS = Object.freeze(['pillReader', 'pillAntennas', 'pillConnection', 'updateNotice']);
+  RT.DYNAMIC_TIP_IDS = Object.freeze(['pillReader', 'pillAntennas', 'pillConnection', 'pillUnknown', 'updateNotice']);
   const BUBBLE_ID = 'rtTipBubble';
   const SHOW_DELAY_MS = 350;
   const TOUCH_MOUSE_GUARD_MS = 800; // synthetic mouse events follow a tap

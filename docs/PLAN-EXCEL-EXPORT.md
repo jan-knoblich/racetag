@@ -108,3 +108,23 @@ Verified on macOS: backend 260 tests, desktop 143 (+7 skipped), reader-service 1
 Not covered: nothing has been opened in real Excel on Windows, and point 5's root cause is inferred from the screenshots plus the per-race data model, not from Erik's database.
 
 Still open from the same conversation and deliberately not built here: separate classification per distance, so the 5 km winner does not wait for the last 10 km finisher. That needs a class or distance per rider with its own lap target and touches the scoring core.
+
+---
+
+## 9. Hubland follow-up (2026-09-28)
+
+The Hubland run of 2026-09-27 (5 km = 2 laps, 10 km = 4 laps, gun 09:03:37, "Rennen starten" pressed 09:09:32 after an app start) produced many flagged results. Reconstruction from Erik's database showed five causes; each got a fix.
+
+| # | Cause in the data | What was built |
+| --- | --- | --- |
+| 1 | Riders who kept crossing the mat after their finish got extra laps | `add_lap` ignores passes after the rider's own finish and counts them in `post_finish_passes` (UI: small "+N"). Manual "+1" on a finished rider → 409. |
+| 2 | Start pressed ~6 min after the gun; the first lap of most riders was lost | `PATCH /race/start-time` (recount from `tag_events`), edit dialog field "Startschuss (Uhrzeit)", `GET /race/start-candidate` mass-start detection with the dialog "Läuft das Rennen schon?" and a banner after a late start. Start button disabled until the state has loaded. |
+| 3 | 7 runners with uncoupled tags, invisible during the race | Pill "Unbekannte Tags" + list (`GET /race/unknown-tags`), "Koppeln" there recounts the tag's past readings (`recount_past_reads`). |
+| 4 | 8 s cooldown vs. a course passing the mat twice within 200 m | Per-race `min_pass_interval_s` from "Schnellste Runde in Minuten" (half of it); also gates the first pass after the start. Finish mode is now a required choice (the old checkbox defaulted to criterium). |
+| 5 | Race ended while runners were still out | End confirmation names the number of riders below their lap count. |
+
+The readings export got a column "Warum nicht gewertet".
+
+Verified against a copy of Erik's DB after setting per_rider, 240 s cooldown, laps 2/4 and start 07:03:37Z: finish times match the manual reconstruction for 57/57 (10 km) and 54/55 (5 km, the exception crossed after the race end). The start candidate finds 110 of 166 riders, first reading 07:04:17Z; the unknown-tags list contains all 7 anonymous runners and coupling them restores their laps.
+
+Still open, deliberately separate: scoring per distance (class with its own lap target per rider), so 5 km and 10 km can run as one race.

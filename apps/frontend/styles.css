@@ -1008,3 +1008,12 @@ tbody tr:hover { background: #0b1220; }
   color: var(--muted);
   cursor: help;
 }
+
+/* Unknown-tags list: text on the left, "Koppeln" on the right. */
+.unknown-tag-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.unknown-tag-text { flex: 1 1 auto; min-width: 0; }

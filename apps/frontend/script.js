@@ -403,7 +403,12 @@ async function importCSVToBackend(csvText) {
 // ---------------------------------------------------------------------------
 // W-012 — Register-rider modal helpers
 // ---------------------------------------------------------------------------
-function openRegisterModal(tag_id) {
+// Register modal state: `recount` asks the backend to count the tag's passes
+// stored before the coupling (a runner who ran uncoupled).
+const registerUi = { recount: false };
+
+function openRegisterModal(tag_id, options) {
+  const opts = options || {};
   state.awaitingRead = false; // Clear flag immediately so no stacking
   const modal = $('#registerModal');
   const tagInput = $('#modalTagId');
@@ -414,9 +419,12 @@ function openRegisterModal(tag_id) {
   if (!modal) return;
 
   tagInput.value = tag_id;
-  bibInput.value = '';
-  nameInput.value = '';
+  bibInput.value = opts.knownAs && opts.knownAs.bib ? opts.knownAs.bib : '';
+  nameInput.value = opts.knownAs && opts.knownAs.name ? opts.knownAs.name : '';
   if (errBanner) errBanner.hidden = true;
+  registerUi.recount = !!opts.recount;
+  const note = $('#modalRecountNote');
+  if (note) note.hidden = !registerUi.recount;
 
   modal.hidden = false;
   bibInput.focus();
@@ -426,6 +434,7 @@ function closeRegisterModal() {
   const modal = $('#registerModal');
   if (modal) modal.hidden = true;
   state.awaitingRead = false;
+  registerUi.recount = false;
 }
 
 async function submitRegisterModal() {
@@ -440,7 +449,7 @@ async function submitRegisterModal() {
     const res = await fetch(`${state.backend}/riders`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getApiHeaders() },
-      body: JSON.stringify({ tag_id, bib, name }),
+      body: JSON.stringify({ tag_id, bib, name, recount_past_reads: registerUi.recount }),
     });
 
     if (res.ok) {
@@ -452,6 +461,7 @@ async function submitRegisterModal() {
       state.lastUnknownTag = null;
       closeRegisterModal();
       showToast(RT.fmt('toastRiderRegistered', { bib, name: name || RT.S.riderNoName }));
+      refreshUnknownTags();
     } else {
       if (errBanner) {
         errBanner.textContent = await rtResponseError(res, 'saveFailed');
@@ -1727,6 +1737,7 @@ async function loadRaceConfig() {
     state.lapsToGo = (typeof data.laps_to_go === 'number') ? data.laps_to_go : null;
     renderRaceStatus();
     checkStartWarning();
+    refreshUnknownTags();
   } catch {
     // silently ignore — config sync is best-effort
   }
@@ -2160,6 +2171,111 @@ async function checkStartWarning() {
   box.hidden = false;
 }
 
+// ---------------------------------------------------------------------------
+// Unknown tags: a runner without a coupling runs for nothing (Hubland
+// 2026-09-27: seven did). A visible counter instead of a dismissable pop-up.
+// ---------------------------------------------------------------------------
+
+const unknownUi = { items: [], scope: 'recent', timer: null, loading: false };
+
+function scheduleUnknownRefresh(delayMs) {
+  if (unknownUi.timer) clearTimeout(unknownUi.timer);
+  unknownUi.timer = setTimeout(() => { unknownUi.timer = null; refreshUnknownTags(); }, delayMs);
+}
+
+async function refreshUnknownTags() {
+  if (unknownUi.loading) return;
+  unknownUi.loading = true;
+  try {
+    const res = await fetch(`${state.backend}/race/unknown-tags`, { headers: getApiHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    unknownUi.items = data.items || [];
+    unknownUi.scope = data.scope || 'recent';
+    renderUnknownPill();
+    if (isShown('#unknownTagsModal')) renderUnknownTagsList();
+  } catch {
+    // the pill keeps its last state; the next refresh tries again
+  } finally {
+    unknownUi.loading = false;
+  }
+}
+
+function renderUnknownPill() {
+  const pill = $('#pillUnknown');
+  if (!pill) return;
+  const n = unknownUi.items.length;
+  pill.hidden = n === 0;
+  if (!n) return;
+  const running = unknownUi.scope === 'race' && state.raceStarted && !state.raceEnded;
+  const tip = RT.fmt(unknownUi.scope === 'race' ? 'pillUnknownTipRace' : 'pillUnknownTipRecent', { n });
+  setPill('pillUnknown', running ? 'warn' : 'neutral', String(n), tip, false);
+}
+
+function renderUnknownTagsList() {
+  const list = $('#unknownTagsList');
+  const intro = $('#unknownTagsIntro');
+  if (!list) return;
+  if (intro) intro.textContent = unknownUi.scope === 'race' ? RT.S.unknownTagsIntroRace : RT.S.unknownTagsIntroRecent;
+  list.innerHTML = '';
+  if (!unknownUi.items.length) {
+    const li = document.createElement('li');
+    li.className = 'riders-list-empty';
+    li.textContent = RT.S.unknownTagsEmpty;
+    list.appendChild(li);
+    return;
+  }
+  unknownUi.items.forEach((item) => {
+    const li = document.createElement('li');
+    li.className = 'unknown-tag-row';
+    const text = document.createElement('span');
+    text.className = 'unknown-tag-text';
+    const known = item.known_as
+      ? ` · ${RT.fmt('unknownTagKnownAs', {
+        bib: item.known_as.bib,
+        name: item.known_as.name ? ` ${item.known_as.name}` : '',
+        race: rtRaceDisplayName(item.known_as.race_name),
+      })}`
+      : '';
+    text.innerHTML = `<strong class="riders-list-tag">${htmlEscape(coupleShortTag(item.tag_id))}</strong> `
+      + htmlEscape(RT.fmt('unknownTagMeta', { reads: item.reads, time: isoToLocalTimeInput(item.last_seen) }))
+      + htmlEscape(known);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn-primary';
+    btn.textContent = RT.S.btnCoupleUnknown;
+    btn.setAttribute('data-tip', RT.S.btnCoupleUnknownTip);
+    btn.addEventListener('click', () => {
+      closeUnknownTagsModal();
+      // Count the passes it already made only when it ran in this race.
+      openRegisterModal(item.tag_id, { recount: unknownUi.scope === 'race', knownAs: item.known_as });
+    });
+    li.appendChild(text);
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+}
+
+function openUnknownTagsModal() {
+  const modal = $('#unknownTagsModal');
+  if (!modal) return;
+  renderUnknownTagsList();
+  modal.hidden = false;
+  refreshUnknownTags();
+}
+
+function closeUnknownTagsModal() {
+  const modal = $('#unknownTagsModal');
+  if (modal) modal.hidden = true;
+}
+
+// Riders who have laps but have not finished are probably still on the course.
+function ridersStillOnCourse() {
+  return (state.lastStandings || []).filter((p) => (
+    !p.status && !p.finished && (p.laps || 0) > 0 && p.bib != null
+  )).length;
+}
+
 async function activateRace(raceId) {
   try {
     const res = await fetch(`${state.backend}/races/${raceId}/activate`, {
@@ -2271,6 +2387,7 @@ function connectSSE() {
         // W-012: handle unknown_tag SSE event
         if (data?.type === 'unknown_tag') {
           state.lastUnknownTag = { tag_id: data.tag_id, timestamp: data.timestamp };
+          scheduleUnknownRefresh(1500);
           // W-075: while coupling mode is on, the panel owns tag handling —
           // never pop the one-shot register modal over it.
           if (state.awaitingRead && !couple.active) {
@@ -3657,6 +3774,7 @@ const MODAL_CLOSERS = [
   ['#lapEditModal', closeLapEditModal],
   ['#newRaceModal', () => { $('#newRaceModal').hidden = true; }],
   ['#startRaceModal', closeStartRaceModal],
+  ['#unknownTagsModal', closeUnknownTagsModal],
   ['#editRaceModal', closeEditRaceModal],
   ['#ridersModal', closeRidersModal],
   ['#registerModal', closeRegisterModal],
@@ -3875,7 +3993,11 @@ function init() {
   const endRaceBtn = $('#endRaceBtn');
   if (endRaceBtn) {
     endRaceBtn.addEventListener('click', async () => {
-      if (!confirm(RT.S.confirmEndRace)) return;
+      const onCourse = ridersStillOnCourse();
+      const question = onCourse > 0
+        ? RT.fmt('confirmEndRaceUnfinished', { n: onCourse })
+        : RT.S.confirmEndRace;
+      if (!confirm(question)) return;
       try {
         const res = await fetch(`${state.backend}/race/end`, {
           method: 'POST',
@@ -4133,6 +4255,18 @@ function init() {
       downloadXlsxFromBackend('/startlist.xlsx', 'racetag-startliste.xlsx',
         { button: exportStartlistBtn }));
   }
+
+  // Unknown tags: pill opens the list; refreshed on unknown_tag frames and
+  // every 20 s as a safety net.
+  const pillUnknown = $('#pillUnknown');
+  if (pillUnknown) pillUnknown.addEventListener('click', openUnknownTagsModal);
+  const unknownClose = $('#unknownTagsCloseBtn');
+  if (unknownClose) unknownClose.addEventListener('click', closeUnknownTagsModal);
+  const unknownModal = $('#unknownTagsModal');
+  if (unknownModal) {
+    unknownModal.addEventListener('click', (e) => { if (e.target === unknownModal) closeUnknownTagsModal(); });
+  }
+  setInterval(refreshUnknownTags, 20000);
 
   // Start dialog (field already on the course) and the late-start warning.
   const startWithTimeBtn = $('#startRaceWithTimeBtn');

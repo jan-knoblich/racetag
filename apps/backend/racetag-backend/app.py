@@ -1354,6 +1354,59 @@ def get_race_start_candidate(before: Optional[str] = None):
     return _detect_start_burst(race.race_id, reference, registered)
 
 
+_UNKNOWN_TAGS_RECENT_S = 30 * 60
+
+
+@app.get("/race/unknown-tags")
+def get_race_unknown_tags():
+    """Tags read in the active race that are not coupled to a rider.
+
+    During and after a race: everything read since the start (until the end).
+    Before the start: the last 30 minutes, i.e. tags waved but not yet coupled.
+    Their passes do not count, so the UI keeps a visible counter instead of a
+    dismissable pop-up (field report 2026-09-27: seven runners ran the whole
+    race uncoupled and nobody noticed). ``known_as`` names the most recent
+    coupling of the tag in another race, as a one-click suggestion.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    if not race.race_id:
+        raise HTTPException(status_code=404, detail="race not found")
+    now = datetime.now(timezone.utc)
+    if race.started and race.started_at is not None:
+        since, until, scope = race.started_at, (race.ended_at if race.ended and race.ended_at else now), "race"
+    else:
+        since, until, scope = now - timedelta(seconds=_UNKNOWN_TAGS_RECENT_S), now, "recent"
+    iso = lambda d: d.isoformat(timespec="milliseconds").replace("+00:00", "Z")  # noqa: E731
+    registered = {r.tag_id for r in rider_store.list()}
+    agg: Dict[str, Dict[str, Any]] = {}
+    for row in storage.event_rows_between(race.race_id, iso(since), iso(until)):
+        tag = row["tag_id"]
+        if tag in registered:
+            continue
+        item = agg.get(tag)
+        if item is None:
+            item = agg[tag] = {"tag_id": tag, "reads": 0, "first_seen": row["timestamp"],
+                               "last_seen": row["timestamp"], "antennas": set()}
+        item["reads"] += 1
+        item["last_seen"] = row["timestamp"]
+        if row["antenna"] is not None:
+            item["antennas"].add(row["antenna"])
+    elsewhere = storage.rider_lookup_across_races(exclude_race_id=race.race_id)
+    items = []
+    for item in sorted(agg.values(), key=lambda x: x["first_seen"]):
+        known = elsewhere.get(item["tag_id"])
+        items.append({
+            **item,
+            "antennas": sorted(item["antennas"]),
+            "known_as": (
+                {"bib": known["bib"], "name": known["name"], "race_name": known["race_name"]}
+                if known else None
+            ),
+        })
+    return {"scope": scope, "since": iso(since), "count": len(items), "items": items}
+
+
 # ---------------------------------------------------------------------------
 # W-036: Race reset + total-laps control
 # ---------------------------------------------------------------------------
@@ -2094,6 +2147,21 @@ def post_rider(body: RiderCreateDTO):
     )
     rider = rider_store.upsert(rider)  # merged result (keep-semantics!)
     dto = _rider_to_dto(rider)
+    # "Koppeln" from the unknown-tags list: this tag already ran, uncoupled.
+    # The replay skips unregistered tags, so its passes never counted; recount
+    # them from the stored readings (field report 2026-09-27: seven runners
+    # ran uncoupled). Only on request — a tag held to the antenna to couple a
+    # late entry during the race must not turn that read into a lap.
+    if (
+        body.recount_past_reads
+        and existing is None
+        and race.started
+        and storage.find_last_event_id_for_tag(body.tag_id, race_id=race.race_id,
+                                               event_type="arrive") is not None
+    ):
+        _rebuild_active_race_state_in_place()
+        logger.info("operator: tag %s coupled to %s after it was read; recounted", body.tag_id, body.bib)
+        _publish({"type": "standings", "items": _build_standings_items(), **_race_live_status()})
     if body.all_races:
         # Day model (Karli Krit): one tag + one number per PERSON. Propagate
         # bib/name to every race that has this tag registered — the active

@@ -87,6 +87,12 @@
           <span class="status-pill-label">Verbindung</span>
           <span id="pillConnectionText" class="status-pill-text">verbinde&hellip;</span>
         </button>
+        <!-- Tags read but not coupled: their passes do not count. -->
+        <button id="pillUnknown" type="button" class="status-pill status-pill--neutral" hidden>
+          <span class="status-pill-dot" aria-hidden="true"></span>
+          <span class="status-pill-label">Unbekannte Tags</span>
+          <span id="pillUnknownText" class="status-pill-text">0</span>
+        </button>
         <span id="statusMessage" class="status-message" role="status" aria-live="polite" hidden></span>
         <!-- D7: shown only when GitHub has a newer release than /config version -->
         <a id="updateNotice" class="update-notice" href="https://github.com/jan-knoblich/racetag/releases/latest"
@@ -283,6 +289,9 @@
           <input id="modalName" type="text" placeholder="z. B. Erika Mustermann" />
         </div>
 
+        <p id="modalRecountNote" class="settings-hint" hidden>
+          Dieser Tag ist schon gelaufen. Seine bisherigen Durchfahrten werden nach dem Koppeln mitgezählt.
+        </p>
         <div id="modalError" class="modal-error" hidden></div>
 
         <div class="modal-actions">
@@ -383,6 +392,19 @@
         <div class="modal-actions">
           <button id="newRaceSaveBtn" class="btn-primary">Anlegen</button>
           <button id="newRaceCancelBtn">Abbrechen</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tags read but not coupled to a start number (pill "Unbekannte Tags"). -->
+    <div id="unknownTagsModal" class="modal-backdrop" role="dialog" aria-modal="true"
+         aria-labelledby="unknownTagsModalTitle" hidden>
+      <div class="modal-box riders-box">
+        <h2 id="unknownTagsModalTitle" class="modal-title">Unbekannte Tags</h2>
+        <p id="unknownTagsIntro" class="assistant-text"></p>
+        <ul id="unknownTagsList" class="riders-list unknown-tags-list"></ul>
+        <div class="modal-actions">
+          <button id="unknownTagsCloseBtn">Schließen</button>
         </div>
       </div>
     </div>

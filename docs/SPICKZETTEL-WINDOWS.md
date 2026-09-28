@@ -8,8 +8,8 @@ Ausdrucken und an den Laptop legen. Ausführlich: [BEDIENUNGSANLEITUNG-WINDOWS.m
 2. **Laptop verbinden.** Ladekabel dran, **Deckel offen lassen** (zugeklappt schläft der Laptop ein und erfasst nichts). Mit dem **WLAN der FritzBox** verbinden (Aufkleber unten an der FritzBox). Internet ist nicht nötig.
 3. **Racetag starten.** Doppelklick auf **Racetag** auf dem Desktop. Warten, bis in der Statusleiste steht: **Reader** grün „verbunden (…)“, **Verbindung** grün „live“. Das kann nach dem Einschalten des Readers bis zu einer Minute dauern.
 4. **Antennen testen.** Einen Tag vor jede Antenne halten. **Antennen** muss grün „1, 2 OK“ zeigen. „OK“ heißt nur „eingeschaltet“: Maus über das Feld halten – **jede Antenne muss Lesungen haben**.
-5. **Rennen vorbereiten und starten.** Oben bei **„Rennen:“** das richtige Rennen wählen (neu: **„+“**). Fahrer koppeln (**„CSV importieren“**, **„Tag → Fahrer koppeln“** oder **„Koppel-Modus“**). Beim Startschuss: **„Rennen starten“**.
-6. **Beenden und sichern.** **„Rennen beenden“** → OK. Sofort **„Ergebnisse (Excel)“** → Speichern (öffnet sich in Excel). Am Ende des Tages Racetag mit dem **X** schließen und die Frage „Racetag wirklich beenden?“ mit **OK** bestätigen. Solange Racetag geschlossen ist, wird nichts erfasst.
+5. **Rennen vorbereiten und starten.** Oben bei **„Rennen:“** das richtige Rennen wählen (neu: **„+“**). Beim Anlegen **Art der Wertung** wählen (Lauf → „Lauf / Zeitfahren“) und die **schnellste Runde in Minuten** eintragen. Fahrer koppeln (**„CSV importieren“**, **„Tag → Fahrer koppeln“** oder **„Koppel-Modus“**). Beim Startschuss: **„Rennen starten“**. Zu spät gedrückt? Racetag fragt „Läuft das Rennen schon?“ → **„Mit dieser Startzeit starten“**. Später korrigieren: Stift **✎** → „Startschuss (Uhrzeit)“.
+6. **Beenden und sichern.** Erst wenn alle im Ziel sind: **„Rennen beenden“** → OK. (Warnt Racetag „… Fahrer … noch unterwegs“: Abbrechen und warten.) Sofort **„Ergebnisse (Excel)“** → Speichern (öffnet sich in Excel). Am Ende des Tages Racetag mit dem **X** schließen und die Frage „Racetag wirklich beenden?“ mit **OK** bestätigen. Solange Racetag geschlossen ist, wird nichts erfasst.
 
 ## Wenn die Ampel gelb ist
 
@@ -25,6 +25,7 @@ Gelb heißt: Racetag arbeitet schon daran. **Erst einmal 30 Sekunden warten.**
 | Antennen: **1 OK, 2 liest nichts** | Antennenkabel an Antenne 2 und am Reader festdrehen. Verpasste Runden nachtragen. |
 | Antennen: **keine erkannt** | Antennenkabel festdrehen, dann ⚙ → **„Reader neu verbinden“**. |
 | Verbindung: **verbinde neu…** | Kurz warten. |
+| **Unbekannte Tags** mit Zahl | Jemand läuft mit einem nicht gekoppelten Tag. Draufklicken → **„Koppeln“** → Startnummer eintragen. Seine Runden seit dem Start werden mitgezählt. |
 
 ## Wenn die Ampel rot ist
 

@@ -227,6 +227,10 @@ class RiderCreateDTO(BaseModel):
                     'where it is registered (day model: one tag + number per '
                     'person). Update-only — never inserts into other races.',
     )
+    # Count this tag's readings stored before the coupling (a runner who ran
+    # uncoupled). Off by default: when a tag is coupled by holding it to the
+    # antenna during a race, that read must not become a lap.
+    recount_past_reads: bool = False
 
 
 class RiderStatusDTO(BaseModel):

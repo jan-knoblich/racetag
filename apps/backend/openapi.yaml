@@ -240,6 +240,131 @@ paths:
                   started_at:
                     type: string
 
+  /race/start-time:
+    patch:
+      summary: Correct the start time of the active race
+      description: |
+        Sets started_at after the fact (e.g. the gun went off before the app
+        was started, or start was pressed late). Marks the race as started if
+        it was not, rebuilds all laps from the stored readings with the new
+        start and publishes race_started (corrected=true) and standings.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [started_at]
+              properties:
+                started_at:
+                  type: string
+                  description: ISO 8601 timestamp; must not be in the future and must be before the race end.
+      responses:
+        '200':
+          description: Start time updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  started:
+                    type: boolean
+                  started_at:
+                    type: string
+                  previous_started_at:
+                    type: string
+                    nullable: true
+        '422':
+          description: Invalid timestamp, in the future, or after the race end
+
+  /race/start-candidate:
+    get:
+      summary: Detect a mass start in the stored readings
+      description: |
+        Looks back 45 minutes from `before` for a 180 s window in which a
+        large share of the registered riders (at least min(5, n) and 30 %)
+        was read. Used by the start dialog to suggest the real start time.
+      parameters:
+        - in: query
+          name: before
+          required: false
+          schema:
+            type: string
+          description: ISO reference time; defaults to started_at if started, else now.
+      responses:
+        '200':
+          description: Detection result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detected:
+                    type: boolean
+                  first_reading:
+                    type: string
+                    nullable: true
+                  riders_in_burst:
+                    type: integer
+                  registered:
+                    type: integer
+                  threshold:
+                    type: integer
+                  window_s:
+                    type: integer
+                  reference:
+                    type: string
+
+  /race/unknown-tags:
+    get:
+      summary: Tags read but not coupled in the active race
+      description: |
+        Scope "race" (race started): readings since started_at until the end.
+        Scope "recent" (not started): the last 30 minutes. `known_as` names a
+        coupling of the same tag in another race, as a suggestion.
+      responses:
+        '200':
+          description: Unknown tags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scope:
+                    type: string
+                    enum: [race, recent]
+                  since:
+                    type: string
+                  count:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tag_id:
+                          type: string
+                        reads:
+                          type: integer
+                        first_seen:
+                          type: string
+                        last_seen:
+                          type: string
+                        antennas:
+                          type: array
+                          items:
+                            type: integer
+                        known_as:
+                          type: object
+                          nullable: true
+                          properties:
+                            bib:
+                              type: string
+                            name:
+                              type: string
+                            race_name:
+                              type: string
+
   /race/reset:
     post:
       summary: Reset race (W-036)
@@ -595,6 +720,10 @@ components:
           type: string
           nullable: true
           description: Rider name (null if no rider registered for this tag)
+        post_finish_passes:
+          type: integer
+          default: 0
+          description: Passes after the rider's own finish. Shown to the operator, never counted as laps.
 
     RiderDTO:
       type: object
@@ -624,6 +753,14 @@ components:
           type: string
         name:
           type: string
+        recount_past_reads:
+          type: boolean
+          default: false
+          description: |
+            Only for a new coupling in a started race: count the tag's readings
+            since the start as laps (rider forgot to be coupled). Off by default
+            so a spare tag waved at the mat to couple a late entry does not
+            produce phantom laps.
 
     RidersListDTO:
       type: object
@@ -720,7 +857,7 @@ components:
           nullable: true
           minimum: 0.0
           maximum: 60.0
-          description: Minimum seconds between two counted laps for the same tag
+          description: Default minimum seconds between two counted laps for the same tag. A race with its own `min_pass_interval_s` (POST/PATCH /races) uses that value instead.
           example: 8.0
         total_laps:
           type: integer

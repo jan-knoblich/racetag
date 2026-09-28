@@ -348,3 +348,82 @@ def test_readings_export_says_why_a_reading_did_not_count(app_client):
         ("ZZZ9", "nein", "Tag nicht gekoppelt"),
         ("AAA1", "nein", "nach dem eigenen Zieleinlauf"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Unknown tags and late coupling (points 3 and 5 of the field report)
+# ---------------------------------------------------------------------------
+
+def test_unknown_tags_are_listed_during_the_race(app_client):
+    client, app_module = app_client
+    client.post("/riders", json={"tag_id": "AAA1", "bib": "7", "name": "Gekoppelt"})
+    _arrive(client, "OLD1", BASE - timedelta(minutes=20))                 # before the start
+    client.patch("/race/start-time", json={"started_at": _iso(BASE)})
+    _arrive(client, "AAA1", BASE + timedelta(minutes=12))
+    _arrive(client, "ZZZ9", BASE + timedelta(minutes=12))
+    _arrive(client, "ZZZ9", BASE + timedelta(minutes=24), antenna=2)
+    _arrive(client, "YYY8", BASE + timedelta(minutes=13))
+
+    res = client.get("/race/unknown-tags").json()
+    assert res["scope"] == "race"
+    assert res["count"] == 2
+    assert [i["tag_id"] for i in res["items"]] == ["ZZZ9", "YYY8"]
+    zzz = res["items"][0]
+    assert zzz["reads"] == 2
+    assert zzz["antennas"] == [1, 2]
+    assert zzz["known_as"] is None
+
+
+def test_unknown_tag_suggests_its_number_from_another_race(app_client):
+    client, app_module = app_client
+    client.post("/riders", json={"tag_id": "ZZZ9", "bib": "42", "name": "Aus Lauf 1"})
+    second = client.post("/races", json={"name": "Lauf 2", "total_laps": 2,
+                                         "finish_mode": "per_rider"}).json()
+    client.post(f"/races/{second['id']}/activate")
+    client.patch("/race/start-time", json={"started_at": _iso(BASE)})
+    _arrive(client, "ZZZ9", BASE + timedelta(minutes=12))
+
+    item = client.get("/race/unknown-tags").json()["items"][0]
+    assert item["known_as"] == {"bib": "42", "name": "Aus Lauf 1", "race_name": "Default race"}
+
+
+def test_before_the_start_unknown_tags_cover_the_last_half_hour(app_client):
+    client, app_module = app_client
+    now = datetime.now(timezone.utc)
+    _arrive(client, "OLD1", now - timedelta(minutes=50))
+    _arrive(client, "NEW1", now - timedelta(minutes=5))
+    res = client.get("/race/unknown-tags").json()
+    assert res["scope"] == "recent"
+    assert [i["tag_id"] for i in res["items"]] == ["NEW1"]
+
+
+def test_coupling_a_tag_after_it_ran_counts_its_laps(app_client):
+    """Seven Hubland runners ran uncoupled. Coupling them afterwards must
+    bring their laps and finish times back from the stored readings."""
+    client, app_module = app_client
+    race_id = _active_race_id(client)
+    client.patch(f"/races/{race_id}", json={"total_laps": 2, "finish_mode": "per_rider",
+                                            "min_pass_interval_s": 240})
+    client.patch("/race/start-time", json={"started_at": _iso(BASE)})
+    for minutes in (12, 24):
+        _arrive(client, "ANON", BASE + timedelta(minutes=minutes))
+    assert "ANON" not in _laps(client)
+
+    client.post("/riders", json={"tag_id": "ANON", "bib": "99", "name": "Nachgekoppelt",
+                                 "recount_past_reads": True})
+    p = _laps(client)["ANON"]
+    assert p["laps"] == 2
+    assert p["finished"] is True
+    assert p["total_time_ms"] == 24 * 60 * 1000
+    assert client.get("/race/unknown-tags").json()["count"] == 0
+
+
+def test_coupling_without_recount_keeps_earlier_reads_out(app_client):
+    """Holding a spare tag to the antenna to couple a late entry mid-race must
+    not turn that read into a lap."""
+    client, app_module = app_client
+    client.patch("/race/start-time", json={"started_at": _iso(BASE)})
+    _arrive(client, "SPARE", BASE + timedelta(minutes=20))          # waved at the antenna
+    client.post("/riders", json={"tag_id": "SPARE", "bib": "150", "name": "Nachmeldung"})
+    p = _laps(client).get("SPARE")
+    assert p is None or p["laps"] == 0

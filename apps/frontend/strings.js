@@ -257,6 +257,18 @@
     errDetailStartInvalid: 'Die Startzeit ist ungültig.',
     errDetailRiderFinished: 'Der Fahrer ist schon im Ziel – Runden danach zählen nicht.',
 
+    // ---- Unbekannte Tags, Beenden mit Läufern auf der Strecke -------------------
+    pillUnknownTipRace: '{n} Tags laufen mit, ohne einer Startnummer zugeordnet zu sein. Ihre Runden zählen nicht.\nKlicken, um sie zu koppeln – die bisherigen Durchfahrten werden dann mitgezählt.',
+    pillUnknownTipRecent: '{n} gelesene Tags sind noch keiner Startnummer zugeordnet (letzte 30 Minuten).\nKlicken für die Liste.',
+    unknownTagsIntroRace: 'Diese Tags wurden seit dem Start gelesen, gehören aber zu keiner Startnummer. Ihre Durchfahrten zählen erst, wenn du sie koppelst – dann aber rückwirkend.',
+    unknownTagsIntroRecent: 'Diese Tags wurden in den letzten 30 Minuten gelesen und sind noch keiner Startnummer zugeordnet.',
+    unknownTagsEmpty: 'Keine unbekannten Tags.',
+    unknownTagMeta: '{reads} Lesungen, zuletzt {time}',
+    unknownTagKnownAs: 'war Nr. {bib}{name} in „{race}“',
+    btnCoupleUnknown: 'Koppeln',
+    btnCoupleUnknownTip: 'Diesen Tag einer Startnummer zuordnen. Seine bisherigen Durchfahrten in diesem Rennen werden mitgezählt.',
+    confirmEndRaceUnfinished: '{n} Fahrer haben ihre Rundenzahl noch nicht erreicht und sind vermutlich noch unterwegs.\n\nRennen trotzdem beenden? Durchfahrten nach dem Ende zählen nicht mehr als Runde.',
+
     // ---- Rennen bearbeiten / Kopplung löschen ------------------------------------
     raceEditTitle: 'Rennen bearbeiten',
     raceEditNoRace: 'Kein Rennen ausgewählt.',
